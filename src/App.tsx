@@ -1,6 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
+  ArrowRight,
+  ChartNoAxesColumnIncreasing,
+  Eye,
+  Lightbulb,
+  LockKeyhole,
+  Mail,
   Banknote,
   Bell,
   BellRing,
@@ -98,6 +104,7 @@ import {
   type CommunicationState,
 } from './communicationData'
 import './App.css'
+import './LoginPage.css'
 
 type SessionUser = {
   id: number
@@ -1286,48 +1293,56 @@ function LoginPage({ onLogin, loading, authError }: {
     <div className="login-page">
       <div className="login-panel">
         <div className="login-brand-panel">
-          <div className="brand-mark">C</div>
-          <h1>CAMVIA</h1>
-          <p className="subtitle">School Management Intelligence</p>
-          <div className="brand-copy">
-            <span>See.</span>
-            <span>Understand.</span>
-            <span>Act.</span>
+          <div className="login-logo" role="img" aria-label="CAMVIA — Smarter Schools. Brighter Futures." />
+          <p className="login-brand-eyebrow">AI-powered school management</p>
+          <h1 className="login-headline">See More.<br />Understand Better.<br /><span>Act Sooner.</span></h1>
+          <p className="login-description">CAMVIA brings intelligence to school management with AI-powered insights, helping schools operate smarter and create brighter futures for every learner.</p>
+          <div className="login-benefits">
+            <div><span className="login-benefit-icon"><Eye aria-hidden="true" /></span><p><strong>See.</strong><small>Real-time insights</small></p></div>
+            <div><span className="login-benefit-icon"><Lightbulb aria-hidden="true" /></span><p><strong>Understand.</strong><small>Smarter decisions</small></p></div>
+            <div><span className="login-benefit-icon"><ChartNoAxesColumnIncreasing aria-hidden="true" /></span><p><strong>Act.</strong><small>Better outcomes</small></p></div>
           </div>
-          <p className="tagline">AI-powered school management intelligence.</p>
+          <div className="login-campus" aria-hidden="true" />
         </div>
 
         <div className="login-form-panel">
           <div className="login-header">
             <p className="eyebrow">Secure login</p>
             <h2>Welcome back</h2>
+            <p className="login-intro">Sign in to your CAMVIA account and continue building brighter futures.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="login-form" aria-busy={loading || submitting}>
             <label>
               <span>Email</span>
+              <div className="login-input-field">
+                <Mail aria-hidden="true" />
               <input
                 type="email"
+                autoComplete="username"
                 required
                 disabled={loading || submitting}
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="name@school.edu"
               />
+              </div>
             </label>
 
             <label>
               <span>Password</span>
-              <div className="password-field">
+              <div className="password-field login-input-field">
+                <LockKeyhole aria-hidden="true" />
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
                   required
                   disabled={loading || submitting}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder="Enter password"
                 />
-                <button type="button" disabled={loading || submitting} onClick={() => setShowPassword((current) => !current)}>
+                <button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} disabled={loading || submitting} onClick={() => setShowPassword((current) => !current)}>
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
@@ -1337,10 +1352,11 @@ function LoginPage({ onLogin, loading, authError }: {
 
             <button type="submit" className="primary-button" disabled={loading || submitting}>
               {loading ? 'Checking session…' : submitting ? 'Signing in…' : 'Sign In'}
+              <ArrowRight size={22} aria-hidden="true" />
             </button>
 
             <button type="button" className="secondary-button" disabled={loading || submitting} onClick={() => setPasswordResetNotice('Password reset is not configured; contact an administrator.')}>
-              Forgot Password
+              Forgot Password?
             </button>
             {passwordResetNotice ? <p className="communication-feedback" role="status">{passwordResetNotice}</p> : null}
           </form>

@@ -1,0 +1,213 @@
+/* All reference styling is scoped to the login screen. */
+.login-page {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 62px 32px;
+  color: #081643;
+  background: radial-gradient(ellipse at 40% 48%, #e4efff 0%, #f6fbff 72%);
+}
+
+.login-page::before,
+.login-page::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  width: 850px;
+  height: 470px;
+  border-radius: 48% 52% 0 0;
+  transform: rotate(40deg);
+  left: -440px;
+  bottom: -190px;
+  background: linear-gradient(135deg, #36def0 5%, #5689ff 45%, #8e62fb 65%, #eceaff 90%);
+  box-shadow: -100px -230px 0 40px #afc5fa30, -180px -350px 0 50px #d4e4ff45;
+}
+
+.login-page::after {
+  left: auto;
+  right: -660px;
+  bottom: -160px;
+  height: 680px;
+  transform: rotate(42deg);
+  background: linear-gradient(90deg, #cdf4fb66, #e4edff44);
+  box-shadow: none;
+}
+
+.login-page .login-panel {
+  width: min(1260px, 100%);
+  min-height: 814px;
+  grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
+  border: 2px solid #fff;
+  border-radius: 32px;
+  background: #f5f9ff99;
+  box-shadow: 0 22px 65px #5987d52e;
+}
+
+.login-page .login-brand-panel {
+  position: relative;
+  overflow: hidden;
+  justify-content: flex-start;
+  padding: 76px 30px 220px 86px;
+  background: radial-gradient(circle at 95% 0%, #c6d0ff99, transparent 30%), linear-gradient(140deg, #f8fbffb3, #edf5ff80);
+}
+
+.login-page .login-brand-panel::before {
+  content: '';
+  position: absolute;
+  width: 310px;
+  height: 310px;
+  right: -180px;
+  top: -155px;
+  border-radius: 50%;
+  background: #e1f6ffb3;
+  box-shadow: -50px 185px 0 -96px #96e7f54a;
+}
+
+/* Reuse the supplied artwork at its original proportions for the logo and campus. */
+.login-page .login-logo {
+  position: relative;
+  width: min(450px, 100%);
+  aspect-ratio: 450 / 140;
+  flex-shrink: 0;
+  background: url('./assets/login-reference.png') 24.14% 17.48% / 371.56% 672.14% no-repeat;
+  mix-blend-mode: multiply;
+  margin-bottom: 26px;
+}
+
+.login-page .login-brand-eyebrow {
+  margin: 0 0 16px;
+  color: #4d87ff;
+  font-size: 12px;
+  letter-spacing: 3.5px;
+  text-transform: uppercase;
+}
+
+.login-page .login-headline {
+  margin: 0 0 16px;
+  color: #06143e;
+  font-size: clamp(34px, 3.05vw, 46px);
+  font-weight: 800;
+  letter-spacing: -1.5px;
+  line-height: 1.06;
+}
+
+.login-page .login-headline span {
+  color: #087aff;
+  background: linear-gradient(100deg, #0062ff, #00cce5);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.login-page .login-description {
+  max-width: 470px;
+  margin: 0 0 25px;
+  color: #67799f;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+.login-page .login-benefits {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin-right: -2px;
+}
+
+.login-page .login-benefits > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  padding: 4px 12px 4px 4px;
+  border: 1px solid #fff;
+  border-radius: 40px;
+  background: #ffffff70;
+  box-shadow: 0 8px 20px #6c92d410;
+}
+
+.login-page .login-benefit-icon {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #0869ff;
+  background: linear-gradient(135deg, #d5e5ff, #edf5ff);
+}
+
+.login-page .login-benefits > div:nth-child(2) .login-benefit-icon { color: #8229ee; background: linear-gradient(135deg, #e5d7ff, #f7f3ff); }
+.login-page .login-benefits > div:nth-child(3) .login-benefit-icon { color: #04afd2; background: linear-gradient(135deg, #bdf3fd, #edfdff); }
+.login-page .login-benefits p { margin: 0; line-height: 1.3; }
+.login-page .login-benefits strong { display: block; color: #0038bd; font-size: 14px; }
+.login-page .login-benefits small { display: block; color: #61749c; font-size: 11px; white-space: nowrap; }
+
+.login-page .login-campus {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 690 / 202;
+  background: url('./assets/login-reference.png') 21.28% 91.34% / 242.32% 465.84% no-repeat;
+  mask-image: linear-gradient(transparent, #000 22%);
+}
+
+.login-page .login-form-panel {
+  position: relative;
+  z-index: 1;
+  padding: 72px 52px 72px 62px;
+  border-radius: 28px;
+  background: #ffffffed;
+}
+
+.login-page .login-header { margin-bottom: 38px; }
+.login-page .login-header .eyebrow { margin: 0 0 19px; color: #377bff; font-size: 13px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; }
+.login-page .login-header h2 { margin: 0 0 12px; color: #081641; font-size: 38px; letter-spacing: -1px; line-height: 1.25; }
+.login-page .login-intro { margin: 0; color: #6a7a9e; font-size: 18px; line-height: 1.5; }
+.login-page .login-form { gap: 24px; }
+.login-page .login-form label { gap: 7px; color: #101e48; font-size: 16px; }
+.login-page .login-input-field { display: flex; align-items: center; gap: 16px; height: 60px; padding: 0 17px; border: 1px solid #d3e2ff; border-radius: 12px; background: #f7faff; }
+.login-page .login-input-field > svg { width: 21px; height: 21px; flex-shrink: 0; color: #63779e; }
+.login-page .login-input-field input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; outline: none; background: transparent; font-size: 16px; font-weight: 400; }
+.login-page .login-input-field input::placeholder { color: #7482a0; opacity: 1; }
+.login-page .login-input-field:focus-within { border-color: #3d83ff; box-shadow: 0 0 0 3px #3d83ff20; }
+.login-page .password-field button { padding: 8px 0 8px 6px; color: #003dd8; font-size: 15px; }
+.login-page .login-form .primary-button { display: flex; align-items: center; justify-content: center; gap: 18px; min-height: 64px; margin-top: 12px; border: 0; border-radius: 15px; background: linear-gradient(110deg, #1266ff, #328aff 48%, #00d6e8); box-shadow: 0 10px 22px #247bff1c; color: #fff; font-size: 20px; font-weight: 700; cursor: pointer; }
+.login-page .login-form .secondary-button { min-height: 60px; margin-top: -5px; border: 0; border-radius: 15px; background: #ecf4ff; color: #003dd8; font-size: 17px; font-weight: 700; cursor: pointer; }
+.login-page button:focus-visible { outline: 3px solid #679cff; outline-offset: 4px; }
+.login-page button:disabled { opacity: 0.6; cursor: wait; transform: none; }
+
+@media (max-width: 1150px) {
+  .login-page { padding: 32px 24px; }
+  .login-page .login-panel { min-height: 730px; }
+  .login-page .login-brand-panel { padding: 65px 28px 180px; }
+  .login-page .login-form-panel { padding: 48px 32px; }
+  .login-page .login-benefits { gap: 5px; flex-wrap: wrap; }
+  .login-page .login-benefit-icon { width: 34px; height: 34px; }
+  .login-page .login-benefits > div { gap: 5px; padding-right: 8px; }
+  .login-page .login-benefits strong { font-size: 12px; }
+  .login-page .login-benefits small { font-size: 10px; }
+}
+
+@media (max-width: 800px) {
+  .login-page { padding: 24px 16px; }
+  .login-page .login-panel { max-width: 600px; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .login-page .login-brand-panel { padding: 30px 30px 160px; }
+  .login-page .login-logo { width: 340px; margin-bottom: 20px; }
+  .login-page .login-headline { font-size: 38px; }
+  .login-page .login-description { font-size: 16px; }
+  .login-page .login-form-panel { padding: 38px 30px; }
+  .login-page .login-header { margin-bottom: 28px; }
+  .login-page .login-header h2 { font-size: 32px; }
+  .login-page .login-intro { font-size: 16px; }
+}
+
+@media (max-width: 400px) {
+  .login-page .login-brand-panel { padding: 26px 20px 115px; }
+  .login-page .login-brand-eyebrow { font-size: 9px; letter-spacing: 2px; }
+  .login-page .login-headline { font-size: 32px; }
+  .login-page .login-benefits > div { flex: 0 1 auto; }
+  .login-page .login-form-panel { padding: 32px 20px; }
+}
