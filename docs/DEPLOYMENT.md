@@ -48,13 +48,26 @@ do not paste their values into logs, deployment notes, or source control.
 
 ## Supabase migration and Auth checks
 
-The expected migration chain is `001` through `018`. Migration `010` was
+The expected migration chain is `001` through `019`. Migration `010` was
 historically superseded; do not apply it blindly or replay migrations already
 recorded as applied. Earlier project verification records `017` and `018` as
-applied and live RLS tests pass, but this workspace is not linked to Supabase,
-so the CLI cannot independently read the remote migration ledger. Confirm the
-target project's migration history in its dashboard before any database change.
-No migration is part of this frontend deployment.
+applied and live RLS tests pass. Migration `019_student_and_user_management.sql`
+adds an audited, tenant-derived student-create RPC, school-admin user update
+RPC, and an inactive-by-default Auth profile trigger. It has been authored but
+must be reviewed and applied to the correct Supabase project before enabling
+these features. This workspace is not linked to the app's Supabase project, so
+the CLI cannot independently read the remote migration ledger or apply it.
+Confirm the target project's migration history and backup before applying the
+forward migration once.
+
+Deploy `supabase/functions/manage-school-user` to that same Supabase project
+after migration `019`. The function verifies the caller's JWT and active Admin
+scope, uses the service-role key only inside the Edge Function to send Auth
+invitations, and uses the caller-scoped RPC for school-bounded profile changes.
+Never add `SUPABASE_SERVICE_ROLE_KEY` to Vercel or any `VITE_` variable. Verify
+Supabase Auth invitation email delivery and redirect settings before inviting
+real users; do not report an invitation as sent unless Supabase confirms it.
+User deletion is intentionally implemented as deactivation to retain history.
 
 In Supabase Auth settings, before go-live:
 
@@ -66,19 +79,24 @@ In Supabase Auth settings, before go-live:
    provider settings.
 
 EduPulse currently uses password login without a redirect-based callback.
-Public signup is disabled in the application, and password recovery/delivery
-is not configured; users must contact their administrator for account help.
-The Site URL and redirect allowlist must be updated manually; deployment does
-not modify Supabase dashboard settings.
+Public signup is disabled in the application. New school accounts use the
+Supabase Auth invitation flow and set their own password; delivery depends on
+the target project's configured Auth email provider. The Site URL and redirect
+allowlist must be updated manually; deployment does not modify Supabase
+dashboard settings.
 
 ## Deployment
 
-1. Confirm the Vercel project is the intended EduPulse project and that its
+1. Confirm the Vercel project is the existing CAMVIA project and that its
    Production environment contains only the two required public variable names
    with the correct production values.
-2. Confirm the production Supabase project, migration ledger, RLS checks,
-   Auth settings, and backup status.
-3. From the repository root, install and validate:
+2. Confirm the application URL points to the intended Supabase project.
+   Review and apply migration `019` there, deploy the `manage-school-user`
+   Edge Function, verify its server-only service-role configuration, and test
+   invitation email delivery before exposing the user-management controls.
+3. Confirm the production Supabase migration ledger, RLS checks, Auth settings,
+   and backup status.
+4. From the repository root, install and validate:
 
    ```powershell
    npm ci
@@ -86,8 +104,8 @@ not modify Supabase dashboard settings.
    npm run lint
    ```
 
-4. Deploy the production branch through the Vercel Git integration, or use the
-   authenticated Vercel CLI after linking this directory to the confirmed
+5. Deploy only the existing CAMVIA Vercel project through its Git integration,
+   or use the authenticated Vercel CLI after linking this directory to that
    project:
 
    ```powershell
@@ -95,7 +113,7 @@ not modify Supabase dashboard settings.
    vercel --prod
    ```
 
-5. Set Supabase **Site URL** and **Redirect URLs** to the resulting production
+6. Set Supabase **Site URL** and **Redirect URLs** to the resulting production
    domain, then run the smoke tests below.
 
 Do not run a deployment from an unlinked directory if it would create or target

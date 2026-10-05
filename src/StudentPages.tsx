@@ -15,7 +15,7 @@ import {
   type NewStudent,
   type Student,
 } from './studentData'
-import { fetchStudentById } from './services/students'
+import { fetchStudentById, fetchStudentCreationOptions, type StudentCampusOption, type TeacherAssignment } from './services/students'
 
 type StudentPageUser = {
   id: number
@@ -27,7 +27,7 @@ type StudentPageUser = {
   organizationId?: string | null
   schoolId?: string | null
   campusId?: string | null
-  teacherAssignments?: Array<{ campus_id: string; class_name: string; section: string; active: boolean }>
+  teacherAssignments?: TeacherAssignment[]
 }
 
 type StudentsPageProps = {
@@ -36,7 +36,7 @@ type StudentsPageProps = {
   loading: boolean
   error: string
   onRetry: () => void
-  onAddStudent: (student: NewStudent) => boolean
+  onAddStudent: (student: NewStudent, campusId: string) => Promise<void>
   onImportStudents: (students: NewStudent[]) => boolean
 }
 
@@ -95,6 +95,13 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [statusFilter, setStatusFilter] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [form, setForm] = useState<NewStudent>(emptyStudentForm)
+  const [campuses, setCampuses] = useState<StudentCampusOption[]>([])
+  const [teacherScopes, setTeacherScopes] = useState<TeacherAssignment[]>([])
+  const [creationOptionsLoading, setCreationOptionsLoading] = useState(user.role === 'admin' || user.role === 'teacher')
+  const [creationOptionsError, setCreationOptionsError] = useState('')
+  const [studentSaveError, setStudentSaveError] = useState('')
+  const [studentSaving, setStudentSaving] = useState(false)
+  const [campusId, setCampusId] = useState('')
   const [importPreview, setImportPreview] = useState<NewStudent[] | null>(null)
   const [importError, setImportError] = useState('')
   const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort()
@@ -103,6 +110,29 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       .filter((student) => !classFilter || student.className === classFilter)
       .map((student) => student.section),
   )].sort()
+  const canCreateStudents = user.role === 'admin' || user.role === 'teacher'
+
+  useEffect(() => {
+    if (!canCreateStudents) return
+    let active = true
+    void fetchStudentCreationOptions(
+      user.role as 'admin' | 'teacher',
+      user.schoolId ?? null,
+      user.organizationId ?? null,
+      user.teacherAssignments ?? [],
+    ).then((options) => {
+      if (!active) return
+      setCampuses(options.campuses)
+      setTeacherScopes(options.teacherScopes)
+      setCampusId((current) => options.campuses.some((campus) => campus.id === current) ? current : options.campuses[0]?.id ?? '')
+    }).catch((optionsError: unknown) => {
+      if (!active) return
+      setCreationOptionsError(optionsError instanceof Error ? optionsError.message : 'Student creation options could not be loaded.')
+    }).finally(() => {
+      if (active) setCreationOptionsLoading(false)
+    })
+    return () => { active = false }
+  }, [canCreateStudents, user.role, user.schoolId, user.organizationId, user.teacherAssignments])
 
   const filteredStudents = accessibleStudents.filter((student) => {
     const searchable = [
@@ -121,11 +151,18 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     )
   })
 
-  const handleAddSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleAddSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (onAddStudent(form)) {
+    setStudentSaveError('')
+    setStudentSaving(true)
+    try {
+      await onAddStudent(form, campusId)
       setForm(emptyStudentForm)
       setShowAddForm(false)
+    } catch (saveError) {
+      setStudentSaveError(saveError instanceof Error ? saveError.message : 'Unable to create this student.')
+    } finally {
+      setStudentSaving(false)
     }
   }
 
@@ -172,21 +209,21 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <h1>Students</h1>
           <p className="students-intro">Find a student and open their school overview.</p>
         </div>
-        {user.role === 'admin' ? (
+        {canCreateStudents ? (
           <div className="students-actions">
-            <button type="button" className="secondary-button small-button" onClick={() => document.getElementById('student-import-file')?.click()}>
+            {user.role === 'admin' ? <button type="button" className="secondary-button small-button" onClick={() => document.getElementById('student-import-file')?.click()}>
               <FileUp size={16} /> Import Students
-            </button>
-            <button type="button" className="primary-button small-button" onClick={() => setShowAddForm((current) => !current)}>
+            </button> : null}
+            <button type="button" className="primary-button small-button" onClick={() => { setStudentSaveError(''); setShowAddForm((current) => !current) }}>
               + Add Student
             </button>
-            <input
+            {user.role === 'admin' ? <input
               id="student-import-file"
               className="visually-hidden"
               type="file"
               accept=".csv,.xlsx,.xls"
               onChange={handleImportFile}
-            />
+            /> : null}
           </div>
         ) : null}
       </div>
@@ -197,23 +234,35 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         </p>
       ) : null}
 
-      {user.role === 'admin' && showAddForm ? (
-        <form className="student-form" onSubmit={handleAddSubmit}>
+      {canCreateStudents && showAddForm ? (
+        <form className="student-form" onSubmit={(event) => void handleAddSubmit(event)}>
           <h2>Add Student</h2>
+          {creationOptionsError ? <p className="communication-feedback error" role="alert">{creationOptionsError}</p> : null}
+          {studentSaveError ? <p className="communication-feedback error" role="alert">{studentSaveError}</p> : null}
+          <label>Campus<select required disabled={creationOptionsLoading || studentSaving || campuses.length === 0} value={campusId} onChange={(event) => { setCampusId(event.target.value); if (user.role === 'teacher') setForm((current) => ({ ...current, className: '', section: '' })) }}><option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}</select></label>
           <label>First name<input required value={form.firstName} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
           <label>Last name<input required value={form.lastName} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
           <label>Student ID<input required value={form.studentId} onChange={(event) => setForm((current) => ({ ...current, studentId: event.target.value }))} /></label>
-          <label>Class<input required placeholder="e.g. Grade 8" value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value }))} /></label>
-          <label>Section<input required value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))} /></label>
-          <label>Roll number<input required value={form.rollNumber} onChange={(event) => setForm((current) => ({ ...current, rollNumber: event.target.value }))} /></label>
-          <label>Date of birth<input required type="date" value={form.dateOfBirth} onChange={(event) => setForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
-          <label>Gender<select required value={form.gender} onChange={(event) => setForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Select</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
-          <label>Guardian name<input required value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
-          <label>Guardian phone<input required type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
-          <label>Guardian email<input required type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
+          {user.role === 'teacher' ? (
+            <>
+              <label>Class<select required disabled={studentSaving || teacherScopes.length === 0} value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value, section: '' }))}><option value="">Select assigned class</option>{[...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId).map((scope) => scope.class_name))].sort().map((className) => <option key={className}>{className}</option>)}</select></label>
+              <label>Section<select required disabled={studentSaving || !form.className} value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))}><option value="">Select assigned section</option>{[...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId && scope.class_name === form.className).map((scope) => scope.section))].sort().map((section) => <option key={section}>{section}</option>)}</select></label>
+            </>
+          ) : (
+            <>
+              <label>Class<input required placeholder="e.g. Grade 8" value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value }))} /></label>
+              <label>Section<input required value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))} /></label>
+            </>
+          )}
+          <label>Roll number<input disabled={studentSaving} value={form.rollNumber} onChange={(event) => setForm((current) => ({ ...current, rollNumber: event.target.value }))} /></label>
+          <label>Date of birth<input disabled={studentSaving} type="date" value={form.dateOfBirth} onChange={(event) => setForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
+          <label>Gender<select disabled={studentSaving} value={form.gender} onChange={(event) => setForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Select</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
+          <label>Guardian name<input disabled={studentSaving} value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
+          <label>Guardian phone<input disabled={studentSaving} type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
+          <label>Guardian email<input disabled={studentSaving} type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
           <div className="student-form-actions">
-            <button type="button" className="secondary-button small-button" onClick={() => setShowAddForm(false)}>Cancel</button>
-            <button type="submit" className="primary-button small-button">Save Student</button>
+            <button type="button" className="secondary-button small-button" disabled={studentSaving} onClick={() => setShowAddForm(false)}>Cancel</button>
+            <button type="submit" className="primary-button small-button" disabled={studentSaving || creationOptionsLoading || Boolean(creationOptionsError) || campuses.length === 0 || !campusId}>{studentSaving ? 'Saving…' : 'Save Student'}</button>
           </div>
         </form>
       ) : null}

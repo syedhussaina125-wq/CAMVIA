@@ -38,6 +38,7 @@ import {
 import {
   type Role,
   type SchoolUser,
+  type UserStatus,
 } from './mockData'
 const StudentDetailPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentDetailPage })))
 const StudentsPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentsPage })))
@@ -65,8 +66,9 @@ import {
 } from './attendanceData'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { getActiveProfile, normalizeRole, signInWithEmail, signOut as signOutSupabase, type AppProfile } from './services/auth'
-import { fetchStudents, fetchTeacherAssignments, type TeacherAssignment } from './services/students'
+import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments, type TeacherAssignment } from './services/students'
 import { fetchProfiles } from './services/users'
+import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput, type TeacherAssignmentScope } from './services/userManagement'
 import { fetchAttendanceState, saveAttendance as saveLiveAttendance } from './services/attendance'
 import { fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication } from './services/communication'
@@ -917,6 +919,34 @@ function App() {
     }
   }
 
+  const requireSchoolAdmin = () => {
+    if (!session || session.role !== 'admin') {
+      throw new Error('Only an active school administrator can manage user accounts.')
+    }
+    return session
+  }
+
+  const handleInviteSchoolUser = async (input: SchoolUserInput) => {
+    const owner = requireSchoolAdmin()
+    await inviteSchoolUser(input)
+    await refreshProfiles(owner)
+    setToast({ type: 'success', text: 'Invitation sent. The new account is listed in Users.' })
+  }
+
+  const handleUpdateSchoolUser = async (targetUserId: string, input: SchoolUserInput) => {
+    const owner = requireSchoolAdmin()
+    await updateSchoolUser(targetUserId, input)
+    await refreshProfiles(owner)
+    setToast({ type: 'success', text: 'User account updated.' })
+  }
+
+  const handleDeactivateSchoolUser = async (targetUserId: string) => {
+    const owner = requireSchoolAdmin()
+    await deactivateSchoolUser(targetUserId)
+    await refreshProfiles(owner)
+    setToast({ type: 'success', text: 'User deactivated. Historical records were retained.' })
+  }
+
   const handleCompleteTour = (role: Role) => {
     setWalkthroughState((current) => ({ ...current, [role]: true }))
     setTourOpen(false)
@@ -928,14 +958,24 @@ function App() {
     setTourOpen(true)
   }
 
-  const handleAddStudent = (_payload: NewStudent) => {
-    if (session?.role !== 'admin') {
-      setToast({ type: 'error', text: 'Only administrators can add students.' })
-      return false
+  const handleAddStudent = async (payload: NewStudent, campusId: string) => {
+    if (!session || (session.role !== 'admin' && session.role !== 'teacher')) {
+      throw new Error('Only active administrators and teachers can add students.')
     }
+    if (!campusId) throw new Error('Select an authorized campus.')
 
-    setToast({ type: 'error', text: 'Student creation is not enabled in this read-only Supabase migration. No local record was created.' })
-    return false
+    try {
+      await createLiveStudent(payload, campusId)
+      const refreshedStudents = await refreshStudents(session)
+      if (!refreshedStudents || resolvedUserId.current !== session.authUserId) {
+        throw new Error('Student was created, but the current student list could not be refreshed.')
+      }
+      await refreshAlerts(session.authUserId)
+      setToast({ type: 'success', text: 'Student added successfully.' })
+    } catch (error) {
+      console.error('[Supabase] Student creation failed:', error instanceof Error ? error.message : 'Unknown error')
+      throw new Error(error instanceof Error ? error.message : 'Unable to add this student.')
+    }
   }
 
   const handleImportStudents = (_payload: NewStudent[]) => {
@@ -1098,6 +1138,7 @@ function App() {
               element={
                 session ? (
                   <StudentsPage
+                    key={session.authUserId}
                     user={session}
                     students={students}
                     loading={studentsLoading}
@@ -1144,12 +1185,25 @@ function App() {
                   onRetry={() => session ? refreshAdministration(session) : undefined}
                   onSaveSchool={handleSaveSchoolSettings}
                   onSaveCampus={handleSaveCampusSettings}
+                  onInviteUser={handleInviteSchoolUser}
+                  onUpdateUser={handleUpdateSchoolUser}
+                  onDeactivateUser={handleDeactivateSchoolUser}
               /> : null
               }
             />
             <Route
               path="/users"
-              element={session?.role === 'admin' ? <ProfilesDirectoryPage profiles={liveProfiles} loading={profilesLoading} error={profilesError} onRetry={() => session ? refreshProfiles(session) : undefined} /> : null}
+              element={session?.role === 'admin' ? <ProfilesDirectoryPage
+                user={session}
+                profiles={liveProfiles}
+                campuses={administration?.campuses ?? []}
+                loading={profilesLoading}
+                error={profilesError}
+                onRetry={() => session ? refreshProfiles(session) : undefined}
+                onInviteUser={handleInviteSchoolUser}
+                onUpdateUser={handleUpdateSchoolUser}
+                onDeactivateUser={handleDeactivateSchoolUser}
+              /> : null}
             />
           </Route>
         </Route>
@@ -2491,6 +2545,9 @@ function AdministrationPage({
   onRetry,
   onSaveSchool,
   onSaveCampus,
+  onInviteUser,
+  onUpdateUser,
+  onDeactivateUser,
 }: {
   user: SessionUser
   snapshot: AdministrationSnapshot | null
@@ -2503,6 +2560,9 @@ function AdministrationPage({
   onRetry: () => void
   onSaveSchool: (values: Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>) => Promise<void>
   onSaveCampus: (campusId: string, values: Pick<CampusSettingsRecord, 'name' | 'code' | 'address' | 'status'>) => Promise<void>
+  onInviteUser: (input: SchoolUserInput) => Promise<void>
+  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
+  onDeactivateUser: (targetUserId: string) => Promise<void>
 }) {
   const canEdit = user.role === 'admin'
   const [schoolForm, setSchoolForm] = useState<Partial<Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>>>({})
@@ -2644,50 +2704,318 @@ function AdministrationPage({
         <p className="student-muted">No live import-history records are available. CSV upload currently supports preview only; it does not import records or create an integration connection.</p>
       </div>
 
-      {canEdit || user.role === 'principal' ? <ProfilesDirectoryPage profiles={profiles} loading={profilesLoading} error={profilesError} onRetry={onRetryProfiles} /> : null}
+      {canEdit || user.role === 'principal' ? (
+        <ProfilesDirectoryPage
+          user={user}
+          profiles={profiles}
+          campuses={snapshot?.campuses ?? []}
+          loading={profilesLoading}
+          error={profilesError}
+          onRetry={onRetryProfiles}
+          onInviteUser={onInviteUser}
+          onUpdateUser={onUpdateUser}
+          onDeactivateUser={onDeactivateUser}
+        />
+      ) : null}
     </section>
   )
 }
 
-function ProfilesDirectoryPage({ profiles, loading, error, onRetry }: {
+function ProfilesDirectoryPage({
+  user,
+  profiles,
+  campuses,
+  loading,
+  error,
+  onRetry,
+  onInviteUser,
+  onUpdateUser,
+  onDeactivateUser,
+}: {
+  user: SessionUser
   profiles: SchoolUser[]
+  campuses: CampusSettingsRecord[]
   loading: boolean
   error: string
   onRetry: () => void
+  onInviteUser: (input: SchoolUserInput) => Promise<void>
+  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
+  onDeactivateUser: (targetUserId: string) => Promise<void>
 }) {
+  const canManageUsers = user.role === 'admin'
   return (
     <section className="users-page">
       <div className="panel-header flex-header">
         <div>
           <p className="eyebrow">Access management</p>
-          <h1>Profiles</h1>
-          <p className="student-muted">Profile roles, campus, and account status are read from Supabase.</p>
+          <h1>Users</h1>
+          <p className="student-muted">{canManageUsers ? 'Manage school accounts and their authorized class scopes.' : 'Profile roles, campus, and account status are read-only for your role.'}</p>
         </div>
       </div>
       {loading ? <div className="empty-state-card" role="status">Loading profiles…</div> : null}
       {!loading && error ? <div className="empty-state-card error-card" role="alert"><p>{error}</p><button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button></div> : null}
-      {!loading && !error && profiles.length === 0 ? <div className="empty-state-card">No profiles are visible in your authorized scope.</div> : null}
-      {!loading && !error && profiles.length ? (
-        <div className="table-card">
-          <table>
-            <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Campus</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {profiles.map((profile) => (
-                <tr key={profile.email}>
-                  <td>{profile.name}</td>
-                  <td>{profile.email}</td>
-                  <td>{roleLabels[profile.role]}</td>
-                  <td>{profile.campus}</td>
-                  <td><span className={`status-pill ${profile.status === 'Active' ? 'success' : 'muted'}`}>{profile.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {!loading && !error && profiles.length === 0 && !canManageUsers ? <div className="empty-state-card">No profiles are visible in your authorized scope.</div> : null}
+      {!loading && !error ? (
+        <UserManagementTable
+          currentUserId={user.authUserId}
+          profiles={profiles}
+          campuses={campuses}
+          canManage={canManageUsers}
+          onInviteUser={onInviteUser}
+          onUpdateUser={onUpdateUser}
+          onDeactivateUser={onDeactivateUser}
+        />
       ) : null}
     </section>
+  )
+}
+
+type UserEditorState = {
+  fullName: string
+  email: string
+  role: Role
+  status: UserStatus
+  campusId: string
+  assignments: TeacherAssignmentScope[]
+}
+
+function UserManagementTable({
+  currentUserId,
+  profiles,
+  campuses,
+  canManage,
+  onInviteUser,
+  onUpdateUser,
+  onDeactivateUser,
+}: {
+  currentUserId: string
+  profiles: SchoolUser[]
+  campuses: CampusSettingsRecord[]
+  canManage: boolean
+  onInviteUser: (input: SchoolUserInput) => Promise<void>
+  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
+  onDeactivateUser: (targetUserId: string) => Promise<void>
+}) {
+  const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [editing, setEditing] = useState<SchoolUser | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [form, setForm] = useState<UserEditorState>({
+    fullName: '',
+    email: '',
+    role: 'teacher',
+    status: 'Active',
+    campusId: campuses[0]?.id ?? '',
+    assignments: [],
+  })
+  const [assignmentDraft, setAssignmentDraft] = useState({ campusId: campuses[0]?.id ?? '', className: '', section: '' })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const filteredProfiles = useMemo(() => profiles.filter((profile) => {
+    const searchable = `${profile.name} ${profile.email}`.toLowerCase()
+    return searchable.includes(query.trim().toLowerCase())
+      && (!roleFilter || profile.role === roleFilter)
+      && (!statusFilter || profile.status === statusFilter)
+  }), [profiles, query, roleFilter, statusFilter])
+
+  const openAdd = () => {
+    setEditing(null)
+    setCreating(true)
+    setError('')
+    setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
+  }
+
+  const openEdit = (profile: SchoolUser) => {
+    setEditing(profile)
+    setCreating(false)
+    setError('')
+    setForm({
+      fullName: profile.name,
+      email: profile.email,
+      role: profile.role,
+      status: profile.status,
+      campusId: profile.campusId ?? '',
+      assignments: (profile.assignmentScopes ?? []).map((scope) => ({
+        campus_id: scope.campusId,
+        class_name: scope.className,
+        section: scope.section,
+      })),
+    })
+  }
+
+  const addAssignment = () => {
+    const next = {
+      campus_id: assignmentDraft.campusId,
+      class_name: assignmentDraft.className.trim(),
+      section: assignmentDraft.section.trim(),
+    }
+    if (!next.campus_id || !next.class_name || !next.section) {
+      setError('Select a campus and enter a class and section before adding the assignment.')
+      return
+    }
+    if (form.assignments.some((scope) => scope.campus_id === next.campus_id && scope.class_name === next.class_name && scope.section === next.section)) {
+      setError('That teacher assignment has already been added.')
+      return
+    }
+    setError('')
+    setForm((current) => ({ ...current, assignments: [...current.assignments, next] }))
+    setAssignmentDraft((current) => ({ ...current, className: '', section: '' }))
+  }
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    if (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0) {
+      setError('Add at least one campus, class, and section before activating a teacher.')
+      return
+    }
+    setSaving(true)
+    const input: SchoolUserInput = {
+      fullName: form.fullName.trim(),
+      ...(creating ? { email: form.email.trim().toLowerCase() } : {}),
+      role: form.role,
+      status: form.status,
+      campusId: form.campusId || null,
+      assignments: form.role === 'teacher' ? form.assignments : [],
+    }
+    try {
+      if (creating) await onInviteUser(input)
+      else if (editing?.authUserId) await onUpdateUser(editing.authUserId, input)
+      else throw new Error('This profile is missing its authenticated user ID and cannot be edited.')
+      setCreating(false)
+      setEditing(null)
+      setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to save user changes.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deactivate = async (profile: SchoolUser) => {
+    if (!profile.authUserId || profile.authUserId === currentUserId) return
+    if (!window.confirm('Deactivate this user? They will lose access, and their historical records will be retained.')) return
+    setError('')
+    setSaving(true)
+    try {
+      await onDeactivateUser(profile.authUserId)
+    } catch (deactivateError) {
+      setError(deactivateError instanceof Error ? deactivateError.message : 'Unable to deactivate this user.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!canManage) {
+    return (
+      <div className="table-card user-directory-table">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Campus</th><th>Status</th></tr></thead>
+          <tbody>{filteredProfiles.map((profile) => (
+            <tr key={profile.authUserId ?? profile.email}>
+              <td>{profile.name}</td><td>{profile.email}</td><td>{roleLabels[profile.role]}</td><td>{profile.campus}</td>
+              <td><span className={`status-pill ${profile.status === 'Active' ? 'success' : 'muted'}`}>{profile.status}</span></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    )
+  }
+
+  return (
+    <div className="user-management">
+      <>
+        <div className="user-directory-toolbar">
+          <label className="user-directory-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name or email" aria-label="Search users" /></label>
+          <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} aria-label="Filter users by role">
+            <option value="">All roles</option><option value="admin">Admin</option><option value="principal">Principal</option><option value="finance">Finance</option><option value="teacher">Teacher</option>
+          </select>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter users by status">
+            <option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option>
+          </select>
+          <span className="user-count">{filteredProfiles.length} of {profiles.length} users</span>
+          <button type="button" className="primary-button small-button" onClick={openAdd}>+ Add User</button>
+        </div>
+        {filteredProfiles.length ? (
+          <>
+          <div className="table-card user-directory-table">
+            <table>
+              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Campus</th><th>Actions</th></tr></thead>
+              <tbody>{filteredProfiles.map((profile) => {
+                const isSelf = profile.authUserId === currentUserId
+                return (
+                  <tr key={profile.authUserId ?? profile.email}>
+                    <td>{profile.name}{isSelf ? <small className="current-user-label">You</small> : null}</td>
+                    <td>{profile.email}</td>
+                    <td>{roleLabels[profile.role]}</td>
+                    <td><span className={`status-pill ${profile.status === 'Active' ? 'success' : 'muted'}`}>{profile.status}</span></td>
+                    <td>{profile.campus}</td>
+                    <td><div className="user-row-actions">
+                      <button type="button" className="secondary-button compact-button" disabled={!profile.authUserId || saving} onClick={() => openEdit(profile)}>Edit</button>
+                      <button type="button" className="user-deactivate-button" disabled={isSelf || profile.status === 'Inactive' || saving || !profile.authUserId} onClick={() => void deactivate(profile)}>Deactivate</button>
+                    </div></td>
+                  </tr>
+                )
+              })}</tbody>
+            </table>
+          </div>
+          </>
+        ) : <div className="empty-state-card">{profiles.length ? 'No users match these filters.' : 'No profiles are visible in your authorized scope.'}</div>}
+      </>
+
+      {error && !creating && !editing ? <p className="communication-feedback error" role="alert">{error}</p> : null}
+      {creating || editing ? (
+        <div className="user-modal-backdrop" role="presentation">
+          <section className="user-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+            <div className="user-modal-heading">
+              <div><p className="eyebrow">Access management</p><h2 id="user-modal-title">{creating ? 'Add User' : 'Edit User'}</h2></div>
+              <button type="button" className="icon-button" aria-label="Close user form" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>×</button>
+            </div>
+            <form className="user-editor-form" onSubmit={(event) => void submit(event)}>
+              <label>Full name<input required maxLength={160} disabled={saving} value={form.fullName} onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))} /></label>
+              <label>Email<input required type="email" maxLength={254} disabled={saving || !creating} value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label>Role<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as Role, assignments: event.target.value === 'teacher' ? current.assignments : [] }))}>
+                <option value="admin">Admin</option><option value="principal">Principal</option><option value="finance">Finance</option><option value="teacher">Teacher</option>
+              </select></label>
+              <label>Status<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value as UserStatus }))}>
+                <option value="Active">Active</option><option value="Inactive">Inactive</option>
+              </select></label>
+              <label>Campus<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.campusId} onChange={(event) => setForm((current) => ({ ...current, campusId: event.target.value }))}>
+                <option value="">No campus assigned</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
+              </select></label>
+              {form.role === 'teacher' ? (
+                <div className="teacher-scope-editor">
+                  <h3>Teacher class assignments</h3>
+                  <p>Active teachers must have at least one campus, class, and section assigned.</p>
+                  {form.assignments.map((scope, index) => (
+                    <div className="teacher-scope-row" key={`${scope.campus_id}-${scope.class_name}-${scope.section}-${index}`}>
+                      <span>{campuses.find((campus) => campus.id === scope.campus_id)?.name ?? 'Campus'} · {scope.class_name} · {scope.section}</span>
+                      <button type="button" className="user-deactivate-button" disabled={saving || (!creating && editing?.authUserId === currentUserId)} onClick={() => setForm((current) => ({ ...current, assignments: current.assignments.filter((_, rowIndex) => rowIndex !== index) }))}>Remove</button>
+                    </div>
+                  ))}
+                  <div className="teacher-scope-inputs">
+                    <select aria-label="Assignment campus" disabled={saving || (!creating && editing?.authUserId === currentUserId) || campuses.length === 0} value={assignmentDraft.campusId} onChange={(event) => setAssignmentDraft((current) => ({ ...current, campusId: event.target.value }))}>
+                      <option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
+                    </select>
+                    <input aria-label="Assignment class" placeholder="Class" maxLength={100} disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={assignmentDraft.className} onChange={(event) => setAssignmentDraft((current) => ({ ...current, className: event.target.value }))} />
+                    <input aria-label="Assignment section" placeholder="Section" maxLength={40} disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={assignmentDraft.section} onChange={(event) => setAssignmentDraft((current) => ({ ...current, section: event.target.value }))} />
+                    <button type="button" className="secondary-button compact-button" disabled={saving || (!creating && editing?.authUserId === currentUserId)} onClick={addAssignment}>Add scope</button>
+                  </div>
+                </div>
+              ) : null}
+              {error ? <p className="communication-feedback error" role="alert">{error}</p> : null}
+              {creating ? <p className="user-invite-note">The account is created through Supabase Auth and an invitation email is sent. The user sets their own password.</p> : null}
+              <div className="user-modal-actions">
+                <button type="button" className="secondary-button compact-button" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>Cancel</button>
+                <button type="submit" className="primary-button compact-button" disabled={saving || (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0)}>{saving ? 'Saving…' : creating ? 'Send invitation' : 'Save changes'}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+    </div>
   )
 }
 

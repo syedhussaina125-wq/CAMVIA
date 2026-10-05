@@ -1,5 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
-import type { Student } from '../studentData'
+import type { NewStudent, Student } from '../studentData'
 
 const client = supabase as any
 
@@ -52,6 +52,13 @@ export type TeacherAssignment = {
   class_name: string
   section: string
   active: boolean
+}
+
+export type StudentCampusOption = Pick<CampusRow, 'id' | 'name'>
+
+export type StudentCreationOptions = {
+  campuses: StudentCampusOption[]
+  teacherScopes: TeacherAssignment[]
 }
 
 function requireSupabase() {
@@ -189,4 +196,73 @@ export async function fetchTeacherAssignments(): Promise<TeacherAssignment[]> {
 
   if (error) throw error
   return (data ?? []) as TeacherAssignment[]
+}
+
+export async function fetchStudentCreationOptions(
+  role: 'admin' | 'teacher',
+  schoolId: string | null,
+  organizationId: string | null,
+  assignments: TeacherAssignment[],
+): Promise<StudentCreationOptions> {
+  if (!schoolId || !organizationId) {
+    throw new Error('Your account is not assigned to a school.')
+  }
+
+  const db = requireSupabase()
+  const { data, error } = await db
+    .from('campuses')
+    .select('id, name, status')
+    .eq('school_id', schoolId)
+    .eq('organization_id', organizationId)
+    .eq('status', 'ACTIVE')
+    .order('name')
+
+  if (error) throw error
+
+  const schoolCampuses = (data ?? []) as Array<CampusRow & { status: string }>
+  if (role === 'admin') {
+    return { campuses: schoolCampuses, teacherScopes: [] }
+  }
+
+  const teacherScopes = assignments.filter((assignment) => assignment.active && assignment.school_id === schoolId)
+  const allowedCampusIds = new Set(teacherScopes.map((assignment) => assignment.campus_id))
+  return {
+    campuses: schoolCampuses.filter((campus) => allowedCampusIds.has(campus.id)),
+    teacherScopes,
+  }
+}
+
+export async function createStudentRecord(
+  student: NewStudent,
+  campusId: string,
+): Promise<Student> {
+  const db = requireSupabase()
+  const guardianName = student.guardian.name.trim().split(/\s+/)
+  const hasGuardian = Boolean(student.guardian.name.trim() || student.guardian.phone.trim() || student.guardian.email.trim())
+  if (hasGuardian && !student.guardian.name.trim()) {
+    throw new Error('Enter the guardian name when adding guardian contact details.')
+  }
+  const { data, error } = await db.rpc('create_student', {
+    target_campus_id: campusId,
+    target_student_code: student.studentId.trim(),
+    target_first_name: student.firstName.trim(),
+    target_last_name: student.lastName.trim(),
+    target_class_name: student.className.trim(),
+    target_section: student.section.trim(),
+    target_roll_number: student.rollNumber.trim() || null,
+    target_date_of_birth: student.dateOfBirth || null,
+    target_gender: student.gender || null,
+    target_guardian_first_name: hasGuardian ? guardianName[0] : null,
+    target_guardian_last_name: hasGuardian ? guardianName.slice(1).join(' ') || guardianName[0] : null,
+    target_guardian_phone: student.guardian.phone.trim() || null,
+    target_guardian_email: student.guardian.email.trim() || null,
+    target_guardian_relationship: student.guardian.relationship?.trim() || null,
+  })
+
+  if (error) throw error
+  if (typeof data !== 'string') throw new Error('Student creation did not return a valid student ID.')
+
+  const created = await fetchStudentById(data)
+  if (!created) throw new Error('Student was created, but could not be loaded in your authorized scope.')
+  return created
 }

@@ -600,6 +600,54 @@ export type Database = {
         Args: { target_message_id: string; target_operation: 'submit' | 'approve' | 'reject' | 'send'; target_rejection_reason?: string }
         Returns: undefined
       }
+      get_current_admin_scope: {
+        Args: Record<PropertyKey, never>
+        Returns: Array<{
+          actor_id: string
+          organization_id: string
+          school_id: string
+        }>
+      }
+      update_school_user: {
+        Args: {
+          target_user_id: string
+          target_full_name: string
+          target_role: RoleName
+          target_status: ProfileStatus
+          target_campus_id: string | null
+          target_assignment_scopes?: Array<{
+            campus_id: string
+            class_name: string
+            section: string
+          }>
+        }
+        Returns: {
+          id: string
+          full_name: string
+          role: RoleName
+          status: ProfileStatus
+          campus_id: string | null
+        }
+      }
+      create_student: {
+        Args: {
+          target_campus_id: string
+          target_student_code: string
+          target_first_name: string
+          target_last_name: string
+          target_class_name: string
+          target_section: string
+          target_roll_number?: string | null
+          target_date_of_birth?: string | null
+          target_gender?: string | null
+          target_guardian_first_name?: string | null
+          target_guardian_last_name?: string | null
+          target_guardian_phone?: string | null
+          target_guardian_email?: string | null
+          target_guardian_relationship?: string | null
+        }
+        Returns: string
+      }
     }
   }
 }

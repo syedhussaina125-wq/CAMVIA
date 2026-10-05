@@ -17,6 +17,14 @@ type CampusRow = {
   name: string
 }
 
+type AssignmentRow = {
+  user_id: string
+  campus_id: string
+  class_name: string
+  section: string
+  active: boolean
+}
+
 function numericId(uuid: string): number {
   return uuid.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
 }
@@ -47,17 +55,37 @@ export async function fetchProfiles(): Promise<SchoolUser[]> {
     ? await client.from('campuses').select('id, name').in('id', campusIds)
     : { data: [], error: null }
   if (campusResult.error) throw campusResult.error
+  const assignmentsResult = profiles.length
+    ? await client.from('teacher_class_assignments')
+      .select('user_id, campus_id, class_name, section, active')
+      .in('user_id', profiles.map((profile) => profile.id))
+    : { data: [], error: null }
+  if (assignmentsResult.error) throw assignmentsResult.error
   const campusNames = new Map<string, string>(
     ((campusResult.data ?? []) as CampusRow[]).map((campus) => [campus.id, campus.name]),
   )
+  const assignmentScopes = new Map<string, AssignmentRow[]>()
+  for (const assignment of (assignmentsResult.data ?? []) as AssignmentRow[]) {
+    const current = assignmentScopes.get(assignment.user_id) ?? []
+    current.push(assignment)
+    assignmentScopes.set(assignment.user_id, current)
+  }
 
   return profiles.map((profile) => ({
     id: numericId(profile.id),
+    authUserId: profile.id,
     name: profile.full_name,
     email: profile.email,
     role: mapRole(profile.role),
     campus: profile.campus_id ? campusNames.get(profile.campus_id) ?? 'Campus unavailable' : 'No campus assigned',
+    campusId: profile.campus_id,
     status: profile.status.toUpperCase() === 'ACTIVE' ? 'Active' : 'Inactive',
     lastLogin: '—',
+    assignmentScopes: (assignmentScopes.get(profile.id) ?? []).map((assignment) => ({
+      campusId: assignment.campus_id,
+      className: assignment.class_name,
+      section: assignment.section,
+      active: assignment.active,
+    })),
   }))
 }
