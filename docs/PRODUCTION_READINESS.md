@@ -1,6 +1,6 @@
-# EduPulse Production Readiness
+# CAMVIA Production Readiness
 
-This checklist describes the production deployment and verification requirements for the live EduPulse application. It does not change Supabase project settings automatically.
+This checklist describes the production deployment and verification requirements for the live CAMVIA application. It does not change Supabase project settings automatically.
 
 ## Completed application phases
 
@@ -86,7 +86,7 @@ The application does not use local storage for business records or integration c
 - `sb-<project-ref>-auth-token` — managed by Supabase JS to persist the signed-in Auth session. This is a session credential, not an integration secret. Keep the app protected against XSS, do not log it, and use a server-managed secure-cookie architecture if production policy prohibits browser-persisted access/refresh tokens.
 - `walkthroughCompletedByRole` — non-sensitive onboarding-completion preference.
 
-Legacy EduPulse settings and user cache keys must stay absent and must not be recreated.
+Legacy `edupulse_*` settings and user cache keys must stay absent and must not be recreated.
 
 ## Backup, rollback, and post-deploy
 
@@ -102,4 +102,4 @@ The latest build emitted a Vite advisory for the 581.81 kB initial JavaScript ch
 
 **Phase 17 status:** complete. Migration `018_harden_guardian_school_scope.sql` was applied and verified; School A accounts returned zero School B `student_guardians` rows. The authenticated full-reload `/students` 503 flow now shows an explicit error and retry, and retry restores live data for Admin, Principal, Finance, and Teacher A. The source uses a single Supabase client; development HMR reuses it.
 
-Phase completion and production release are separate gates. Before production launch, complete the target-project migration-ledger and backup checks, configure Vercel's production environment and Supabase Auth URLs, then run the deployed-domain smoke tests in [DEPLOYMENT.md](./DEPLOYMENT.md). The Vercel account currently has no EduPulse project, and the Supabase CLI is not linked to the target project; do not deploy or apply SQL until the intended Vercel project and production settings are confirmed.
+Phase completion and production release are separate gates. Before production launch, complete the target-project migration-ledger and backup checks, configure Vercel's production environment and Supabase Auth URLs, then run the deployed-domain smoke tests in [DEPLOYMENT.md](./DEPLOYMENT.md). The Vercel account currently has no CAMVIA project, and the Supabase CLI is not linked to the target project; do not deploy or apply SQL until the intended Vercel project and production settings are confirmed.

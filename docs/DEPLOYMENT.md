@@ -1,4 +1,4 @@
-# EduPulse V1 Deployment
+# CAMVIA Deployment
 
 This guide deploys the existing Vite application to Vercel and connects it to
 the configured Supabase project. It does not apply migrations or create
@@ -6,7 +6,7 @@ integration credentials.
 
 ## Prerequisites
 
-- Access to the Vercel team that will own the EduPulse project.
+- Access to the Vercel team that owns the CAMVIA project.
 - Access to the intended Supabase project and its Auth settings.
 - Confirmed, restorable Supabase backup and a reviewed migration history.
 - Production values for the public Supabase URL and anon/publishable key.
@@ -19,7 +19,7 @@ password variables are local-only and must not be added to Vercel.
 
 ## Vercel project settings
 
-Create or select the EduPulse Vercel project with:
+Create or select the CAMVIA Vercel project with:
 
 | Setting | Value |
 | --- | --- |
@@ -78,7 +78,7 @@ In Supabase Auth settings, before go-live:
 3. Keep public sign-up disabled and verify the production email/password
    provider settings.
 
-EduPulse currently uses password login without a redirect-based callback.
+CAMVIA currently uses password login without a redirect-based callback.
 Public signup is disabled in the application. New school accounts use the
 Supabase Auth invitation flow and set their own password; delivery depends on
 the target project's configured Auth email provider. The Site URL and redirect
@@ -151,7 +151,7 @@ restore plan; do not edit or replay applied migration files.
 
 ## Domains
 
-Use the Vercel-generated domain for the initial deployment. No custom EduPulse
+Use the Vercel-generated domain for the initial deployment. No custom CAMVIA
 domain is configured in source or Vercel project settings currently. A custom
 domain can later be connected from **Vercel Project → Settings → Domains**;
 after DNS is verified, add that HTTPS origin to Supabase Auth's Site URL or

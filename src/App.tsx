@@ -182,20 +182,20 @@ const walkthroughStepsByRole: Record<Role, Array<{ title: string; text: string }
     { title: 'Students', text: 'Students gives you quick access to every Student 360 record in your school.' },
     { title: 'Attendance', text: 'Attendance lets you review daily class status and follow up on risks.' },
     { title: 'Alerts', text: 'Alerts highlights the items that need follow-up today.' },
-    { title: 'Ask EduPulse', text: 'Ask EduPulse lets you ask questions about your authorized school data.' },
+    { title: 'Ask CAMVIA', text: 'Ask CAMVIA lets you ask questions about your authorized school data.' },
   ],
   principal: [
     { title: 'School overview', text: 'This is your dashboard. See trends and attention areas at a glance.' },
     { title: 'Students', text: 'Use Student 360 to review student-level detail and context quickly.' },
     { title: 'Attendance', text: 'Attendance helps you monitor class health and follow-up priorities.' },
     { title: 'Alerts', text: 'Alerts surfaces the issues that need your review and action.' },
-    { title: 'Ask EduPulse', text: 'Ask EduPulse gives you fast, role-aware answers from the school data you can access.' },
+    { title: 'Ask CAMVIA', text: 'Ask CAMVIA gives you fast, role-aware answers from the school data you can access.' },
   ],
   finance: [
     { title: 'Finance dashboard', text: 'This dashboard brings fee collections, balances, and overdue attention into one place.' },
     { title: 'Fees & Collections', text: 'Fees & Collections shows outstanding and overdue balances across the school.' },
     { title: 'Parent Communication', text: 'Use Parent Communication to prepare reminders and follow-ups.' },
-    { title: 'Ask EduPulse', text: 'Ask EduPulse helps you answer fee and collection questions using your authorized data.' },
+    { title: 'Ask CAMVIA', text: 'Ask CAMVIA helps you answer fee and collection questions using your authorized data.' },
   ],
   teacher: [
     { title: 'Your dashboard', text: 'This is your teacher dashboard. Focus on your classes and student needs.' },
@@ -223,7 +223,7 @@ const routeTitles: Record<string, string> = {
   '/alerts': 'Alerts',
   '/approvals': 'Approval Center',
   '/communication': 'Parent Communication',
-  '/ask-edu': 'Ask EduPulse',
+  '/ask-edu': 'Ask CAMVIA',
   '/administration': 'Administration',
   '/reports': 'Reports',
   '/users': 'Users',
@@ -239,7 +239,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Alerts', path: '/alerts', icon: BellRing },
     { label: 'Approval Center', path: '/approvals', icon: ShieldCheck },
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
-    { label: 'Ask EduPulse', path: '/ask-edu', icon: Sparkles },
+    { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
     { label: 'Administration', path: '/administration', icon: UserCog },
   ],
   principal: [
@@ -250,7 +250,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Alerts', path: '/alerts', icon: BellRing },
     { label: 'Approval Center', path: '/approvals', icon: ShieldCheck },
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
-    { label: 'Ask EduPulse', path: '/ask-edu', icon: Sparkles },
+    { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
     { label: 'Reports', path: '/reports', icon: Gauge },
     { label: 'Administration', path: '/administration', icon: UserCog },
   ],
@@ -260,7 +260,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Fees & Collections', path: '/fees', icon: Wallet },
     { label: 'Alerts', path: '/alerts', icon: BellRing },
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
-    { label: 'Ask EduPulse', path: '/ask-edu', icon: Sparkles },
+    { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
   ],
   teacher: [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: LayoutDashboard },
@@ -728,7 +728,7 @@ function App() {
         const profile = await getActiveProfile(userId)
         if (!alive || resolutionId !== authResolutionId.current) return
         if (!profile) {
-          setAuthError('This account is not configured for EduPulse access.')
+          setAuthError('This account is not configured for CAMVIA access.')
           setAuthLoading(false)
           setStudentsLoading(false)
           setAttendanceLoading(false)
@@ -1286,8 +1286,8 @@ function LoginPage({ onLogin, loading, authError }: {
     <div className="login-page">
       <div className="login-panel">
         <div className="login-brand-panel">
-          <div className="brand-mark">E</div>
-          <h1>EduPulse AI</h1>
+          <div className="brand-mark">C</div>
+          <h1>CAMVIA</h1>
           <p className="subtitle">School Management Intelligence</p>
           <div className="brand-copy">
             <span>See.</span>
@@ -1370,12 +1370,6 @@ function AppShell({
   const location = useLocation()
   const navigate = useNavigate()
   const [profileOpen, setProfileOpen] = useState(false)
-
-  if (!user) {
-    return null
-  }
-
-  const nav = navByRole[user.role]
   const pageTitle = location.pathname.startsWith('/students/')
     ? 'Student 360'
     : location.pathname.startsWith('/attendance/take/')
@@ -1383,6 +1377,15 @@ function AppShell({
       : location.pathname.startsWith('/fees/')
         ? 'Fees & Collections'
       : routeTitles[location.pathname] ?? 'Dashboard'
+  useEffect(() => {
+    if (user) document.title = `${pageTitle} | CAMVIA`
+  }, [pageTitle, user])
+
+  if (!user) {
+    return null
+  }
+
+  const nav = navByRole[user.role]
   const initials = user.name
     .split(' ')
     .map((namePart) => namePart[0])
@@ -1394,9 +1397,9 @@ function AppShell({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-badge">E</div>
+          <div className="brand-badge">C</div>
           <div>
-            <strong>EduPulse AI</strong>
+            <strong>CAMVIA</strong>
             <span>School intelligence</span>
           </div>
         </div>
@@ -2365,7 +2368,7 @@ function AskEduPage({
       <div className="panel-header flex-header">
         <div>
           <p className="eyebrow">School intelligence</p>
-          <h1>Ask EduPulse</h1>
+          <h1>Ask CAMVIA</h1>
         </div>
         <div className="status-pill">Live school brief</div>
       </div>

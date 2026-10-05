@@ -117,7 +117,7 @@ export async function signInWithEmail(email: string, password: string): Promise<
 
   if (!profile) {
     await supabaseClient.auth.signOut()
-    return { success: false, error: 'This account is not configured for EduPulse access.' }
+    return { success: false, error: 'This account is not configured for CAMVIA access.' }
   }
 
   if (profile.status === 'INACTIVE') {
