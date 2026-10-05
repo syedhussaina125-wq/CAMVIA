@@ -7,6 +7,8 @@ import {
   Lightbulb,
   LockKeyhole,
   Mail,
+  Moon,
+  Sun,
   Banknote,
   Bell,
   BellRing,
@@ -1267,6 +1269,23 @@ function LoginPage({ onLogin, loading, authError }: {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [passwordResetNotice, setPasswordResetNotice] = useState('')
+  const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+
+  const toggleLoginTheme = () => {
+    const nextTheme = loginTheme === 'light' ? 'dark' : 'light'
+    setLoginTheme(nextTheme)
+    try {
+      window.localStorage.setItem('camvia_login_theme', nextTheme)
+    } catch {
+      // Theme switching still works when browser storage is unavailable.
+    }
+  }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -1290,7 +1309,7 @@ function LoginPage({ onLogin, loading, authError }: {
   }
 
   return (
-    <div className="login-page">
+    <div className="login-page" data-theme={loginTheme}>
       <div className="login-panel">
         <div className="login-brand-panel">
           <div className="login-logo" role="img" aria-label="CAMVIA — Smarter Schools. Brighter Futures." />
@@ -1306,6 +1325,15 @@ function LoginPage({ onLogin, loading, authError }: {
         </div>
 
         <div className="login-form-panel">
+          <button
+            type="button"
+            className="login-theme-toggle"
+            onClick={toggleLoginTheme}
+            aria-label={`Switch to ${loginTheme === 'light' ? 'dark' : 'light'} mode`}
+          >
+            {loginTheme === 'light' ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
+            {loginTheme === 'light' ? 'Dark mode' : 'Light mode'}
+          </button>
           <div className="login-header">
             <p className="eyebrow">Secure login</p>
             <h2>Welcome back</h2>
