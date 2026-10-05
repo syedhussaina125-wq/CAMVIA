@@ -69,14 +69,14 @@
   box-shadow: -50px 185px 0 -96px #96e7f54a;
 }
 
-/* Reuse the supplied artwork at its original proportions for the logo and campus. */
+/* Keep the supplied logo at its original proportions. */
 .login-page .login-logo {
   position: relative;
   width: min(450px, 100%);
   aspect-ratio: 450 / 140;
   flex-shrink: 0;
-  background: url('./assets/login-reference.png') 24.14% 17.48% / 371.56% 672.14% no-repeat;
-  mix-blend-mode: multiply;
+  background: url('./assets/camvia-light-logo.png') center / cover no-repeat;
+  mix-blend-mode: normal;
   margin-bottom: 26px;
 }
 
