@@ -26,6 +26,13 @@ type ActionBody = {
   assignments?: unknown
 }
 
+function normalizeEmail(value: unknown): string | null {
+  const trimmed = cleanText(value, 254)
+  if (!trimmed) return null
+  const normalized = trimmed.toLowerCase()
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : null
+}
+
 function response(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
     status,
@@ -105,6 +112,7 @@ Deno.serve(async (request: Request) => {
   }
 
   let fullName = cleanText(body.fullName, 160)
+  let email = normalizeEmail(body.email)
   let role = typeof body.role === 'string' ? body.role.trim().toUpperCase() : ''
   let status = typeof body.status === 'string' ? body.status.trim().toUpperCase() : ''
   let campusId = body.campusId === null || body.campusId === '' ? null : cleanText(body.campusId, 64)
@@ -166,9 +174,23 @@ Deno.serve(async (request: Request) => {
   }
 
   if (action === 'invite') {
-    const email = cleanText(body.email, 254)?.toLowerCase()
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!email) {
       return response(400, { error: 'Enter a valid email address.' })
+    }
+
+    const { data: existingProfile, error: duplicateLookupError } = await service
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .limit(1)
+      .maybeSingle()
+
+    if (duplicateLookupError) {
+      console.error('Duplicate email lookup failed during invite:', duplicateLookupError.message)
+      return response(500, { error: 'The email could not be verified before sending an invitation.' })
+    }
+    if (existingProfile) {
+      return response(409, { error: 'This email is already in use.' })
     }
 
     const { data: invitation, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, {
@@ -204,6 +226,7 @@ Deno.serve(async (request: Request) => {
 
     const { error: provisioningError } = await caller.rpc('update_school_user', {
       target_user_id: invitation.user.id,
+      target_email: email,
       target_full_name: fullName,
       target_role: role,
       target_status: status,
@@ -243,8 +266,57 @@ Deno.serve(async (request: Request) => {
     })
   }
 
+  if (!email) {
+    return response(400, { error: 'Enter a valid email address.' })
+  }
+
+  const { data: existingTarget, error: targetLoadError } = await service
+    .from('profiles')
+    .select('id, email')
+    .eq('id', targetUserId)
+    .eq('organization_id', scope.organization_id)
+    .eq('school_id', scope.school_id)
+    .maybeSingle()
+
+  if (targetLoadError || !existingTarget) {
+    return response(404, { error: 'The selected user was not found in your school.' })
+  }
+
+  if (existingTarget.email.toLowerCase() !== email) {
+    const { data: duplicateProfile, error: duplicateProfileError } = await service
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .neq('id', targetUserId)
+      .limit(1)
+      .maybeSingle()
+
+    if (duplicateProfileError) {
+      console.error('Duplicate email lookup failed during profile update:', duplicateProfileError.message)
+      return response(500, { error: 'The new email could not be verified.' })
+    }
+    if (duplicateProfile) {
+      return response(409, { error: 'This email is already in use.' })
+    }
+
+    const { error: authEmailError } = await service.auth.admin.updateUserById(targetUserId, {
+      email,
+      email_confirm: true,
+    })
+
+    if (authEmailError) {
+      const message = authEmailError.message.toLowerCase()
+      if (message.includes('already') || message.includes('duplicate') || message.includes('in use')) {
+        return response(409, { error: 'This email is already in use.' })
+      }
+      console.error('Supabase Auth rejected the email update:', authEmailError.message)
+      return response(400, { error: 'The email could not be updated in Supabase Auth.' })
+    }
+  }
+
   const { data: updatedUser, error: updateError } = await caller.rpc('update_school_user', {
     target_user_id: targetUserId,
+    target_email: email,
     target_full_name: fullName,
     target_role: role,
     target_status: status,
@@ -261,6 +333,7 @@ Deno.serve(async (request: Request) => {
     user: {
       id: updatedUser.id,
       full_name: updatedUser.full_name,
+      email: updatedUser.email ?? email,
       role: updatedUser.role,
       status: updatedUser.status,
       campus_id: updatedUser.campus_id,

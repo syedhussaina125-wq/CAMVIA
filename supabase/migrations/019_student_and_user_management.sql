@@ -80,6 +80,7 @@ $function$;
 
 create or replace function public.update_school_user(
   target_user_id uuid,
+  target_email text,
   target_full_name text,
   target_role text,
   target_status text,
@@ -101,6 +102,7 @@ declare
   assignment_campus_id uuid;
   assignment_class_name text;
   assignment_section text;
+  normalized_email text;
   normalized_full_name text;
   normalized_role text;
   normalized_status text;
@@ -119,9 +121,15 @@ begin
       using errcode = '42501';
   end if;
 
+  normalized_email := lower(nullif(btrim(target_email), ''));
   normalized_full_name := nullif(btrim(target_full_name), '');
   normalized_role := upper(btrim(target_role));
   normalized_status := upper(btrim(target_status));
+
+  if normalized_email is null or normalized_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then
+    raise exception 'Enter a valid email address.'
+      using errcode = '22023';
+  end if;
 
   if normalized_full_name is null or length(normalized_full_name) > 160 then
     raise exception 'Enter a valid full name.'
@@ -156,6 +164,17 @@ begin
   if not found then
     raise exception 'The selected user is outside your school.'
       using errcode = '42501';
+  end if;
+
+  if exists (
+    select 1
+    from public.profiles as profile
+    where lower(profile.email) = normalized_email
+      and profile.id <> target.id
+      and profile.organization_id = actor.organization_id
+  ) then
+    raise exception 'This email is already in use.'
+      using errcode = '23505';
   end if;
 
   if target.id = actor.id
@@ -242,7 +261,8 @@ begin
   end if;
 
   update public.profiles
-  set full_name = normalized_full_name,
+  set email = normalized_email,
+      full_name = normalized_full_name,
       role = normalized_role,
       status = normalized_status,
       campus_id = target_campus_id
@@ -298,7 +318,8 @@ begin
   if target.status = 'ACTIVE' and normalized_status = 'INACTIVE' then
     insert into public.user_management_audit (actor_id, target_id, event_type, details)
     values (actor.id, target.id, 'USER_DEACTIVATED', '{}'::jsonb);
-  elsif target.full_name <> normalized_full_name
+  elsif target.email <> normalized_email
+    or target.full_name <> normalized_full_name
     or target.status <> normalized_status
     or target.campus_id is distinct from target_campus_id
     or target.role <> normalized_role
@@ -309,12 +330,19 @@ begin
       actor.id,
       target.id,
       'USER_UPDATED',
-      jsonb_build_object('role', normalized_role, 'status', normalized_status, 'campus_id', target_campus_id)
+      jsonb_build_object(
+        'email', normalized_email,
+        'role', normalized_role,
+        'status', normalized_status,
+        'campus_id', target_campus_id,
+        'full_name', normalized_full_name
+      )
     );
   end if;
 
   return jsonb_build_object(
     'id', target.id,
+    'email', normalized_email,
     'full_name', normalized_full_name,
     'role', normalized_role,
     'status', normalized_status,
@@ -323,8 +351,8 @@ begin
 end;
 $function$;
 
-revoke all on function public.update_school_user(uuid, text, text, text, uuid, jsonb) from public, anon;
-grant execute on function public.update_school_user(uuid, text, text, text, uuid, jsonb) to authenticated;
+revoke all on function public.update_school_user(uuid, text, text, text, text, uuid, jsonb) from public, anon;
+grant execute on function public.update_school_user(uuid, text, text, text, text, uuid, jsonb) to authenticated;
 
 create or replace function public.create_student(
   target_campus_id uuid,

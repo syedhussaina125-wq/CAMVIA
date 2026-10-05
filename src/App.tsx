@@ -2864,17 +2864,47 @@ function UserManagementTable({
     setAssignmentDraft((current) => ({ ...current, className: '', section: '' }))
   }
 
+  const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())
+  const assignmentScopeKey = (scope: TeacherAssignmentScope) => `${scope.campus_id}|${scope.class_name.trim()}|${scope.section.trim()}`
+  const originalAssignmentScopeKeys = editing ? (editing.assignmentScopes ?? []).map((scope) => assignmentScopeKey({ campus_id: scope.campusId, class_name: scope.className, section: scope.section })) : []
+  const currentAssignmentScopeKeys = form.assignments.map((scope) => assignmentScopeKey(scope))
+  const hasUserChanges = creating || !editing || (
+    form.fullName.trim() !== editing.name.trim()
+    || form.email.trim().toLowerCase() !== editing.email.trim().toLowerCase()
+    || form.role !== editing.role
+    || form.status !== editing.status
+    || (form.campusId ?? '') !== (editing.campusId ?? '')
+    || currentAssignmentScopeKeys.length !== originalAssignmentScopeKeys.length
+    || currentAssignmentScopeKeys.some((scopeKey) => !originalAssignmentScopeKeys.includes(scopeKey))
+  )
+  const saveDisabled = saving || !form.fullName.trim() || !emailIsValid || (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0) || (!creating && editing !== null && !hasUserChanges)
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError('')
+    const trimmedFullName = form.fullName.trim()
+    const trimmedEmail = form.email.trim()
+
+    if (!trimmedFullName) {
+      setError('Full name is required.')
+      return
+    }
+    if (!trimmedEmail || !emailIsValid) {
+      setError('Enter a valid email address.')
+      return
+    }
     if (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0) {
       setError('Add at least one campus, class, and section before activating a teacher.')
       return
     }
+    if (!creating && editing && !hasUserChanges) {
+      setError('No changes were made. Nothing to save.')
+      return
+    }
     setSaving(true)
     const input: SchoolUserInput = {
-      fullName: form.fullName.trim(),
-      ...(creating ? { email: form.email.trim().toLowerCase() } : {}),
+      fullName: trimmedFullName,
+      email: trimmedEmail,
       role: form.role,
       status: form.status,
       campusId: form.campusId || null,
@@ -2975,7 +3005,7 @@ function UserManagementTable({
             </div>
             <form className="user-editor-form" onSubmit={(event) => void submit(event)}>
               <label>Full name<input required maxLength={160} disabled={saving} value={form.fullName} onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))} /></label>
-              <label>Email<input required type="email" maxLength={254} disabled={saving || !creating} value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label>Email<input required type="email" maxLength={254} disabled={saving} value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
               <label>Role<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as Role, assignments: event.target.value === 'teacher' ? current.assignments : [] }))}>
                 <option value="admin">Admin</option><option value="principal">Principal</option><option value="finance">Finance</option><option value="teacher">Teacher</option>
               </select></label>
@@ -3009,7 +3039,7 @@ function UserManagementTable({
               {creating ? <p className="user-invite-note">The account is created through Supabase Auth and an invitation email is sent. The user sets their own password.</p> : null}
               <div className="user-modal-actions">
                 <button type="button" className="secondary-button compact-button" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>Cancel</button>
-                <button type="submit" className="primary-button compact-button" disabled={saving || (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0)}>{saving ? 'Saving…' : creating ? 'Send invitation' : 'Save changes'}</button>
+                <button type="submit" className="primary-button compact-button" disabled={saveDisabled}>{saving ? 'Saving…' : creating ? 'Send invitation' : 'Save changes'}</button>
               </div>
             </form>
           </section>

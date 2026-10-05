@@ -611,6 +611,7 @@ export type Database = {
       update_school_user: {
         Args: {
           target_user_id: string
+          target_email: string
           target_full_name: string
           target_role: RoleName
           target_status: ProfileStatus
@@ -623,6 +624,7 @@ export type Database = {
         }
         Returns: {
           id: string
+          email: string
           full_name: string
           role: RoleName
           status: ProfileStatus

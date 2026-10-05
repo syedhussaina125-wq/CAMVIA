@@ -57,6 +57,7 @@ async function invokeUserManagement(
 function requestValues(input: SchoolUserInput) {
   return {
     fullName: input.fullName.trim(),
+    email: input.email?.trim().toLowerCase() ?? '',
     role: input.role.toUpperCase(),
     status: input.status.toUpperCase(),
     campusId: input.campusId,
@@ -68,7 +69,6 @@ export async function inviteSchoolUser(input: SchoolUserInput): Promise<void> {
   if (!input.email) throw new Error('An email address is required to invite a user.')
   const result = await invokeUserManagement({
     action: 'invite',
-    email: input.email.trim().toLowerCase(),
     ...requestValues(input),
   })
   if (!result.invitationSent) {
