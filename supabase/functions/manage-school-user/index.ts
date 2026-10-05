@@ -127,12 +127,13 @@ Deno.serve(async (request: Request) => {
   if (action === 'deactivate') {
     const { data: target, error: targetError } = await service
       .from('profiles')
-      .select('id, full_name, role, campus_id')
+      .select('id, email, full_name, role, campus_id')
       .eq('id', targetUserId)
       .eq('organization_id', scope.organization_id)
       .eq('school_id', scope.school_id)
       .maybeSingle()
     if (targetError || !target) return response(404, { error: 'The selected user was not found in your school.' })
+    email = target.email
     fullName = target.full_name
     role = target.role
     status = 'INACTIVE'
@@ -250,6 +251,7 @@ Deno.serve(async (request: Request) => {
     if (auditError) {
       await caller.rpc('update_school_user', {
         target_user_id: invitation.user.id,
+        target_email: email,
         target_full_name: fullName,
         target_role: role,
         target_status: 'INACTIVE',
@@ -282,7 +284,8 @@ Deno.serve(async (request: Request) => {
     return response(404, { error: 'The selected user was not found in your school.' })
   }
 
-  if (existingTarget.email.toLowerCase() !== email) {
+  const authEmailChanged = existingTarget.email.toLowerCase() !== email
+  if (authEmailChanged) {
     const { data: duplicateProfile, error: duplicateProfileError } = await service
       .from('profiles')
       .select('id')
@@ -325,6 +328,16 @@ Deno.serve(async (request: Request) => {
   })
 
   if (updateError || !updatedUser) {
+    if (authEmailChanged) {
+      const { error: rollbackError } = await service.auth.admin.updateUserById(targetUserId, {
+        email: existingTarget.email,
+        email_confirm: true,
+      })
+      if (rollbackError) {
+        console.error('Unable to restore the Auth email after the profile update failed:', rollbackError.message)
+        return response(500, { error: 'The profile update failed and the Auth email could not be restored. Contact your system administrator.' })
+      }
+    }
     console.error('School user update was denied or failed:', updateError?.message ?? 'No user returned.')
     return response(400, { error: 'The user could not be updated. Check school scope, teacher assignments, and active administrator protections.' })
   }
