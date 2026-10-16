@@ -1,9 +1,55 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+function getCorsHeaders(request: Request): Record<string, string> {
+  const origin = request.headers.get('Origin') ?? ''
+  const allowedOriginEnv = Deno.env.get('ALLOWED_ORIGIN') ?? ''
+
+  const isAllowed =
+    (allowedOriginEnv && origin === allowedOriginEnv) ||
+    !origin ||
+    origin === 'https://camvia.elvaveo.com' ||
+    origin.startsWith('http://localhost:') ||
+    origin.startsWith('http://127.0.0.1:') ||
+    /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$/i.test(origin)
+
+  return {
+    'Access-Control-Allow-Origin': isAllowed ? (origin || '*') : (allowedOriginEnv || 'null'),
+    'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Vary': 'Origin',
+  }
+}
+
+function getSiteUrl(request: Request): string {
+  const origin = request.headers.get('Origin') ?? ''
+  const allowedOriginEnv = Deno.env.get('ALLOWED_ORIGIN') ?? ''
+  const siteUrlEnv = Deno.env.get('SITE_URL') ?? ''
+
+  if (origin && (
+    origin === 'https://camvia.elvaveo.com' ||
+    (allowedOriginEnv && origin === allowedOriginEnv) ||
+    origin.startsWith('http://localhost:') ||
+    origin.startsWith('http://127.0.0.1:') ||
+    /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$/i.test(origin)
+  )) {
+    return origin
+  }
+
+  return siteUrlEnv || allowedOriginEnv || 'https://camvia.elvaveo.com'
+}
+
+const userRateLimits = new Map<string, { count: number; resetAt: number }>()
+
+function checkAdminRateLimit(identifier: string): boolean {
+  const now = Date.now()
+  const record = userRateLimits.get(identifier) ?? { count: 0, resetAt: now + 60000 }
+  if (now > record.resetAt) {
+    record.count = 0
+    record.resetAt = now + 60000
+  }
+  record.count += 1
+  userRateLimits.set(identifier, record)
+  return record.count <= 30
 }
 
 const allowedRoles = new Set(['ADMIN', 'PRINCIPAL', 'FINANCE', 'TEACHER'])
@@ -33,10 +79,16 @@ function normalizeEmail(value: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : null
 }
 
-function response(status: number, body: Record<string, unknown>) {
+let activeCors: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
+function response(status: number, body: Record<string, unknown>, customCors?: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...(customCors ?? activeCors), 'Content-Type': 'application/json' },
   })
 }
 
@@ -62,8 +114,14 @@ function parseAssignments(value: unknown): AssignmentScope[] | null {
 }
 
 Deno.serve(async (request: Request) => {
-  if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  activeCors = getCorsHeaders(request)
+  if (request.method === 'OPTIONS') return new Response('ok', { headers: activeCors })
   if (request.method !== 'POST') return response(405, { error: 'Method not allowed.' })
+
+  const contentLength = Number(request.headers.get('content-length') ?? 0)
+  if (contentLength > 65536) {
+    return response(413, { error: 'Payload exceeds maximum limit of 64KB.' })
+  }
 
   const authorization = request.headers.get('Authorization')
   const accessToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
@@ -92,6 +150,10 @@ Deno.serve(async (request: Request) => {
   const scope = Array.isArray(scopeRows) ? scopeRows[0] : null
   if (scopeError || !scope?.actor_id || !scope.organization_id || !scope.school_id) {
     return response(403, { error: 'Only an active school administrator can manage users.' })
+  }
+
+  if (!checkAdminRateLimit(scope.actor_id)) {
+    return response(429, { error: 'Too many requests. Please wait a moment before trying again.' })
   }
 
   let body: ActionBody
@@ -194,8 +256,12 @@ Deno.serve(async (request: Request) => {
       return response(409, { error: 'This email is already in use.' })
     }
 
+    const siteUrl = getSiteUrl(request)
+    const redirectTo = `${siteUrl}/set-password`
+
     const { data: invitation, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, {
       data: { full_name: fullName },
+      redirectTo,
     })
     if (inviteError || !invitation.user) {
       if (invitation?.user?.id) {

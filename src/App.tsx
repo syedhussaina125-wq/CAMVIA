@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   ArrowRight,
   ChartNoAxesColumnIncreasing,
+  CheckCircle2,
   Eye,
+  KeyRound,
   Lightbulb,
   LockKeyhole,
   Mail,
@@ -17,6 +19,7 @@ import {
   Building2,
   CalendarDays,
   ChevronDown,
+  ChevronRight,
   CircleDollarSign,
   ClipboardCheck,
   CreditCard,
@@ -32,6 +35,7 @@ import {
   UserCog,
   Users,
   Wallet,
+  Zap,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -73,7 +77,7 @@ import {
   type AttendanceSubmission,
 } from './attendanceData'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
-import { getActiveProfile, normalizeRole, signInWithEmail, signOut as signOutSupabase, type AppProfile } from './services/auth'
+import { getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail, signOut as signOutSupabase, updateUserPassword, type AppProfile } from './services/auth'
 import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments, type TeacherAssignment } from './services/students'
 import { fetchProfiles } from './services/users'
 import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput, type TeacherAssignmentScope } from './services/userManagement'
@@ -105,6 +109,7 @@ import {
   type CommunicationOperation,
   type CommunicationState,
 } from './communicationData'
+import camviaLogo from './assets/camvia-light-logo.png'
 import './App.css'
 import './LoginPage.css'
 
@@ -155,6 +160,7 @@ type AttentionItem = {
 
 type QuickAction = {
   label: string
+  description: string
   icon: LucideIcon
   path: string
 }
@@ -305,9 +311,9 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     },
     attention: [],
     quickActions: [
-      { label: 'Add User', icon: UserCog, path: '/users' },
-      { label: 'Import Students', icon: GraduationCap, path: '/students' },
-      { label: 'View Alerts', icon: BellRing, path: '/alerts' },
+      { label: 'Add User', description: 'Create a new staff, teacher or admin account', icon: UserCog, path: '/users' },
+      { label: 'Import Students', description: 'Bulk import students from a file', icon: GraduationCap, path: '/students' },
+      { label: 'View Alerts', description: 'Check all recent alerts and notifications', icon: BellRing, path: '/alerts' },
     ],
     trend: [
     ],
@@ -329,9 +335,9 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     },
     attention: [],
     quickActions: [
-      { label: 'View Attendance', icon: ClipboardCheck, path: '/attendance' },
-      { label: 'View Students', icon: GraduationCap, path: '/students' },
-      { label: 'Review Alerts', icon: BellRing, path: '/alerts' },
+      { label: 'View Attendance', description: 'Review daily attendance performance and risks', icon: ClipboardCheck, path: '/attendance' },
+      { label: 'View Students', description: 'Open student records and academic summaries', icon: GraduationCap, path: '/students' },
+      { label: 'Review Alerts', description: 'Check the latest school and campus alerts', icon: BellRing, path: '/alerts' },
     ],
     trend: [
     ],
@@ -350,9 +356,9 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     },
     attention: [],
     quickActions: [
-      { label: 'View Outstanding Fees', icon: Wallet, path: '/fees' },
-      { label: 'Prepare Fee Reminder', icon: MessageSquareText, path: '/communication' },
-      { label: 'View Collections', icon: TrendingUp, path: '/fees' },
+      { label: 'View Outstanding Fees', description: 'Review unpaid balances and collection priorities', icon: Wallet, path: '/fees' },
+      { label: 'Prepare Fee Reminder', description: 'Draft and send parent payment follow-ups', icon: MessageSquareText, path: '/communication' },
+      { label: 'View Collections', description: 'Track this month’s cash collections and trends', icon: TrendingUp, path: '/fees' },
     ],
     trend: [],
   },
@@ -371,9 +377,9 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     attention: [
     ],
     quickActions: [
-      { label: 'Take Attendance', icon: ClipboardCheck, path: '/attendance' },
-      { label: 'View My Students', icon: GraduationCap, path: '/students' },
-      { label: 'Review Alerts', icon: BellRing, path: '/alerts' },
+      { label: 'Take Attendance', description: 'Mark class attendance and review classroom status', icon: ClipboardCheck, path: '/attendance' },
+      { label: 'View My Students', description: 'Open classroom records for assigned learners', icon: GraduationCap, path: '/students' },
+      { label: 'Review Alerts', description: 'Check attendance and student follow-up notifications', icon: BellRing, path: '/alerts' },
     ],
     trend: [
     ],
@@ -431,19 +437,19 @@ function AttendanceRoute({ user, students, attendance, loading, error, onRetry }
 
 function App() {
   const [session, setSession] = useState<SessionUser | null>(null)
-  const [authLoading, setAuthLoading] = useState(true)
-  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
+  const [authError, setAuthError] = useState(isSupabaseConfigured ? '' : 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
   const [students, setStudents] = useState<Student[]>([])
-  const [studentsLoading, setStudentsLoading] = useState(true)
+  const [studentsLoading, setStudentsLoading] = useState(isSupabaseConfigured)
   const [studentsError, setStudentsError] = useState('')
   const [liveProfiles, setLiveProfiles] = useState<SchoolUser[]>([])
-  const [profilesLoading, setProfilesLoading] = useState(true)
+  const [profilesLoading, setProfilesLoading] = useState(isSupabaseConfigured)
   const [profilesError, setProfilesError] = useState('')
   const [attendance, setAttendance] = useState<AttendanceState>(emptyAttendanceState)
-  const [attendanceLoading, setAttendanceLoading] = useState(true)
+  const [attendanceLoading, setAttendanceLoading] = useState(isSupabaseConfigured)
   const [attendanceError, setAttendanceError] = useState('')
   const [fees, setFees] = useState<FeeState>({ invoices: [], payments: [] })
-  const [feesLoading, setFeesLoading] = useState(true)
+  const [feesLoading, setFeesLoading] = useState(isSupabaseConfigured)
   const [feesError, setFeesError] = useState('')
   const [communication, setCommunication] = useState<CommunicationState>(emptyCommunicationState)
   const [communicationLoading, setCommunicationLoading] = useState(true)
@@ -700,16 +706,27 @@ function App() {
     let alive = true
     const client = supabase
     if (!isSupabaseConfigured || !client) {
-      setAuthError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
-      setAuthLoading(false)
-      setStudentsLoading(false)
-      setAttendanceLoading(false)
-      setFeesLoading(false)
-      setProfilesLoading(false)
       return
     }
 
+    const isPasswordSetupPath = () => {
+      if (typeof window === 'undefined') return false
+      const p = window.location.pathname
+      const h = window.location.hash
+      return (
+        p.startsWith('/set-password') ||
+        p.startsWith('/reset-password') ||
+        p.startsWith('/auth/callback') ||
+        h.includes('type=invite') ||
+        h.includes('type=recovery')
+      )
+    }
+
     const resolveUser = async (userId: string) => {
+      if (isPasswordSetupPath()) {
+        setAuthLoading(false)
+        return
+      }
       if (resolvedUserId.current === userId || resolvingUserId.current === userId) return
       const resolutionId = ++authResolutionId.current
       studentsRequestId.current += 1
@@ -779,9 +796,13 @@ function App() {
       }
     }
 
-    const { data: authListener } = client.auth.onAuthStateChange((_event, authSession) => {
+    const { data: authListener } = client.auth.onAuthStateChange((event, authSession) => {
       window.setTimeout(() => {
         if (!alive) return
+        if (event === 'PASSWORD_RECOVERY' || isPasswordSetupPath()) {
+          setAuthLoading(false)
+          return
+        }
         if (authSession?.user) {
           void resolveUser(authSession.user.id)
         } else {
@@ -807,6 +828,10 @@ function App() {
 
     void client.auth.getSession().then(({ data, error }) => {
       if (!alive) return
+      if (isPasswordSetupPath()) {
+        setAuthLoading(false)
+        return
+      }
       if (error) {
         console.error('[Supabase] Session restore failed:', error.message)
         setAuthError('Your session could not be restored. Please sign in again.')
@@ -1117,9 +1142,13 @@ function App() {
 
   return (
     <BrowserRouter>
+      <AuthRedirectHandler />
       <Suspense fallback={<div className="app-loading-state" role="status">Loading page…</div>}>
       <Routes>
         <Route path="/login" element={<LoginPage onLogin={handleLogin} loading={authLoading} authError={authError} />} />
+        <Route path="/set-password" element={<SetPasswordPage mode="invite" />} />
+        <Route path="/reset-password" element={<SetPasswordPage mode="reset" />} />
+        <Route path="/auth/callback" element={<AuthCallbackHandler />} />
 
         <Route element={<ProtectedRoute user={session} loading={authLoading} />}>
         <Route
@@ -1257,18 +1286,181 @@ function ProtectedRoute({ user, loading }: { user: SessionUser | null; loading: 
   return <Outlet />
 }
 
-function LoginPage({ onLogin, loading, authError }: {
-  onLogin: (email: string, password: string) => Promise<{ role?: Role; error?: string }>
-  loading: boolean
-  authError: string
-}) {
+function AuthRedirectHandler() {
+  const location = useLocation()
   const navigate = useNavigate()
-  const [email, setEmail] = useState('')
+
+  useEffect(() => {
+    const hash = window.location.hash
+    if (hash && hash.length > 1) {
+      const params = new URLSearchParams(hash.substring(1))
+      const type = params.get('type')
+      const error = params.get('error') || params.get('error_code')
+      const errorDescription = params.get('error_description')
+
+      if (type === 'invite' && location.pathname !== '/set-password') {
+        navigate({ pathname: '/set-password', hash }, { replace: true })
+        return
+      }
+
+      if (type === 'recovery' && location.pathname !== '/reset-password') {
+        navigate({ pathname: '/reset-password', hash }, { replace: true })
+        return
+      }
+
+      if (error && (location.pathname === '/' || location.pathname === '/login')) {
+        if (hash.includes('invite') || (errorDescription && /invite/i.test(errorDescription))) {
+          navigate({ pathname: '/set-password', hash }, { replace: true })
+          return
+        }
+        if (hash.includes('recovery') || (errorDescription && /password|reset|recovery/i.test(errorDescription))) {
+          navigate({ pathname: '/reset-password', hash }, { replace: true })
+          return
+        }
+      }
+    }
+
+    const search = window.location.search
+    if (search && search.length > 1) {
+      const searchParams = new URLSearchParams(search)
+      const code = searchParams.get('code')
+      const error = searchParams.get('error')
+      const errorDescription = searchParams.get('error_description')
+
+      if (code && location.pathname === '/') {
+        navigate({ pathname: '/auth/callback', search }, { replace: true })
+        return
+      }
+
+      if (error && (location.pathname === '/' || location.pathname === '/login')) {
+        if (errorDescription && /invite/i.test(errorDescription)) {
+          navigate({ pathname: '/set-password', search }, { replace: true })
+        }
+      }
+    }
+  }, [location.pathname, navigate])
+
+  return null
+}
+
+function AuthCallbackHandler() {
+  const navigate = useNavigate()
+  const [errorMessage, setErrorMessage] = useState('')
+
+  useEffect(() => {
+    let active = true
+
+    const processAuth = async () => {
+      const hash = window.location.hash
+      const search = window.location.search
+      const params = new URLSearchParams(hash ? hash.substring(1) : search)
+
+      const error = params.get('error') || params.get('error_code')
+      const errorDescription = params.get('error_description')
+      if (error) {
+        if (!active) return
+        setErrorMessage(errorDescription ? decodeURIComponent(errorDescription.replace(/\+/g, ' ')) : 'Authentication link is invalid or has expired.')
+        return
+      }
+
+      const type = params.get('type')
+      const code = new URLSearchParams(search).get('code')
+
+      if (code && supabase) {
+        try {
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+          if (exchangeError) throw exchangeError
+        } catch (err) {
+          if (!active) return
+          setErrorMessage(err instanceof Error ? err.message : 'Unable to verify authentication link.')
+          return
+        }
+      }
+
+      if (type === 'invite') {
+        navigate({ pathname: '/set-password', hash: window.location.hash }, { replace: true })
+        return
+      }
+      if (type === 'recovery') {
+        navigate({ pathname: '/reset-password', hash: window.location.hash }, { replace: true })
+        return
+      }
+
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          navigate('/set-password', { replace: true })
+          return
+        }
+      }
+
+      navigate('/login', { replace: true })
+    }
+
+    void processAuth()
+
+    return () => {
+      active = false
+    }
+  }, [navigate])
+
+  if (errorMessage) {
+    return (
+      <div className="login-page">
+        <div className="login-panel" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 32px', textAlign: 'center' }}>
+          <AlertTriangle size={54} color="#e04848" style={{ marginBottom: '20px' }} />
+          <h2 style={{ fontSize: '26px', fontWeight: 800, marginBottom: '12px' }}>Authentication Error</h2>
+          <p style={{ color: '#556987', maxWidth: '440px', marginBottom: '24px', fontSize: '15px', lineHeight: 1.5 }}>
+            {errorMessage}
+          </p>
+          <button type="button" className="primary-button" style={{ maxWidth: '240px' }} onClick={() => navigate('/login', { replace: true })}>
+            Return to Sign In
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="app-loading-state" role="status">
+      Verifying your security credentials…
+    </div>
+  )
+}
+
+function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
+  const navigate = useNavigate()
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [error, setError] = useState('')
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [passwordResetNotice, setPasswordResetNotice] = useState('')
+  const [errorMessage, setErrorMessage] = useState<string>(() => {
+    if (typeof window === 'undefined') return ''
+    if (!supabase) return 'Supabase is not configured in this environment.'
+    const hash = window.location.hash
+    const search = window.location.search
+    const params = new URLSearchParams(hash ? hash.substring(1) : search)
+    const errorParam = params.get('error') || params.get('error_code')
+    const errorDesc = params.get('error_description')
+    if (errorParam) {
+      return errorDesc
+        ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
+        : 'This link is invalid or has expired. Please contact your administrator.'
+    }
+    return ''
+  })
+  const [status, setStatus] = useState<'checking' | 'ready' | 'success' | 'expired'>(() => {
+    if (typeof window === 'undefined') return 'checking'
+    if (!supabase) return 'expired'
+    const hash = window.location.hash
+    const search = window.location.search
+    const params = new URLSearchParams(hash ? hash.substring(1) : search)
+    const errorParam = params.get('error') || params.get('error_code')
+    if (errorParam) return 'expired'
+    return 'checking'
+  })
+  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
     try {
       return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
@@ -1287,23 +1479,85 @@ function LoginPage({ onLogin, loading, authError }: {
     }
   }
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    if (submitting || loading) return
+  useEffect(() => {
+    if (status === 'expired' || !supabase) return
+    let active = true
+    const client = supabase
 
-    setSubmitting(true)
-    setError('')
-    try {
-      const result = await onLogin(email, password)
-      setPassword('')
-      if (result.role) {
-        navigate(defaultDashboardForRole(result.role))
+    const checkSession = async () => {
+      const { data: { session } } = await client.auth.getSession()
+      if (session?.user) {
+        if (!active) return
+        setUserEmail(session.user.email ?? null)
+        setStatus('ready')
         return
       }
-      setError(result.error ?? 'Unable to sign in.')
-    } catch {
-      setError('Unable to sign in. Please try again.')
-    } finally {
+
+      let attempts = 0
+      const timer = window.setInterval(async () => {
+        attempts += 1
+        const { data: { session: delayedSession } } = await client.auth.getSession()
+        if (delayedSession?.user) {
+          window.clearInterval(timer)
+          if (!active) return
+          setUserEmail(delayedSession.user.email ?? null)
+          setStatus('ready')
+          return
+        }
+        if (attempts >= 5) {
+          window.clearInterval(timer)
+          if (!active) return
+          setStatus('expired')
+          setErrorMessage(
+            mode === 'invite'
+              ? 'This invitation link is invalid, expired, or has already been used. Please contact your school administrator to request a new invitation.'
+              : 'This password reset link is invalid or has expired. Please request a new password reset link from the sign in page.'
+          )
+        }
+      }, 500)
+    }
+
+    void checkSession()
+
+    const { data: authListener } = client.auth.onAuthStateChange((_event, session) => {
+      if (session?.user && active) {
+        setUserEmail(session.user.email ?? null)
+        setStatus('ready')
+      }
+    })
+
+    return () => {
+      active = false
+      authListener?.subscription.unsubscribe()
+    }
+  }, [mode, status])
+
+  const hasMinLength = password.length >= 8
+  const hasUppercase = /[A-Z]/.test(password)
+  const hasLowercase = /[a-z]/.test(password)
+  const hasNumber = /[0-9]/.test(password)
+  const passwordsMatch = password.length > 0 && password === confirmPassword
+  const isFormValid = hasMinLength && hasUppercase && hasLowercase && hasNumber && passwordsMatch
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!isFormValid || submitting) return
+
+    setSubmitting(true)
+    setErrorMessage('')
+
+    try {
+      const result = await updateUserPassword(password)
+      if (!result.success) {
+        setErrorMessage(result.error ?? 'Unable to set password. Please try again.')
+        setSubmitting(false)
+        return
+      }
+
+      await signOutSupabase()
+      setStatus('success')
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to update password. Please try again.')
       setSubmitting(false)
     }
   }
@@ -1334,60 +1588,435 @@ function LoginPage({ onLogin, loading, authError }: {
             {loginTheme === 'light' ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
             {loginTheme === 'light' ? 'Dark mode' : 'Light mode'}
           </button>
-          <div className="login-header">
-            <p className="eyebrow">Secure login</p>
-            <h2>Welcome back</h2>
-            <p className="login-intro">Sign in to your CAMVIA account and continue building brighter futures.</p>
-          </div>
 
-          <form onSubmit={handleSubmit} className="login-form" aria-busy={loading || submitting}>
-            <label>
-              <span>Email</span>
-              <div className="login-input-field">
-                <Mail aria-hidden="true" />
-              <input
-                type="email"
-                autoComplete="username"
-                required
-                disabled={loading || submitting}
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="name@school.edu"
-              />
+          {status === 'checking' ? (
+            <div className="status-card checking">
+              <div className="app-loading-state" style={{ minHeight: '260px' }}>
+                Verifying your security credentials…
               </div>
-            </label>
-
-            <label>
-              <span>Password</span>
-              <div className="password-field login-input-field">
-                <LockKeyhole aria-hidden="true" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  required
-                  disabled={loading || submitting}
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="Enter password"
-                />
-                <button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} disabled={loading || submitting} onClick={() => setShowPassword((current) => !current)}>
-                  {showPassword ? 'Hide' : 'Show'}
+            </div>
+          ) : status === 'expired' ? (
+            <div className="status-card error">
+              <div className="login-header">
+                <p className="eyebrow" style={{ color: '#e04848' }}>Access Notice</p>
+                <h2>{mode === 'invite' ? 'Invitation Expired' : 'Link Expired'}</h2>
+                <p className="login-intro">
+                  {errorMessage || (mode === 'invite'
+                    ? 'This invitation link is invalid or has expired. Please contact your school administrator to receive a new invitation.'
+                    : 'This password reset link is invalid or has expired. Please request a new password reset link.')}
+                </p>
+              </div>
+              <div className="status-card-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => navigate('/login', { replace: true })}
+                >
+                  Return to Sign In
+                  <ArrowRight size={20} aria-hidden="true" />
                 </button>
               </div>
-            </label>
+            </div>
+          ) : status === 'success' ? (
+            <div className="status-card success">
+              <div className="login-header">
+                <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', borderRadius: '50%', background: '#eaf8f1', color: '#16834d', marginBottom: '16px' }}>
+                  <CheckCircle2 size={32} />
+                </div>
+                <p className="eyebrow" style={{ color: '#16834d' }}>Setup Complete</p>
+                <h2>Password Saved</h2>
+                <p className="login-intro">
+                  Your password has been configured successfully. You can now sign in to your CAMVIA account.
+                </p>
+              </div>
+              <div className="status-card-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => navigate('/login', { state: { notice: 'Password saved successfully. Please sign in.' }, replace: true })}
+                >
+                  Proceed to Sign In
+                  <ArrowRight size={20} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="login-header">
+                <p className="eyebrow">{mode === 'invite' ? 'Account Setup' : 'Password Recovery'}</p>
+                <h2>{mode === 'invite' ? 'Set Your Password' : 'Reset Password'}</h2>
+                <p className="login-intro">
+                  {mode === 'invite'
+                    ? 'Welcome to CAMVIA! Choose a secure password to complete your account setup.'
+                    : 'Enter and confirm a new secure password for your CAMVIA account.'}
+                </p>
+              </div>
 
-            {error || authError ? <p className="error-message" role="alert">{error || authError}</p> : null}
+              {userEmail ? (
+                <div className="verified-account-card">
+                  <KeyRound size={18} aria-hidden="true" />
+                  <span>Account: <strong>{userEmail}</strong></span>
+                </div>
+              ) : null}
 
-            <button type="submit" className="primary-button" disabled={loading || submitting}>
-              {loading ? 'Checking session…' : submitting ? 'Signing in…' : 'Sign In'}
-              <ArrowRight size={22} aria-hidden="true" />
-            </button>
+              <form onSubmit={handleSubmit} className="login-form">
+                <label>
+                  <span>New Password</span>
+                  <div className="password-field login-input-field">
+                    <LockKeyhole aria-hidden="true" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      required
+                      disabled={submitting}
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      placeholder="Enter new password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      disabled={submitting}
+                      onClick={() => setShowPassword((current) => !current)}
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </label>
 
-            <button type="button" className="secondary-button" disabled={loading || submitting} onClick={() => setPasswordResetNotice('Password reset is not configured; contact an administrator.')}>
-              Forgot Password?
-            </button>
-            {passwordResetNotice ? <p className="communication-feedback" role="status">{passwordResetNotice}</p> : null}
-          </form>
+                <label>
+                  <span>Confirm Password</span>
+                  <div className="password-field login-input-field">
+                    <LockKeyhole aria-hidden="true" />
+                    <input
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      required
+                      disabled={submitting}
+                      value={confirmPassword}
+                      onChange={(event) => setConfirmPassword(event.target.value)}
+                      placeholder="Confirm new password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      disabled={submitting}
+                      onClick={() => setShowConfirmPassword((current) => !current)}
+                    >
+                      {showConfirmPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </label>
+
+                <div className="password-rules-card">
+                  <p className="password-rules-title">Password Requirements:</p>
+                  <ul className="password-rules-list">
+                    <li className={`password-rule-item ${hasMinLength ? 'met' : ''}`}>
+                      <CheckCircle2 size={14} /> At least 8 characters
+                    </li>
+                    <li className={`password-rule-item ${hasUppercase && hasLowercase ? 'met' : ''}`}>
+                      <CheckCircle2 size={14} /> Uppercase and lowercase letters
+                    </li>
+                    <li className={`password-rule-item ${hasNumber ? 'met' : ''}`}>
+                      <CheckCircle2 size={14} /> At least one number (0-9)
+                    </li>
+                    <li className={`password-rule-item ${passwordsMatch ? 'met' : ''}`}>
+                      <CheckCircle2 size={14} /> Passwords match
+                    </li>
+                  </ul>
+                </div>
+
+                {errorMessage ? (
+                  <p className="error-message" role="alert">{errorMessage}</p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={!isFormValid || submitting}
+                >
+                  {submitting ? 'Saving Password…' : mode === 'invite' ? 'Set Password & Continue' : 'Update Password'}
+                  <ArrowRight size={22} aria-hidden="true" />
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={submitting}
+                  onClick={() => navigate('/login', { replace: true })}
+                >
+                  Cancel & Return to Sign In
+                </button>
+              </form>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LoginPage({ onLogin, loading, authError }: {
+  onLogin: (email: string, password: string) => Promise<{ role?: Role; error?: string }>
+  loading: boolean
+  authError: string
+}) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [loginNotice, setLoginNotice] = useState<string>(() => {
+    const state = location.state as { notice?: string } | null
+    return state?.notice ?? ''
+  })
+
+  // Password reset flow states
+  const [forgotPasswordMode, setForgotPasswordMode] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetSuccess, setResetSuccess] = useState(false)
+  const [resetError, setResetError] = useState('')
+
+  const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+
+  const toggleLoginTheme = () => {
+    const nextTheme = loginTheme === 'light' ? 'dark' : 'light'
+    setLoginTheme(nextTheme)
+    try {
+      window.localStorage.setItem('camvia_login_theme', nextTheme)
+    } catch {
+      // Theme switching still works when browser storage is unavailable.
+    }
+  }
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (submitting || loading) return
+
+    setSubmitting(true)
+    setError('')
+    setLoginNotice('')
+    try {
+      const result = await onLogin(email, password)
+      setPassword('')
+      if (result.role) {
+        navigate(defaultDashboardForRole(result.role))
+        return
+      }
+      setError(result.error ?? 'Unable to sign in.')
+    } catch {
+      setError('Unable to sign in. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleResetSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (resetSubmitting) return
+
+    setResetSubmitting(true)
+    setResetError('')
+    setResetSuccess(false)
+
+    try {
+      const result = await resetPasswordForEmail(resetEmail)
+      if (result.success) {
+        setResetSuccess(true)
+      } else {
+        setResetError(result.error ?? 'Unable to send password reset email.')
+      }
+    } catch {
+      setResetError('Unable to send password reset email. Please try again.')
+    } finally {
+      setResetSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="login-page" data-theme={loginTheme}>
+      <div className="login-panel">
+        <div className="login-brand-panel">
+          <div className="login-logo" role="img" aria-label="CAMVIA — Smarter Schools. Brighter Futures." />
+          <p className="login-brand-eyebrow">AI-powered school management</p>
+          <h1 className="login-headline">See More.<br />Understand Better.<br /><span>Act Sooner.</span></h1>
+          <p className="login-description">CAMVIA brings intelligence to school management with AI-powered insights, helping schools operate smarter and create brighter futures for every learner.</p>
+          <div className="login-benefits">
+            <div><span className="login-benefit-icon"><Eye aria-hidden="true" /></span><p><strong>See.</strong><small>Real-time insights</small></p></div>
+            <div><span className="login-benefit-icon"><Lightbulb aria-hidden="true" /></span><p><strong>Understand.</strong><small>Smarter decisions</small></p></div>
+            <div><span className="login-benefit-icon"><ChartNoAxesColumnIncreasing aria-hidden="true" /></span><p><strong>Act.</strong><small>Better outcomes</small></p></div>
+          </div>
+          <div className="login-campus" aria-hidden="true" />
+        </div>
+
+        <div className="login-form-panel">
+          <button
+            type="button"
+            className="login-theme-toggle"
+            onClick={toggleLoginTheme}
+            aria-label={`Switch to ${loginTheme === 'light' ? 'dark' : 'light'} mode`}
+          >
+            {loginTheme === 'light' ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
+            {loginTheme === 'light' ? 'Dark mode' : 'Light mode'}
+          </button>
+
+          {loginNotice ? (
+            <div className="status-banner-success" role="status">
+              <CheckCircle2 size={18} />
+              <span>{loginNotice}</span>
+            </div>
+          ) : null}
+
+          {forgotPasswordMode ? (
+            <>
+              <div className="login-header">
+                <p className="eyebrow">Password recovery</p>
+                <h2>Reset password</h2>
+                <p className="login-intro">Enter your registered email address and we will send you a secure link to reset your password.</p>
+              </div>
+
+              {resetSuccess ? (
+                <div className="status-card success">
+                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '52px', height: '52px', borderRadius: '50%', background: '#eaf8f1', color: '#16834d', marginBottom: '16px' }}>
+                    <CheckCircle2 size={28} />
+                  </div>
+                  <h3>Check your inbox</h3>
+                  <p className="login-intro" style={{ marginBottom: '24px' }}>
+                    If an account exists for <strong>{resetEmail}</strong>, instructions to reset your password have been sent. Please check your inbox and spam folder.
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => {
+                      setForgotPasswordMode(false)
+                      setResetSuccess(false)
+                      setResetError('')
+                    }}
+                  >
+                    Return to Sign In
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleResetSubmit} className="login-form" aria-busy={resetSubmitting}>
+                  <label>
+                    <span>Email</span>
+                    <div className="login-input-field">
+                      <Mail aria-hidden="true" />
+                      <input
+                        type="email"
+                        autoComplete="email"
+                        required
+                        disabled={resetSubmitting}
+                        value={resetEmail}
+                        onChange={(event) => setResetEmail(event.target.value)}
+                        placeholder="name@school.edu"
+                      />
+                    </div>
+                  </label>
+
+                  {resetError ? <p className="error-message" role="alert">{resetError}</p> : null}
+
+                  <button type="submit" className="primary-button" disabled={resetSubmitting}>
+                    {resetSubmitting ? 'Sending instructions…' : 'Send Reset Link'}
+                    <ArrowRight size={22} aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={resetSubmitting}
+                    onClick={() => {
+                      setForgotPasswordMode(false)
+                      setResetError('')
+                    }}
+                  >
+                    Back to Sign In
+                  </button>
+                </form>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="login-header">
+                <p className="eyebrow">Secure login</p>
+                <h2>Welcome back</h2>
+                <p className="login-intro">Sign in to your CAMVIA account and continue building brighter futures.</p>
+              </div>
+
+              <form onSubmit={handleSubmit} className="login-form" aria-busy={loading || submitting}>
+                <label>
+                  <span>Email</span>
+                  <div className="login-input-field">
+                    <Mail aria-hidden="true" />
+                    <input
+                      type="email"
+                      autoComplete="username"
+                      required
+                      disabled={loading || submitting}
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      placeholder="name@school.edu"
+                    />
+                  </div>
+                </label>
+
+                <label>
+                  <span>Password</span>
+                  <div className="password-field login-input-field">
+                    <LockKeyhole aria-hidden="true" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      required
+                      disabled={loading || submitting}
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      placeholder="Enter password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showPassword}
+                      disabled={loading || submitting}
+                      onClick={() => setShowPassword((current) => !current)}
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </label>
+
+                {error || authError ? <p className="error-message" role="alert">{error || authError}</p> : null}
+
+                <button type="submit" className="primary-button" disabled={loading || submitting}>
+                  {loading ? 'Checking session…' : submitting ? 'Signing in…' : 'Sign In'}
+                  <ArrowRight size={22} aria-hidden="true" />
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={loading || submitting}
+                  onClick={() => {
+                    setForgotPasswordMode(true)
+                    setResetEmail(email)
+                    setResetError('')
+                    setResetSuccess(false)
+                  }}
+                >
+                  Forgot Password?
+                </button>
+              </form>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1441,11 +2070,8 @@ function AppShell({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-badge">C</div>
-          <div>
-            <strong>CAMVIA</strong>
-            <span>School intelligence</span>
-          </div>
+          <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" />
+          <span className="sidebar-subtitle">School Intelligence</span>
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
@@ -1462,8 +2088,9 @@ function AppShell({
                 className={`nav-item ${isActive ? 'active' : ''}`}
                 onClick={() => navigate(item.path)}
               >
-                <Icon size={18} />
+                <span className="nav-icon-wrap"><Icon size={18} /></span>
                 <span>{item.label}</span>
+                {isActive ? <span className="nav-active-indicator" aria-hidden="true" /> : null}
               </button>
             )
           })}
@@ -1471,12 +2098,12 @@ function AppShell({
 
         <div className="sidebar-footer">
           <button type="button" className="nav-item profile-item" onClick={() => navigate(defaultDashboardForRole(user.role))}>
-            <UserCog size={18} />
+            <span className="nav-icon-wrap"><UserCog size={18} /></span>
             <span>Profile</span>
           </button>
 
           <button type="button" className="nav-item danger-item" onClick={onLogout}>
-            <LogOut size={18} />
+            <span className="nav-icon-wrap"><LogOut size={18} /></span>
             <span>Logout</span>
           </button>
         </div>
@@ -1484,25 +2111,26 @@ function AppShell({
 
       <div className="content-shell">
         <header className="topbar">
-          <div className="topbar-title">
-            <div>
-              <p className="page-kicker">{pageTitle}</p>
-              <h2>{user.schoolName}</h2>
-            </div>
-            <div className="school-context">
-              <Building2 size={15} />
+          <div className="topbar-left">
+            <span className="topbar-page-label">{pageTitle}</span>
+            <span className="topbar-crumb-sep">•</span>
+            <span className="topbar-school-name">{user.schoolName}</span>
+            <div className="campus-selector-pill" title="Selected campus">
+              <Building2 size={13} />
               <span>{user.campusName}</span>
+              <ChevronDown size={13} className="selector-chevron" />
             </div>
           </div>
 
           <div className="topbar-actions">
             <div className="search-box">
-              <Search size={16} />
-              <input type="text" placeholder="Search" readOnly aria-label="Search" />
+              <Search size={15} />
+              <input type="text" placeholder="Search..." readOnly aria-label="Search" />
             </div>
 
-            <button type="button" className="icon-button" aria-label="Notifications">
+            <button type="button" className="icon-button notification-btn" aria-label="Notifications">
               <Bell size={18} />
+              <span className="notification-dot" />
             </button>
 
             <div className="profile-panel">
@@ -1514,7 +2142,7 @@ function AppShell({
               </div>
 
               <button type="button" className="profile-toggle" aria-label="Open profile menu" onClick={() => setProfileOpen((value) => !value)}>
-                <ChevronDown size={16} />
+                <ChevronDown size={14} />
               </button>
 
               {profileOpen ? (
@@ -1603,10 +2231,15 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   alertsError: string
   onRetryAlerts: () => void
 }) {
+  const [prevRole, setPrevRole] = useState(user?.role)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
-  useEffect(() => {
+  if (prevRole !== user?.role) {
+    setPrevRole(user?.role)
     setStatus('loading')
+  }
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => setStatus('ready'), 600)
     return () => window.clearTimeout(timeoutId)
   }, [user?.role])
@@ -2068,13 +2701,15 @@ function SchoolDashboard({ user, config }: { user: SessionUser; config: Dashboar
     <section className="dashboard-page">
       <DashboardHeader user={user} title={user.role === 'admin' ? 'Executive Dashboard' : 'School Operations Dashboard'} />
 
-      <div className="stats-grid">
-        {config.stats.map((stat) => (
-          <StatCard key={stat.label} stat={stat} />
-        ))}
-      </div>
+      <DashboardKpiGrid stats={config.stats} />
 
-      {config.morningBrief ? <MorningBrief summary={config.morningBrief.summary} cta={config.morningBrief.cta} /> : null}
+      {config.morningBrief ? (
+        <MorningBrief
+          summary={config.morningBrief.summary}
+          cta={config.morningBrief.cta}
+          onAction={() => navigate('/attendance')}
+        />
+      ) : null}
 
       <div className="dashboard-grid">
         <DashboardSection title="Needs Attention">
@@ -2087,7 +2722,7 @@ function SchoolDashboard({ user, config }: { user: SessionUser; config: Dashboar
       </div>
 
       <DashboardSection title="Attendance — Last 7 Days">
-        <SimpleTrendChart data={config.trend} emptyMessage="Collection trend will appear after payments are recorded." />
+        <SimpleTrendChart data={config.trend} emptyMessage="Attendance trend will appear after sessions are recorded." />
       </DashboardSection>
     </section>
   )
@@ -2100,17 +2735,19 @@ function FinanceDashboard({ user, config }: { user: SessionUser; config: Dashboa
     <section className="dashboard-page">
       <DashboardHeader user={user} title="Finance Dashboard" />
 
-      <div className="stats-grid">
-        {config.stats.map((stat) => (
-          <StatCard key={stat.label} stat={stat} />
-        ))}
-      </div>
+      <DashboardKpiGrid stats={config.stats} />
 
-      {config.morningBrief ? <MorningBrief summary={config.morningBrief.summary} cta={config.morningBrief.cta} /> : null}
+      {config.morningBrief ? (
+        <MorningBrief
+          summary={config.morningBrief.summary}
+          cta={config.morningBrief.cta}
+          onAction={() => navigate('/fees')}
+        />
+      ) : null}
 
       <div className="dashboard-grid">
         <DashboardSection title="Needs Attention">
-          <AttentionList items={config.attention} />
+          <AttentionList items={config.attention} onNavigate={navigate} />
         </DashboardSection>
 
         <DashboardSection title="Quick Actions">
@@ -2119,7 +2756,7 @@ function FinanceDashboard({ user, config }: { user: SessionUser; config: Dashboa
       </div>
 
       <DashboardSection title="Collections — This Month">
-        <SimpleTrendChart data={config.trend} />
+        <SimpleTrendChart data={config.trend} emptyMessage="Collection trend will appear after payments are recorded." />
       </DashboardSection>
     </section>
   )
@@ -2134,13 +2771,15 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
     <section className="dashboard-page">
       <DashboardHeader user={user} title="Teacher Dashboard" />
 
-      <div className="stats-grid">
-        {config.stats.map((stat) => (
-          <StatCard key={stat.label} stat={stat} />
-        ))}
-      </div>
+      <DashboardKpiGrid stats={config.stats} />
 
-      {config.morningBrief ? <MorningBrief summary={config.morningBrief.summary} cta={config.morningBrief.cta} /> : null}
+      {config.morningBrief ? (
+        <MorningBrief
+          summary={config.morningBrief.summary}
+          cta={config.morningBrief.cta}
+          onAction={() => navigate('/attendance')}
+        />
+      ) : null}
 
       <DashboardSection title="Today's Classes">
         <div className="class-list">
@@ -2160,7 +2799,7 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
       </DashboardSection>
 
       <div className="dashboard-grid">
-        <DashboardSection title="Attention">
+        <DashboardSection title="Needs Attention">
           <AttentionList items={config.attention} onNavigate={navigate} />
         </DashboardSection>
 
@@ -2172,78 +2811,281 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
   )
 }
 
-function DashboardHeader({ user, title }: { user: SessionUser; title: string }) {
+function PageHeader({ user, title }: { user: SessionUser; title: string }) {
   const firstName = user.name.split(' ')[0]
+  const badgeLabel = title.toUpperCase().includes('FINANCE')
+    ? 'FINANCE DASHBOARD'
+    : title.toUpperCase().includes('TEACHER')
+      ? 'TEACHER DASHBOARD'
+      : 'EXECUTIVE DASHBOARD'
+
+  const [todayFormatted] = useState(() =>
+    new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(new Date())
+  )
 
   return (
     <div className="hero-panel">
-      <div>
-        <p className="eyebrow">{title}</p>
+      <div className="hero-left">
+        <span className="hero-badge">{badgeLabel}</span>
         <h1>Good Morning, {firstName} 👋</h1>
         <p>Here&apos;s what needs your attention today.</p>
       </div>
 
-      <div className="hero-meta">
-        <div className="meta-pill">
-          <Building2 size={16} />
-          <span>{user.schoolName}</span>
+      <div className="hero-right">
+        <div className="hero-meta">
+          <div className="meta-pill">
+            <Building2 size={14} />
+            <span>{user.schoolName}</span>
+          </div>
+          <div className="meta-pill muted-pill">
+            <CalendarDays size={14} />
+            <span>{todayFormatted}</span>
+          </div>
         </div>
-        <div className="meta-pill muted-pill">
-          <CalendarDays size={16} />
-          <span>{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+        <div className="hero-illustration-wrap" aria-hidden="true">
+          <svg
+            className="school-illustration-svg"
+            viewBox="0 0 240 120"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <ellipse cx="40" cy="24" rx="22" ry="10" fill="#FFFFFF" fillOpacity="0.75" />
+            <ellipse cx="54" cy="20" rx="16" ry="9" fill="#FFFFFF" fillOpacity="0.85" />
+            <ellipse cx="204" cy="28" rx="20" ry="9" fill="#FFFFFF" fillOpacity="0.7" />
+            <circle cx="196" cy="24" r="14" fill="#FDE047" fillOpacity="0.75" />
+            <line x1="8" y1="108" x2="232" y2="108" stroke="#93C5FD" strokeWidth="2.5" strokeLinecap="round" />
+            <rect x="75" y="46" width="90" height="62" rx="4" fill="#FFFFFF" stroke="#60A5FA" strokeWidth="2" />
+            <path d="M72 46 L120 22 L168 46 Z" fill="#2F6BFF" />
+            <polygon points="120,29 113,42 127,42" fill="#FFFFFF" fillOpacity="0.9" />
+            <rect x="108" y="74" width="24" height="34" rx="2" fill="#2F6BFF" fillOpacity="0.1" stroke="#2F6BFF" strokeWidth="1.5" />
+            <rect x="115" y="86" width="10" height="22" rx="1.5" fill="#2F6BFF" />
+            <rect x="83" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
+            <rect x="101" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
+            <rect x="127" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
+            <rect x="145" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
+            <rect x="36" y="62" width="39" height="46" rx="3" fill="#F8FAFC" stroke="#94A3B8" strokeWidth="1.5" />
+            <rect x="42" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
+            <rect x="58" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
+            <rect x="165" y="62" width="39" height="46" rx="3" fill="#F8FAFC" stroke="#94A3B8" strokeWidth="1.5" />
+            <rect x="172" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
+            <rect x="188" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
+            <path d="M22 108 L22 88" stroke="#92400E" strokeWidth="3" strokeLinecap="round" />
+            <circle cx="22" cy="80" r="12" fill="#10B981" fillOpacity="0.85" />
+            <circle cx="20" cy="77" r="8" fill="#34D399" />
+            <path d="M218 108 L218 88" stroke="#92400E" strokeWidth="3" strokeLinecap="round" />
+            <circle cx="218" cy="80" r="12" fill="#10B981" fillOpacity="0.85" />
+            <circle cx="216" cy="77" r="8" fill="#34D399" />
+          </svg>
         </div>
       </div>
     </div>
   )
 }
 
-function StatCard({ stat }: { stat: StatItem }) {
-  const Icon = stat.icon
+function DashboardHeader({ user, title }: { user: SessionUser; title: string }) {
+  return <PageHeader user={user} title={title} />
+}
+
+function DashboardKpiGrid({ stats }: { stats: StatItem[] }) {
+  if (stats.length === 7) {
+    return (
+      <div className="stats-kpi-container">
+        <div className="stats-kpi-row stats-kpi-row-3">
+          {stats.slice(0, 3).map((stat) => (
+            <StatCard key={stat.label} stat={stat} />
+          ))}
+        </div>
+        <div className="stats-kpi-row stats-kpi-row-4">
+          {stats.slice(3).map((stat) => (
+            <StatCard key={stat.label} stat={stat} />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  if (stats.length === 6) {
+    return (
+      <div className="stats-kpi-container">
+        <div className="stats-kpi-row stats-kpi-row-3">
+          {stats.slice(0, 3).map((stat) => (
+            <StatCard key={stat.label} stat={stat} />
+          ))}
+        </div>
+        <div className="stats-kpi-row stats-kpi-row-3">
+          {stats.slice(3).map((stat) => (
+            <StatCard key={stat.label} stat={stat} />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <article className={`stat-card ${stat.tone}`}>
-      <div className="stat-topline">
-        <span className="stat-label">{stat.label}</span>
-        <span className="stat-icon-box">
-          <Icon size={16} />
-        </span>
+    <div className="stats-kpi-container">
+      <div className="stats-kpi-row stats-kpi-row-4">
+        {stats.map((stat) => (
+          <StatCard key={stat.label} stat={stat} />
+        ))}
       </div>
-      <strong>{stat.value}</strong>
-      <small>{stat.subLabel}</small>
+    </div>
+  )
+}
+
+function MetricCard({ stat }: { stat: StatItem }) {
+  const Icon = stat.icon
+  const label = stat.label.toLowerCase()
+  const accent = label.includes('student')
+    ? 'students'
+    : label.includes('alert')
+      ? 'alerts'
+      : label.includes('attendance') || label === 'present'
+      ? 'attendance'
+      : label.includes('collected')
+        ? 'collected'
+        : label.includes('outstanding')
+          ? 'outstanding'
+          : label.includes('overdue') || label === 'absent'
+            ? 'overdue'
+            : label.includes('communication') || label.includes('reminder')
+              ? 'communications'
+              : 'default'
+
+  return (
+    <article className={`stat-card ${stat.tone} metric-${accent}`}>
+      <div className="stat-card-main">
+        <span className="stat-icon-box">
+          <Icon size={19} strokeWidth={2.2} />
+        </span>
+        <div className="stat-card-text">
+          <span className="stat-label">{stat.label}</span>
+          <strong className="stat-value">{stat.value}</strong>
+          <small className="stat-sublabel">{stat.subLabel}</small>
+        </div>
+      </div>
       {stat.trendLabel ? (
         <span className="stat-trend">
           <TrendingUp size={12} />
           {stat.trendLabel}
         </span>
       ) : null}
+      <span className="stat-spark" aria-hidden="true" />
+      <span className="stat-decoration" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+        <i />
+        <i />
+      </span>
     </article>
   )
 }
 
-function MorningBrief({ summary, cta }: { summary: string; cta: string }) {
+function StatCard({ stat }: { stat: StatItem }) {
+  return <MetricCard stat={stat} />
+}
+
+function MorningBrief({ summary, cta, onAction }: { summary: string; cta: string; onAction?: () => void }) {
   return (
     <div className="morning-brief">
-      <div className="brief-title">
-        <Sparkles size={18} />
-        <h3>AI Morning Brief ✨</h3>
+      <div className="brief-ai-avatar">
+        <Sparkles size={22} />
       </div>
-      <p>{summary}</p>
-      <button type="button" className="secondary-button compact-button">
-        {cta}
-      </button>
+      <div className="brief-center-content">
+        <h3 className="brief-title">AI Morning Brief ✨</h3>
+        <p className="brief-summary">{summary}</p>
+      </div>
+      <div className="brief-right-actions">
+        <span className="brief-badge">Powered by CAMVIA AI</span>
+        <button type="button" className="brief-cta-btn" onClick={onAction}>
+          <span>{cta}</span>
+          <ArrowRight size={14} />
+        </button>
+      </div>
     </div>
   )
 }
 
-function DashboardSection({ title, children }: { title: string; children: ReactNode }) {
+function SectionCard({
+  title,
+  icon,
+  badgeText = 'Updated',
+  children,
+}: {
+  title: string
+  icon?: ReactNode
+  badgeText?: string
+  children: ReactNode
+}) {
+  const renderedIcon = icon ?? (
+    title.toLowerCase().includes('attention') ? (
+      <AlertTriangle size={18} className="panel-title-icon text-amber" />
+    ) : title.toLowerCase().includes('quick') ? (
+      <Zap size={18} className="panel-title-icon text-blue" />
+    ) : title.toLowerCase().includes('attendance') || title.toLowerCase().includes('trend') || title.toLowerCase().includes('collection') ? (
+      <TrendingUp size={18} className="panel-title-icon text-blue" />
+    ) : title.toLowerCase().includes('classes') ? (
+      <BookCheck size={18} className="panel-title-icon text-blue" />
+    ) : null
+  )
+
   return (
     <section className="panel-card">
       <div className="panel-header">
-        <h3>{title}</h3>
-        <span className="status-pill success">Updated</span>
+        <div className="panel-title-group">
+          {renderedIcon}
+          <h3>{title}</h3>
+        </div>
+        {badgeText ? <span className="status-pill updated-pill">{badgeText}</span> : null}
       </div>
       {children}
     </section>
+  )
+}
+
+function DashboardSection({
+  title,
+  icon,
+  badgeText = 'Updated',
+  children,
+}: {
+  title: string
+  icon?: ReactNode
+  badgeText?: string
+  children: ReactNode
+}) {
+  return (
+    <SectionCard title={title} icon={icon} badgeText={badgeText}>
+      {children}
+    </SectionCard>
+  )
+}
+
+function AttentionItemCard({ item, onNavigate }: { item: AttentionItem; onNavigate?: (path: string) => void }) {
+  return (
+    <li className={`attention-row attention-${item.level.toLowerCase()}`} key={`${item.level}-${item.title}`}>
+      <div className="attention-copy">
+        <span className={`severity-chip severity-${item.level.toLowerCase()}`}>{item.level}</span>
+        <div className="attention-text">
+          <strong>{item.title}</strong>
+          <p>{item.detail}</p>
+        </div>
+      </div>
+      <div className="attention-actions">
+        <button
+          type="button"
+          className="attention-action-btn"
+          onClick={() => item.path && onNavigate?.(item.path)}
+        >
+          <span>{item.cta || 'View Student'}</span>
+          <ArrowRight size={14} />
+        </button>
+      </div>
+    </li>
   )
 }
 
@@ -2252,68 +3094,111 @@ function AttentionList({ items, onNavigate }: { items: AttentionItem[]; onNaviga
   return (
     <ul className="list-stack">
       {items.map((item) => (
-        <li key={`${item.level}-${item.title}`}>
-          <div className="attention-copy">
-            <span className={`level-badge ${item.level.toLowerCase()}`}>{item.level}</span>
-            <div>
-              <strong>{item.title}</strong>
-              <small>{item.detail}</small>
-            </div>
-          </div>
-          <button type="button" className="action-tag" onClick={() => item.path && onNavigate?.(item.path)}>{item.cta}</button>
-        </li>
+        <AttentionItemCard key={`${item.level}-${item.title}`} item={item} onNavigate={onNavigate} />
       ))}
     </ul>
+  )
+}
+
+function QuickActionCard({ action, navigate }: { action: QuickAction; navigate: (path: string) => void }) {
+  const Icon = action.icon
+  const label = action.label.toLowerCase()
+  const tone = label.includes('alert')
+    ? 'alerts'
+    : label.includes('attendance')
+      ? 'attendance'
+      : label.includes('student') || label.includes('user')
+        ? 'students'
+        : label.includes('fee') || label.includes('collection')
+          ? 'finance'
+          : 'communication'
+
+  return (
+    <button key={action.label} type="button" className={`action-chip action-${tone}`} onClick={() => navigate(action.path)}>
+      <span className="quick-action-icon">
+        <Icon size={18} strokeWidth={2.2} />
+      </span>
+      <span className="quick-action-copy">
+        <strong>{action.label}</strong>
+        <small>{action.description}</small>
+      </span>
+      <ChevronRight size={16} className="quick-action-chevron" />
+    </button>
   )
 }
 
 function QuickActions({ actions, navigate }: { actions: QuickAction[]; navigate: (path: string) => void }) {
   return (
     <div className="action-list">
-      {actions.map((action) => {
-        const Icon = action.icon
-        return (
-          <button key={action.label} type="button" className="action-chip" onClick={() => navigate(action.path)}>
-            <Icon size={16} />
-            {action.label}
-          </button>
-        )
-      })}
+      {actions.map((action) => (
+        <QuickActionCard key={action.label} action={action} navigate={navigate} />
+      ))}
     </div>
   )
 }
 
 function SimpleTrendChart({ data, emptyMessage = 'Trend data will appear after attendance has been recorded.' }: { data: TrendPoint[]; emptyMessage?: string }) {
   if (!data.length) {
-    return <p className="student-muted">{emptyMessage}</p>
+    return (
+      <div className="chart-empty-state">
+        <TrendingUp size={24} className="chart-empty-icon" />
+        <p className="student-muted">{emptyMessage}</p>
+      </div>
+    )
   }
-  const width = 640
-  const height = 180
-  const padding = 22
+  const width = 800
+  const height = 220
+  const padding = 28
   const maxValue = Math.max(...data.map((point) => point.value))
   const minValue = Math.min(...data.map((point) => point.value))
 
-  const points = data
-    .map((point, index) => {
-      const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1)
-      const y = height - padding - ((point.value - minValue) / Math.max(maxValue - minValue, 1)) * (height - padding * 2)
-      return `${x},${y}`
-    })
-    .join(' ')
+  const coords = data.map((point, index) => {
+    const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1)
+    const y = height - padding - ((point.value - minValue) / Math.max(maxValue - minValue, 1)) * (height - padding * 2)
+    return { x, y }
+  })
+
+  const points = coords.map(({ x, y }) => `${x},${y}`).join(' ')
+  const areaPath = `${coords.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ')} L ${coords.at(-1)?.x ?? width - padding} ${height - padding} L ${coords[0]?.x ?? padding} ${height - padding} Z`
 
   return (
     <div className="chart-shell">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Trend chart">
-        <polyline points={points} fill="none" stroke="#2a6ef5" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
-        {data.map((point, index) => {
-          const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1)
-          const y = height - padding - ((point.value - minValue) / Math.max(maxValue - minValue, 1)) * (height - padding * 2)
-
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend chart">
+        <defs>
+          <linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#2F6BFF" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#2F6BFF" stopOpacity="0.01" />
+          </linearGradient>
+        </defs>
+        {[0, 1, 2, 3].map((line) => {
+          const y = padding + (line * (height - padding * 2)) / 3
           return (
-            <g key={point.day}>
-              <circle cx={x} cy={y} r="4" fill="#2a6ef5" />
-              <text x={x} y={height - 4} textAnchor="middle" className="chart-label">
-                {point.day}
+            <line
+              key={line}
+              x1={padding}
+              x2={width - padding}
+              y1={y}
+              y2={y}
+              className="chart-gridline"
+            />
+          )
+        })}
+        <path d={areaPath} fill="url(#trend-fill)" />
+        <polyline
+          points={points}
+          fill="none"
+          stroke="#2F6BFF"
+          strokeWidth="3.5"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {coords.map((point, index) => {
+          const day = data[index].day
+          return (
+            <g key={day}>
+              <circle cx={point.x} cy={point.y} r="6" fill="#FFFFFF" stroke="#2F6BFF" strokeWidth="2.5" />
+              <text x={point.x} y={height - 6} textAnchor="middle" className="chart-label">
+                {day}
               </text>
             </g>
           )
@@ -2411,7 +3296,7 @@ function AskEduPage({
     <section className="ask-edu-page">
       <div className="panel-header flex-header">
         <div>
-          <p className="eyebrow">School intelligence</p>
+          <p className="eyebrow">School Intelligence</p>
           <h1>Ask CAMVIA</h1>
         </div>
         <div className="status-pill">Live school brief</div>

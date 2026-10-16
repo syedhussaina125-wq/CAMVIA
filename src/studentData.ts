@@ -50,52 +50,26 @@ export type NewStudent = Pick<
 export type StudentAccess = {
   role: Role
   email: string
+  teacherAssignments?: Array<{
+    campus_id: string
+    class_name: string
+    section: string
+    active: boolean
+  }>
 }
 
-function createFixture(
-  id: string,
-  firstName: string,
-  lastName: string,
-  studentId: string,
-  className: string,
-  section: string,
-  rollNumber: string,
-  guardianName: string,
-): Student {
-  return {
-    id,
-    firstName,
-    lastName,
-    studentId,
-    className,
-    section,
-    rollNumber,
-    dateOfBirth: '2013-04-18',
-    gender: 'Female',
-    guardian: {
-      name: guardianName,
-      phone: '+92 300 555 0101',
-      email: `${guardianName.toLowerCase().replaceAll(' ', '.')}@example.com`,
-    },
-    status: 'Active',
-    campus: 'Main Campus',
-    activity: [
-      { date: '2026-10-02', title: 'Guardian communication', detail: 'Attendance follow-up email was read.' },
-    ],
+export function isStudentAssignedToTeacher(student: Student, access: StudentAccess): boolean {
+  if (access.teacherAssignments && access.teacherAssignments.length > 0) {
+    return access.teacherAssignments.some(
+      (assignment) =>
+        assignment.active &&
+        (!student.campusId || assignment.campus_id === student.campusId) &&
+        assignment.class_name.toLowerCase() === student.className.toLowerCase() &&
+        assignment.section.toLowerCase() === student.section.toLowerCase(),
+    )
   }
-}
-
-export const initialStudents: Student[] = [
-  createFixture('student-1001', 'Ahmed', 'Khan', 'ST-2026-1001', 'Grade 8', 'A', '08', 'Imran Khan'),
-  createFixture('student-1002', 'Sara', 'Ali', 'ST-2026-1002', 'Grade 9', 'B', '12', 'Nadia Ali'),
-  createFixture('student-1003', 'Mariam', 'Ahmed', 'ST-2026-1003', 'Grade 8', 'A', '04', 'Faisal Ahmed'),
-  createFixture('student-1004', 'Zain', 'Raza', 'ST-2026-1004', 'Grade 9', 'B', '16', 'Sana Raza'),
-  createFixture('student-1005', 'Hiba', 'Malik', 'ST-2026-1005', 'Grade 7', 'A', '21', 'Omar Malik'),
-  createFixture('student-1006', 'Rayyan', 'Shah', 'ST-2026-1006', 'Grade 6', 'C', '09', 'Amina Shah'),
-]
-
-const teacherClassAssignments: Record<string, string[]> = {
-  'teacher@beaconhouse.edu': ['Grade 8|A', 'Grade 9|B'],
+  // When loaded from Supabase, students are already strictly scoped via Postgres RLS
+  return true
 }
 
 export function getAccessibleStudents(students: Student[], access: StudentAccess): Student[] {
@@ -103,7 +77,11 @@ export function getAccessibleStudents(students: Student[], access: StudentAccess
     return students
   }
 
-  return students.filter((student) => isStudentAssignedToTeacher(student, access.email))
+  if (access.teacherAssignments && access.teacherAssignments.length > 0) {
+    return students.filter((student) => isStudentAssignedToTeacher(student, access))
+  }
+
+  return students
 }
 
 export function canAccessStudent(student: Student, access: StudentAccess): boolean {
@@ -111,7 +89,7 @@ export function canAccessStudent(student: Student, access: StudentAccess): boole
     return true
   }
 
-  return isStudentAssignedToTeacher(student, access.email)
+  return isStudentAssignedToTeacher(student, access)
 }
 
 export function canViewStudentTab(role: Role, tab: 'Overview' | 'Attendance' | 'Fees' | 'Communication'): boolean {
@@ -134,9 +112,4 @@ export function createStudentRecord(student: NewStudent, id = `student-${student
     campus: 'Main Campus',
     activity: [{ date: new Date().toISOString().slice(0, 10), title: 'Student added', detail: 'Student record created.' }],
   }
-}
-
-export function isStudentAssignedToTeacher(student: Student, email: string): boolean {
-  const assignments = teacherClassAssignments[email.toLowerCase()] ?? []
-  return assignments.includes(`${student.className}|${student.section}`)
 }

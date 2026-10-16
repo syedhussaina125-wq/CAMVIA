@@ -31,7 +31,13 @@ export async function getSessionProfile(): Promise<AppProfile | null> {
     return null
   }
 
-  return getActiveProfile(userId)
+  const profile = await getActiveProfile(userId)
+  if (profile && profile.status === 'INACTIVE') {
+    await supabaseClient.auth.signOut()
+    return null
+  }
+
+  return profile
 }
 
 export async function getActiveProfile(userId: string): Promise<AppProfile | null> {
@@ -93,25 +99,72 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
   }
 }
 
+const MAX_FAILED_ATTEMPTS = 5
+const LOCKOUT_DURATION_MS = 60 * 1000
+
+type AttemptRecord = {
+  count: number
+  lockedUntil: number
+}
+
+const loginAttempts = new Map<string, AttemptRecord>()
+
+function checkRateLimit(key: string): { allowed: boolean; waitSeconds?: number } {
+  const normalizedKey = key.trim().toLowerCase()
+  const record = loginAttempts.get(normalizedKey)
+  const now = Date.now()
+
+  if (record && record.lockedUntil > now) {
+    const waitSeconds = Math.ceil((record.lockedUntil - now) / 1000)
+    return { allowed: false, waitSeconds }
+  }
+
+  return { allowed: true }
+}
+
+function recordFailedAttempt(key: string): void {
+  const normalizedKey = key.trim().toLowerCase()
+  const record = loginAttempts.get(normalizedKey) ?? { count: 0, lockedUntil: 0 }
+  record.count += 1
+  if (record.count >= MAX_FAILED_ATTEMPTS) {
+    record.lockedUntil = Date.now() + LOCKOUT_DURATION_MS
+    record.count = 0
+  }
+  loginAttempts.set(normalizedKey, record)
+}
+
+function clearFailedAttempts(key: string): void {
+  loginAttempts.delete(key.trim().toLowerCase())
+}
+
 export async function signInWithEmail(email: string, password: string): Promise<{ success: boolean; profile?: AppProfile; error?: string }> {
   if (!isSupabaseConfigured || !supabaseClient) {
     return { success: false, error: 'Supabase is not configured in this environment. Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before enabling login.' }
   }
 
+  const rateCheck = checkRateLimit(email)
+  if (!rateCheck.allowed) {
+    return {
+      success: false,
+      error: `Too many failed login attempts. Please wait ${rateCheck.waitSeconds} seconds before trying again.`,
+    }
+  }
+
   const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password })
 
   if (error || !data.user) {
-    return { success: false, error: error?.message ?? 'Unable to sign in.' }
+    recordFailedAttempt(email)
+    return { success: false, error: 'Invalid email or password.' }
   }
 
   let profile: AppProfile | null
   try {
     profile = await getActiveProfile(data.user.id)
-  } catch (profileError) {
+  } catch {
     await supabaseClient.auth.signOut()
     return {
       success: false,
-      error: profileError instanceof Error ? profileError.message : 'Unable to load this account profile.',
+      error: 'Unable to load account profile. Please contact your school administrator.',
     }
   }
 
@@ -125,6 +178,7 @@ export async function signInWithEmail(email: string, password: string): Promise<
     return { success: false, error: 'This account is inactive. Please contact the administrator.' }
   }
 
+  clearFailedAttempts(email)
   return { success: true, profile }
 }
 
@@ -146,6 +200,81 @@ export async function signOut(): Promise<void> {
   }
 }
 
+export function getAppBaseUrl(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin
+  }
+  return import.meta.env.VITE_APP_URL || import.meta.env.VITE_SITE_URL || 'https://camvia.elvaveo.com'
+}
+
+export async function resetPasswordForEmail(email: string): Promise<{ success: boolean; error?: string }> {
+  if (!isSupabaseConfigured || !supabaseClient) {
+    return {
+      success: false,
+      error: 'Supabase is not configured in this environment. Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.',
+    }
+  }
+
+  const normalizedEmail = email.trim().toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return { success: false, error: 'Please enter a valid email address.' }
+  }
+
+  const rateCheck = checkRateLimit(`reset:${normalizedEmail}`)
+  if (!rateCheck.allowed) {
+    return {
+      success: false,
+      error: `Too many password reset attempts. Please wait ${rateCheck.waitSeconds} seconds before trying again.`,
+    }
+  }
+
+  const baseUrl = getAppBaseUrl()
+  const redirectTo = `${baseUrl}/reset-password`
+
+  const { error } = await supabaseClient.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo,
+  })
+
+  if (error) {
+    recordFailedAttempt(`reset:${normalizedEmail}`)
+    return {
+      success: false,
+      error: error.message || 'Unable to send password reset email. Please try again later.',
+    }
+  }
+
+  return { success: true }
+}
+
+export async function updateUserPassword(password: string): Promise<{ success: boolean; error?: string }> {
+  if (!isSupabaseConfigured || !supabaseClient) {
+    return {
+      success: false,
+      error: 'Supabase is not configured in this environment.',
+    }
+  }
+
+  if (password.length < 8) {
+    return { success: false, error: 'Password must be at least 8 characters long.' }
+  }
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    return {
+      success: false,
+      error: 'Password must contain uppercase letters, lowercase letters, and at least one number.',
+    }
+  }
+
+  const { error } = await supabaseClient.auth.updateUser({ password })
+  if (error) {
+    return {
+      success: false,
+      error: error.message || 'Unable to update password. Please verify that your link has not expired.',
+    }
+  }
+
+  return { success: true }
+}
+
 export function normalizeRole(role: RoleName | string): 'admin' | 'principal' | 'finance' | 'teacher' {
   const normalized = String(role).toUpperCase()
 
@@ -154,3 +283,4 @@ export function normalizeRole(role: RoleName | string): 'admin' | 'principal' | 
   if (normalized === 'FINANCE') return 'finance'
   return 'teacher'
 }
+

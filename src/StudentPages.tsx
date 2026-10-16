@@ -172,8 +172,23 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     setImportPreview(null)
     if (!file) return
 
-    if (!file.name.toLowerCase().endsWith('.csv')) {
+    const MAX_CSV_SIZE_BYTES = 2 * 1024 * 1024 // 2MB
+    if (file.size > MAX_CSV_SIZE_BYTES) {
+      setImportError('The selected file exceeds the 2MB size limit.')
+      event.target.value = ''
+      return
+    }
+
+    const lowerName = file.name.toLowerCase()
+    if (!lowerName.endsWith('.csv')) {
       setImportError('Excel preview is not enabled yet. Save the worksheet as CSV and upload it here.')
+      event.target.value = ''
+      return
+    }
+
+    const dangerousMimes = ['application/x-msdownload', 'application/javascript', 'text/html', 'application/x-sh']
+    if (file.type && dangerousMimes.includes(file.type.toLowerCase())) {
+      setImportError('Invalid file format. Upload a valid CSV file.')
       event.target.value = ''
       return
     }
@@ -369,6 +384,14 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   const [authorizedStudent, setAuthorizedStudent] = useState<Student | null>(null)
   const [detailError, setDetailError] = useState('')
   const [retryCount, setRetryCount] = useState(0)
+  const [prevStudentId, setPrevStudentId] = useState(studentId)
+  if (prevStudentId !== studentId) {
+    setPrevStudentId(studentId)
+    setPageState('loading')
+    setAuthorizedStudent(null)
+    setDetailError('')
+  }
+
   const feeInvoices = useMemo(
     () => authorizedStudent
       ? getFeeInvoices(fees, students, user).filter((invoice) => invoice.studentId === authorizedStudent.id)
@@ -385,9 +408,6 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
 
   useEffect(() => {
     let active = true
-    setPageState('loading')
-    setAuthorizedStudent(null)
-    setDetailError('')
     void fetchStudentById(studentId)
       .then((record) => {
         if (!active) return
@@ -698,9 +718,24 @@ function StudentListState({ title, detail, isError = false, onRetry }: { title: 
   )
 }
 
+function sanitizeCsvCell(value: string): string {
+  let cell = value.trim()
+  while (cell && ['=', '+', '-', '@', '\t', '\r'].includes(cell[0])) {
+    cell = cell.slice(1).trim()
+  }
+  return cell
+}
+
 function parseStudentCsv(content: string): NewStudent[] {
   const rows = parseCsvRows(content)
   if (rows.length < 2) throw new Error('The CSV must include a header row and at least one student.')
+
+  const MAX_IMPORT_ROWS = 500
+  const dataRows = rows.slice(1).filter((row) => row.some((value) => value.trim()))
+  if (dataRows.length > MAX_IMPORT_ROWS) {
+    throw new Error(`The CSV contains ${dataRows.length} rows, which exceeds the maximum limit of ${MAX_IMPORT_ROWS} students per import.`)
+  }
+  if (!dataRows.length) throw new Error('The CSV does not contain any student rows.')
 
   const normalizeHeader = (header: string) => header.trim().replace(/^\uFEFF/, '').toLowerCase().replaceAll('_', '').replaceAll('-', '').replaceAll(' ', '')
   const headers = rows[0].map(normalizeHeader)
@@ -708,30 +743,53 @@ function parseStudentCsv(content: string): NewStudent[] {
   const missing = requiredHeaders.filter((header) => !headers.includes(header))
   if (missing.length) throw new Error(`Missing CSV columns: ${missing.join(', ')}.`)
 
-  const column = (row: string[], name: string) => row[headers.indexOf(name)]?.trim() ?? ''
-  const parsed: NewStudent[] = rows.slice(1).filter((row) => row.some((value) => value.trim())).map((row, index) => {
-    const student: NewStudent = {
-      firstName: column(row, 'firstname'),
-      lastName: column(row, 'lastname'),
-      studentId: column(row, 'studentid'),
-      className: column(row, 'classname'),
-      section: column(row, 'section'),
-      rollNumber: column(row, 'rollnumber'),
-      dateOfBirth: column(row, 'dateofbirth'),
-      gender: column(row, 'gender'),
-      guardian: {
-        name: column(row, 'guardianname'),
-        phone: column(row, 'guardianphone'),
-        email: column(row, 'guardianemail'),
-      },
-    }
-    if (Object.values(student).some((value) => typeof value === 'string' && !value.trim()) ||
-      Object.values(student.guardian).some((value) => !value.trim())) {
+  const column = (row: string[], name: string) => sanitizeCsvCell(row[headers.indexOf(name)] ?? '')
+  const parsed: NewStudent[] = dataRows.map((row, index) => {
+    const studentId = column(row, 'studentid')
+    const firstName = column(row, 'firstname')
+    const lastName = column(row, 'lastname')
+    const className = column(row, 'classname')
+    const section = column(row, 'section')
+    const rollNumber = column(row, 'rollnumber')
+    const dateOfBirth = column(row, 'dateofbirth')
+    const gender = column(row, 'gender')
+    const guardianName = column(row, 'guardianname')
+    const guardianPhone = column(row, 'guardianphone')
+    const guardianEmail = column(row, 'guardianemail')
+
+    if (!studentId || !firstName || !lastName || !className || !section || !guardianName) {
       throw new Error(`Student row ${index + 2} is missing required values.`)
+    }
+    if (studentId.length > 40 || !/^[a-zA-Z0-9_-]+$/.test(studentId)) {
+      throw new Error(`Student row ${index + 2} has an invalid Student ID format (alphanumeric, dashes, underscores only up to 40 characters).`)
+    }
+    if (firstName.length > 100 || lastName.length > 100 || className.length > 100 || section.length > 40) {
+      throw new Error(`Student row ${index + 2} exceeds maximum allowed character length for names or class.`)
+    }
+    if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+      throw new Error(`Student row ${index + 2} has an invalid date of birth format (must be YYYY-MM-DD).`)
+    }
+    if (guardianEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guardianEmail)) {
+      throw new Error(`Student row ${index + 2} has an invalid guardian email address.`)
+    }
+
+    const student: NewStudent = {
+      firstName,
+      lastName,
+      studentId,
+      className,
+      section,
+      rollNumber,
+      dateOfBirth,
+      gender,
+      guardian: {
+        name: guardianName,
+        phone: guardianPhone,
+        email: guardianEmail,
+      },
     }
     return student
   })
-  if (!parsed.length) throw new Error('The CSV does not contain any student rows.')
   return parsed
 }
 
