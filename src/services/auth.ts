@@ -52,50 +52,88 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
     .maybeSingle()
 
   if (error) {
+    console.error('[CAMVIA Auth] Failed to query user profile:', error.message)
     throw error
   }
   if (!data) {
     return null
   }
 
-  if (data.status === 'ACTIVE') {
-    const { data: roleRows, error: rolesError } = await supabaseClient
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', userId)
+  const normalizedRole = String(data.role || 'TEACHER').toUpperCase() as RoleName
+  const normalizedStatus = String(data.status || 'ACTIVE').toUpperCase() as ProfileStatus
 
-    if (rolesError) {
-      throw rolesError
-    }
+  if (normalizedStatus === 'ACTIVE') {
+    try {
+      const { data: roleRows, error: rolesError } = await supabaseClient
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
 
-    const linkedRole = (roleRows ?? []).find((row: { role: RoleName }) => row.role === data.role)
-    if (!linkedRole) {
-      throw new Error('The account profile has no matching role assignment.')
+      if (rolesError) {
+        console.warn('[CAMVIA Auth] Note: user_roles query was restricted:', rolesError.message)
+      } else if (roleRows && roleRows.length > 0) {
+        const linkedRole = roleRows.find(
+          (row: { role: string }) => String(row.role).toUpperCase() === normalizedRole
+        )
+        if (!linkedRole) {
+          console.warn(`[CAMVIA Auth] Note: profiles.role (${normalizedRole}) not matched in user_roles:`, roleRows)
+        }
+      }
+    } catch (roleErr) {
+      console.warn('[CAMVIA Auth] Exception reading user_roles:', roleErr)
     }
   }
 
-  const [schoolResult, campusResult] = await Promise.all([
-    data.school_id
-      ? supabaseClient.from('schools').select('name').eq('id', data.school_id).maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
-    data.campus_id
-      ? supabaseClient.from('campuses').select('name').eq('id', data.campus_id).maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
-  ])
-  if (schoolResult.error) throw schoolResult.error
-  if (campusResult.error) throw campusResult.error
+  let schoolName: string | null = null
+  let campusName: string | null = null
+
+  if (data.school_id) {
+    try {
+      const { data: schoolResult, error: schoolError } = await supabaseClient
+        .from('schools')
+        .select('name')
+        .eq('id', data.school_id)
+        .maybeSingle()
+
+      if (schoolError) {
+        console.warn('[CAMVIA Auth] Note: schools name query was restricted:', schoolError.message)
+      } else if (schoolResult?.name) {
+        schoolName = schoolResult.name
+      }
+    } catch (sErr) {
+      console.warn('[CAMVIA Auth] Exception resolving school name:', sErr)
+    }
+  }
+
+  if (data.campus_id) {
+    try {
+      const { data: campusResult, error: campusError } = await supabaseClient
+        .from('campuses')
+        .select('name')
+        .eq('id', data.campus_id)
+        .maybeSingle()
+
+      if (campusError) {
+        console.warn('[CAMVIA Auth] Note: campuses name query was restricted:', campusError.message)
+      } else if (campusResult?.name) {
+        campusName = campusResult.name
+      }
+    } catch (cErr) {
+      console.warn('[CAMVIA Auth] Exception resolving campus name:', cErr)
+    }
+  }
 
   return {
     id: data.id,
     email: data.email,
     full_name: data.full_name,
-    status: data.status,
-    role: data.role,
+    status: normalizedStatus,
+    role: normalizedRole,
     organization_id: data.organization_id,
     school_id: data.school_id,
     campus_id: data.campus_id,
-    school_name: schoolResult.data?.name ?? null,
-    campus_name: campusResult.data?.name ?? null,
+    school_name: schoolName,
+    campus_name: campusName,
   }
 }
 
@@ -160,11 +198,14 @@ export async function signInWithEmail(email: string, password: string): Promise<
   let profile: AppProfile | null
   try {
     profile = await getActiveProfile(data.user.id)
-  } catch {
+  } catch (profileError) {
+    console.error('[CAMVIA Auth] Failed to load profile for user:', data.user.id, profileError)
     await supabaseClient.auth.signOut()
     return {
       success: false,
-      error: 'Unable to load account profile. Please contact your school administrator.',
+      error: profileError instanceof Error && profileError.message
+        ? profileError.message
+        : 'Unable to load account profile. Please contact your school administrator.',
     }
   }
 
