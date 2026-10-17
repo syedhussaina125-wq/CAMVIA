@@ -196,16 +196,22 @@ export function getFeeCollectionTrend(
   user: FeeAccessUser,
   today = new Date().toISOString().slice(0, 10),
 ) {
-  if (!Array.isArray(state?.payments)) return []
+  if (!Array.isArray(state?.payments) || state.payments.length === 0) return []
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user, today).map((invoice) => invoice.id))
-  return Array.from({ length: 7 }, (_, index) => {
+  const relevantPayments = state.payments.filter((payment) => authorizedInvoiceIds.has(payment.invoiceId))
+  if (relevantPayments.length === 0) return []
+
+  const trend = Array.from({ length: 7 }, (_, index) => {
     const date = shiftDate(today, index - 6)
-    const collected = state.payments
-      .filter((payment) => payment.date === date && authorizedInvoiceIds.has(payment.invoiceId))
+    const collected = relevantPayments
+      .filter((payment) => payment.date === date)
       .reduce((sum, payment) => sum + payment.amount, 0)
     const day = new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(`${date}T00:00:00`))
     return { day, value: roundMoney(collected) }
   })
+
+  const hasAnyData = trend.some((point) => point.value > 0)
+  return hasAnyData ? trend : []
 }
 
 export function getFeePaymentsCollected(

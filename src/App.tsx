@@ -297,17 +297,17 @@ const allowedRoutes: Record<Role, string[]> = {
 const dashboardFixtures: Record<Role, DashboardConfig> = {
   admin: {
     stats: [
-      { label: 'Students', value: '1,245', subLabel: 'Total students', tone: 'blue', icon: Users },
-      { label: 'Attendance', value: '—', subLabel: 'Today', tone: 'cyan', icon: ClipboardCheck },
-      { label: 'Collected This Month', value: '—', subLabel: 'Fee collections', tone: 'green', icon: Wallet },
-      { label: 'Outstanding', value: '—', subLabel: 'Current fee balance', tone: 'purple', icon: CreditCard },
-      { label: 'Overdue', value: '—', subLabel: 'Past-due balance', tone: 'red', icon: AlertTriangle },
-      { label: 'Parent Communications Awaiting Approval', value: '—', subLabel: 'Pending review', tone: 'amber', icon: MessageSquareText },
-      { label: 'Alerts', value: '8', subLabel: 'Need attention', tone: 'amber', icon: BellRing },
+      { label: 'Students', value: '0', subLabel: 'Total students', tone: 'blue', icon: Users },
+      { label: 'Attendance', value: '0%', subLabel: 'Today', tone: 'cyan', icon: ClipboardCheck },
+      { label: 'Collected This Month', value: 'PKR 0', subLabel: 'Fee collections', tone: 'green', icon: Wallet },
+      { label: 'Outstanding', value: 'PKR 0', subLabel: 'Current fee balance', tone: 'purple', icon: CreditCard },
+      { label: 'Overdue', value: 'PKR 0', subLabel: 'Past-due balance', tone: 'red', icon: AlertTriangle },
+      { label: 'Parent Communications Awaiting Approval', value: '0', subLabel: 'Pending review', tone: 'amber', icon: MessageSquareText },
+      { label: 'Alerts', value: '0', subLabel: 'Need attention', tone: 'amber', icon: BellRing },
     ],
     morningBrief: {
-      summary: 'Attendance summary will appear from recorded attendance sessions.',
-      cta: 'View Details',
+      summary: 'Attendance and school metrics will appear once student and class data is added.',
+      cta: 'Add Students',
     },
     attention: [],
     quickActions: [
@@ -315,23 +315,22 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
       { label: 'Import Students', description: 'Bulk import students from a file', icon: GraduationCap, path: '/students' },
       { label: 'View Alerts', description: 'Check all recent alerts and notifications', icon: BellRing, path: '/alerts' },
     ],
-    trend: [
-    ],
+    trend: [],
   },
   principal: {
     stats: [
-      { label: 'Attendance', value: '—', subLabel: 'Today', tone: 'blue', icon: ClipboardCheck },
-      { label: 'Present', value: '—', subLabel: 'Students present', tone: 'green', icon: Users },
-      { label: 'Absent', value: '—', subLabel: 'Students absent', tone: 'amber', icon: AlertTriangle },
-      { label: 'Attendance Alerts', value: '—', subLabel: 'Based on recorded sessions', tone: 'red', icon: BellRing },
-      { label: 'Collected This Month', value: '—', subLabel: 'Fee collections', tone: 'green', icon: Wallet },
-      { label: 'Outstanding', value: '—', subLabel: 'Current fee balance', tone: 'purple', icon: CreditCard },
-      { label: 'Overdue', value: '—', subLabel: 'Past-due balance', tone: 'amber', icon: AlertTriangle },
-      { label: 'Parent Communications Awaiting Approval', value: '—', subLabel: 'Pending review', tone: 'purple', icon: MessageSquareText },
+      { label: 'Attendance', value: '0%', subLabel: 'Today', tone: 'blue', icon: ClipboardCheck },
+      { label: 'Present', value: '0', subLabel: 'Students present', tone: 'green', icon: Users },
+      { label: 'Absent', value: '0', subLabel: 'Students absent', tone: 'amber', icon: AlertTriangle },
+      { label: 'Attendance Alerts', value: '0', subLabel: 'Based on recorded sessions', tone: 'red', icon: BellRing },
+      { label: 'Collected This Month', value: 'PKR 0', subLabel: 'Fee collections', tone: 'green', icon: Wallet },
+      { label: 'Outstanding', value: 'PKR 0', subLabel: 'Current fee balance', tone: 'purple', icon: CreditCard },
+      { label: 'Overdue', value: 'PKR 0', subLabel: 'Past-due balance', tone: 'amber', icon: AlertTriangle },
+      { label: 'Parent Communications Awaiting Approval', value: '0', subLabel: 'Pending review', tone: 'purple', icon: MessageSquareText },
     ],
     morningBrief: {
-      summary: 'Attendance summary will appear from recorded attendance sessions.',
-      cta: 'View Details',
+      summary: 'Attendance and school metrics will appear once student and class data is added.',
+      cta: 'View Students',
     },
     attention: [],
     quickActions: [
@@ -339,20 +338,19 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
       { label: 'View Students', description: 'Open student records and academic summaries', icon: GraduationCap, path: '/students' },
       { label: 'Review Alerts', description: 'Check the latest school and campus alerts', icon: BellRing, path: '/alerts' },
     ],
-    trend: [
-    ],
+    trend: [],
   },
   finance: {
     stats: [
-      { label: 'Expected', value: '—', subLabel: 'Total expected fees', tone: 'blue', icon: Banknote },
-      { label: 'Collected', value: '—', subLabel: 'This month', tone: 'green', icon: CircleDollarSign },
-      { label: 'Outstanding', value: '—', subLabel: 'Current balance', tone: 'purple', icon: CreditCard },
-      { label: 'Overdue', value: '—', subLabel: 'Past due amount', tone: 'red', icon: AlertTriangle },
-      { label: 'Fee Reminders Awaiting Review', value: '—', subLabel: 'Pending approval', tone: 'amber', icon: MessageSquareText },
+      { label: 'Expected', value: 'PKR 0', subLabel: 'Total expected fees', tone: 'blue', icon: Banknote },
+      { label: 'Collected', value: 'PKR 0', subLabel: 'This month', tone: 'green', icon: CircleDollarSign },
+      { label: 'Outstanding', value: 'PKR 0', subLabel: 'Current balance', tone: 'purple', icon: CreditCard },
+      { label: 'Overdue', value: 'PKR 0', subLabel: 'Past due amount', tone: 'red', icon: AlertTriangle },
+      { label: 'Fee Reminders Awaiting Review', value: '0', subLabel: 'Pending approval', tone: 'amber', icon: MessageSquareText },
     ],
     morningBrief: {
-      summary: 'Fee collection totals will appear from recorded invoice and payment data.',
-      cta: 'View Details',
+      summary: 'Fee collection totals will appear once student fee invoices are recorded.',
+      cta: 'View Fees',
     },
     attention: [],
     quickActions: [
@@ -364,25 +362,23 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
   },
   teacher: {
     stats: [
-      { label: 'My Classes', value: '4', subLabel: 'Assigned classes', tone: 'blue', icon: BookCheck },
-      { label: 'Students', value: '96', subLabel: 'Assigned students', tone: 'cyan', icon: Users },
-      { label: 'Attendance', value: '—', subLabel: "Today's attendance", tone: 'green', icon: ClipboardCheck },
-      { label: 'Attendance Alerts', value: '—', subLabel: 'Based on recorded sessions', tone: 'amber', icon: AlertTriangle },
-      { label: 'Draft Attendance Messages', value: '—', subLabel: 'Ready to submit', tone: 'purple', icon: MessageSquareText },
+      { label: 'My Classes', value: '0', subLabel: 'Assigned classes', tone: 'blue', icon: BookCheck },
+      { label: 'Students', value: '0', subLabel: 'Assigned students', tone: 'cyan', icon: Users },
+      { label: 'Attendance', value: '0%', subLabel: "Today's attendance", tone: 'green', icon: ClipboardCheck },
+      { label: 'Attendance Alerts', value: '0', subLabel: 'Based on recorded sessions', tone: 'amber', icon: AlertTriangle },
+      { label: 'Draft Attendance Messages', value: '0', subLabel: 'Ready to submit', tone: 'purple', icon: MessageSquareText },
     ],
     morningBrief: {
-      summary: 'Attendance summary will appear from recorded attendance sessions.',
-      cta: 'View Details',
+      summary: 'Attendance summary will appear once classroom sessions are recorded.',
+      cta: 'View Attendance',
     },
-    attention: [
-    ],
+    attention: [],
     quickActions: [
       { label: 'Take Attendance', description: 'Mark class attendance and review classroom status', icon: ClipboardCheck, path: '/attendance' },
       { label: 'View My Students', description: 'Open classroom records for assigned learners', icon: GraduationCap, path: '/students' },
       { label: 'Review Alerts', description: 'Check attendance and student follow-up notifications', icon: BellRing, path: '/alerts' },
     ],
-    trend: [
-    ],
+    trend: [],
   },
 }
 
@@ -2312,7 +2308,9 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
       ...fixture,
       stats,
       morningBrief: {
-        summary: feesUnavailable ? 'Live fee metrics are currently unavailable.' : `${formatFeeCurrency(currentMonthCollections)} collected this month. ${formatFeeCurrency(feeMetrics.outstanding)} remains outstanding, including ${formatFeeCurrency(feeMetrics.overdue)} overdue. ${communicationSummary.feeAwaitingApproval} fee reminders await review.`,
+        summary: feesUnavailable ? 'Live fee metrics are currently unavailable.' : (currentMonthCollections > 0 || feeMetrics.outstanding > 0)
+          ? `${formatFeeCurrency(currentMonthCollections)} collected this month. ${formatFeeCurrency(feeMetrics.outstanding)} remains outstanding, including ${formatFeeCurrency(feeMetrics.overdue)} overdue. ${communicationSummary.feeAwaitingApproval} fee reminders await review.`
+          : 'No fee invoices or payments have been recorded yet. Add students and generate invoices to begin tracking collections.',
         cta: 'View Fees',
       },
       attention: [
@@ -2333,8 +2331,8 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   const classes = getAttendanceClasses(students)
   const todayCounts = getAttendanceForScope(attendance, classes, today).counts
   const attendanceAttention = getAttendanceAttention(attendance, students)
-  const rate = todayCounts.rate === null ? '—' : `${todayCounts.rate}%`
-  const activeAlertCount = alertsUnavailable ? '—' : String(liveAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
+  const rate = todayCounts.rate === null ? '0%' : `${todayCounts.rate}%`
+  const activeAlertCount = alertsUnavailable ? '0' : String(liveAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
   const authorizedStudentCount = classes.reduce((total, item) => total + item.students.length, 0)
   const stats = fixture.stats.map((stat) => {
     if (stat.label === 'Students') {
@@ -2345,13 +2343,13 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
       }
     }
     if (stat.label === 'Collected This Month') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : stat.subLabel }
+      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : stat.subLabel }
     }
     if (stat.label === 'Outstanding') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
+      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(feeMetrics.outstanding) }
     }
     if (stat.label === 'Overdue') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
+      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(feeMetrics.overdue) }
     }
     if (stat.label === 'Parent Communications Awaiting Approval') {
       return { ...stat, value: String(communicationSummary.awaitingApproval) }
@@ -2362,14 +2360,14 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     if (stat.label === 'Attendance') {
       return {
         ...stat,
-        value: attendanceUnavailable ? '—' : rate,
+        value: attendanceUnavailable ? '0%' : rate,
         subLabel: attendanceUnavailable ? 'Attendance data unavailable' : todayCounts.total
           ? `${todayCounts.total} of ${authorizedStudentCount} authorized students recorded`
           : 'No attendance recorded today',
       }
     }
-    if (stat.label === 'Present') return { ...stat, value: attendanceUnavailable ? '—' : todayCounts.total ? String(todayCounts.present) : '—' }
-    if (stat.label === 'Absent') return { ...stat, value: attendanceUnavailable ? '—' : todayCounts.total ? String(todayCounts.absent) : '—' }
+    if (stat.label === 'Present') return { ...stat, value: attendanceUnavailable ? '0' : String(todayCounts.present) }
+    if (stat.label === 'Absent') return { ...stat, value: attendanceUnavailable ? '0' : String(todayCounts.absent) }
     if (stat.label === 'Attendance Alerts' || stat.label === 'Alerts' || stat.label === 'Open alerts') {
       return { ...stat, label: 'Alerts', value: activeAlertCount, subLabel: 'Across attendance, fees, and communication' }
     }
@@ -2395,8 +2393,10 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   }
   const scopeText = user.role === 'teacher' ? 'your assigned classes' : 'the authorized campus'
   const summary = todayCounts.total
-    ? `Today's recorded attendance is ${rate} across ${todayCounts.total} student records in ${scopeText}. ${attendanceAttention.length} attendance items meet the current attention rules.`
-    : `No attendance has been recorded today in ${scopeText}. ${attendanceAttention.length} items meet the current attention rules based on previously recorded sessions.`
+    ? `Today's recorded attendance is ${rate} across ${todayCounts.total} student records in ${scopeText}.${attendanceAttention.length ? ` ${attendanceAttention.length} attendance items meet the current attention rules.` : ''}`
+    : attendanceAttention.length
+      ? `No attendance has been recorded today in ${scopeText}. ${attendanceAttention.length} items meet the current attention rules based on previously recorded sessions.`
+      : `No attendance has been recorded today in ${scopeText}. Add students and mark class attendance to begin tracking daily trends.`
 
   return {
     ...fixture,

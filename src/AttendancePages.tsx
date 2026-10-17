@@ -99,7 +99,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
         <AttendanceMetric label="Present" value={String(counts.present)} tone="green" />
         <AttendanceMetric label="Absent" value={String(counts.absent)} tone="red" />
         <AttendanceMetric label="Late" value={String(counts.late)} tone="amber" />
-        <AttendanceMetric label="Attendance Rate" value={counts.rate === null ? '—' : `${counts.rate}%`} tone="blue" />
+        <AttendanceMetric label="Attendance Rate" value={counts.rate === null ? '0%' : `${counts.rate}%`} tone="blue" />
       </div>
 
       <section className="attendance-section">
@@ -134,7 +134,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
               </tbody>
             </table>
           </div>
-        ) : <AttendanceEmptyState title="No classes match these filters." detail="Choose another class or section." />}
+        ) : <AttendanceEmptyState title={classes.length === 0 ? 'No classes available yet.' : 'No classes match these filters.'} detail={classes.length === 0 ? 'Classes will appear here once students are enrolled.' : 'Choose another class or section.'} />}
         <div className="attendance-class-cards">
           {visibleClasses.map((attendanceClass) => (
             <AttendanceClassCard

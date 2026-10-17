@@ -114,7 +114,7 @@ export function FeesPage(props: FeesPagesProps) {
             <label className="fees-search"><Search size={16} /><input aria-label="Search fee records" placeholder="Search student, ID, or class" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           </div>
           {filteredInvoices.length ? <FeeInvoiceTable invoices={filteredInvoices} onView={(id) => navigate(`/fees/${encodeURIComponent(id)}`)} /> : (
-            <div className="fees-empty"><div className="fees-empty-icon"><Wallet size={20} /></div><strong>No fee records found for this period.</strong><p>Try another month or adjust your filters.</p></div>
+            <div className="fees-empty"><div className="fees-empty-icon"><Wallet size={20} /></div><strong>{allInvoices.length === 0 ? 'No fee records have been created yet.' : 'No fee records found for this period.'}</strong><p>{allInvoices.length === 0 ? 'Fee invoices and balances will appear here once generated.' : 'Try another month or adjust your filters.'}</p></div>
           )}
         </section>
 
@@ -141,7 +141,7 @@ export function FeesPage(props: FeesPagesProps) {
                   </article>
                 ))}
               </div>
-            ) : <p className="student-muted">All fees are up to date.</p>}
+            ) : <p className="student-muted">{allInvoices.length === 0 ? 'No overdue accounts.' : 'All fees are up to date.'}</p>}
           </section>
         </aside>
       </div>
