@@ -13,6 +13,9 @@ import {
   localDateKey,
 } from './attendanceData'
 import type { Student } from './studentData'
+import { RecordActionMenu, type ActionItem } from './components/RecordActionControls'
+import { AttendanceCorrectionModal, type AttendanceCorrectionRecord } from './components/AttendanceCorrectionModal'
+import { correctAttendanceSession } from './services/attendance'
 
 type AttendancePageProps = {
   user: AttendanceUser
@@ -22,6 +25,12 @@ type AttendancePageProps = {
   error: string
   onRetry: () => void
   onPrepareMessage?: (studentId: string) => void
+  onCorrectAttendance?: (payload: {
+    sessionId: string
+    records: AttendanceCorrectionRecord[]
+    reason: string
+  }) => Promise<void>
+  onRefresh?: () => void
 }
 
 interface TakeAttendancePageProps extends AttendancePageProps {
@@ -34,7 +43,7 @@ const statusOptions: { status: AttendanceStatus; label: string }[] = [
   { status: 'LATE', label: 'Late' },
 ]
 
-export function AttendancePage({ user, students, attendance, loading, error, onRetry, onPrepareMessage }: AttendancePageProps) {
+export function AttendancePage({ user, students, attendance, loading, error, onRetry, onPrepareMessage, onCorrectAttendance, onRefresh }: AttendancePageProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const classes = useMemo(() => getAttendanceClasses(students), [students])
@@ -45,6 +54,14 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
   const [sectionFilter, setSectionFilter] = useState(() =>
     user.role === 'teacher' && classes.length === 1 ? classes[0].section : '',
   )
+  const [correctingSession, setCorrectingSession] = useState<{
+    sessionId: string
+    className: string
+    section: string
+    date: string
+    records: AttendanceCorrectionRecord[]
+  } | null>(null)
+
   if (loading) return <AttendanceLoadingState />
   if (error) return <AttendanceErrorState detail={error} onRetry={onRetry} />
 
@@ -117,6 +134,29 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                   const sessionRecords = session ? getSessionRecords(attendance, session.id) : []
                   const summary = getAttendanceCounts(sessionRecords)
                   const status = !session ? 'Not Marked' : sessionRecords.length < attendanceClass.students.length ? 'In Progress' : 'Completed'
+                  const classActions: ActionItem[] = []
+                  if (user.role !== 'finance' && session) {
+                    classActions.push({
+                      label: 'Correct Attendance',
+                      onClick: () => {
+                        setCorrectingSession({
+                          sessionId: session.id,
+                          className: attendanceClass.className,
+                          section: attendanceClass.section,
+                          date,
+                          records: attendanceClass.students.map((student) => {
+                            const rec = sessionRecords.find((item) => item.studentId === student.id)
+                            return {
+                              student_id: student.id,
+                              student_name: `${student.firstName} ${student.lastName}`,
+                              status: (rec?.status ?? 'PRESENT') as 'PRESENT' | 'ABSENT' | 'LATE',
+                              note: rec?.note ?? '',
+                            }
+                          }),
+                        })
+                      },
+                    })
+                  }
                   return (
                     <tr key={attendanceClass.id}>
                       <td><strong>{attendanceClass.className}</strong></td>
@@ -127,7 +167,22 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                       <td>{session ? summary.late : '—'}</td>
                       <td>{summary.rate === null ? '—' : `${summary.rate}%`}</td>
                       <td><span className={`attendance-status ${status.toLowerCase().replace(' ', '-')}`}>{status}</span></td>
-                      <td>{user.role === 'finance' ? 'View only' : <button type="button" className="student-link" onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}>{session ? 'View / Edit' : 'Take Attendance'}</button>}</td>
+                      <td>
+                        {user.role === 'finance' ? (
+                          'View only'
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <button
+                              type="button"
+                              className="student-link"
+                              onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
+                            >
+                              {session ? 'View / Edit' : 'Take Attendance'}
+                            </button>
+                            {classActions.length > 0 && <RecordActionMenu actions={classActions} />}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   )
                 })}
@@ -136,31 +191,74 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
           </div>
         ) : <AttendanceEmptyState title={classes.length === 0 ? 'No classes available yet.' : 'No classes match these filters.'} detail={classes.length === 0 ? 'Classes will appear here once students are enrolled.' : 'Choose another class or section.'} />}
         <div className="attendance-class-cards">
-          {visibleClasses.map((attendanceClass) => (
-            <AttendanceClassCard
-              key={attendanceClass.id}
-              attendanceClass={attendanceClass}
-              date={date}
-              attendance={attendance}
-              canEdit={user.role !== 'finance'}
-              onOpen={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
-            />
-          ))}
+          {visibleClasses.map((attendanceClass) => {
+            const session = getSessionForClass(attendance, date, attendanceClass)
+            const sessionRecords = session ? getSessionRecords(attendance, session.id) : []
+            return (
+              <AttendanceClassCard
+                key={attendanceClass.id}
+                attendanceClass={attendanceClass}
+                date={date}
+                attendance={attendance}
+                canEdit={user.role !== 'finance'}
+                onOpen={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
+                onCorrect={session && user.role !== 'finance' ? () => {
+                  setCorrectingSession({
+                    sessionId: session.id,
+                    className: attendanceClass.className,
+                    section: attendanceClass.section,
+                    date,
+                    records: attendanceClass.students.map((student) => {
+                      const rec = sessionRecords.find((item) => item.studentId === student.id)
+                      return {
+                        student_id: student.id,
+                        student_name: `${student.firstName} ${student.lastName}`,
+                        status: (rec?.status ?? 'PRESENT') as 'PRESENT' | 'ABSENT' | 'LATE',
+                        note: rec?.note ?? '',
+                      }
+                    }),
+                  })
+                } : undefined}
+              />
+            )
+          })}
         </div>
       </section>
 
       <AttendanceAttentionPanel attendance={attendance} user={user} students={students} onOpenStudent={(id) => navigate(`/students/${encodeURIComponent(id)}`)} onOpenClass={(id) => navigate(`/attendance/take/${encodeURIComponent(id)}?date=${date}`)} onPrepareMessage={onPrepareMessage} />
+
+      {correctingSession && (
+        <AttendanceCorrectionModal
+          isOpen={Boolean(correctingSession)}
+          sessionId={correctingSession.sessionId}
+          className={correctingSession.className}
+          section={correctingSession.section}
+          date={correctingSession.date}
+          records={correctingSession.records}
+          onClose={() => setCorrectingSession(null)}
+          onSave={async (payload) => {
+            if (onCorrectAttendance) {
+              await onCorrectAttendance(payload)
+            } else {
+              await correctAttendanceSession(payload)
+              if (onRefresh) onRefresh()
+            }
+          }}
+        />
+      )}
     </section>
   )
 }
 
-export function TakeAttendancePage({ user, students, attendance, loading, error, onRetry, onSave }: TakeAttendancePageProps) {
+export function TakeAttendancePage(props: TakeAttendancePageProps) {
+  const { user, students, attendance, loading, error, onRetry, onSave, onCorrectAttendance, onRefresh } = props
   const navigate = useNavigate()
   const { classId = '' } = useParams()
   const [searchParams] = useSearchParams()
   const requestedDate = searchParams.get('date') ?? localDateKey()
   const attendanceClass = useMemo(() => canAccessAttendanceClass(students, classId), [students, classId])
   const [date, setDate] = useState(requestedDate)
+  const [showCorrectionModal, setShowCorrectionModal] = useState(false)
   const [draft, setDraft] = useState<{
     key: string
     statuses: Record<string, AttendanceStatus>
@@ -219,82 +317,138 @@ export function TakeAttendancePage({ user, students, attendance, loading, error,
   }
 
   return (
-    <form className="take-attendance-page" onSubmit={submit}>
-      <button type="button" className="back-link" onClick={() => navigate('/attendance')}><ArrowLeft size={16} /> Attendance</button>
-      <header className="take-attendance-heading">
-        <div>
-          <p className="eyebrow">{existingSession ? 'Edit attendance' : 'Take attendance'}</p>
-          <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
-          <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
+    <>
+      <form className="take-attendance-page" onSubmit={submit}>
+        <button type="button" className="back-link" onClick={() => navigate('/attendance')}><ArrowLeft size={16} /> Attendance</button>
+        <header className="take-attendance-heading">
+          <div>
+            <p className="eyebrow">{existingSession ? 'Edit attendance' : 'Take attendance'}</p>
+            <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
+            <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
+          </div>
+          <label className="take-date-control"><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+        </header>
+
+        <div className="take-attendance-toolbar">
+          <label className="attendance-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name or student ID" aria-label="Search class students" /></label>
+          <button type="button" className="secondary-button small-button" onClick={() => setDraft({
+            key: draftKey,
+            statuses: Object.fromEntries(attendanceClass.students.map((student) => [student.id, 'PRESENT'])),
+            notes: draft.key === draftKey ? draft.notes : {},
+          })}>
+            <ClipboardCheck size={16} /> Mark All Present
+          </button>
         </div>
-        <label className="take-date-control"><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-      </header>
 
-      <div className="take-attendance-toolbar">
-        <label className="attendance-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name or student ID" aria-label="Search class students" /></label>
-        <button type="button" className="secondary-button small-button" onClick={() => setDraft({
-          key: draftKey,
-          statuses: Object.fromEntries(attendanceClass.students.map((student) => [student.id, 'PRESENT'])),
-          notes: draft.key === draftKey ? draft.notes : {},
-        })}>
-          <ClipboardCheck size={16} /> Mark All Present
-        </button>
-      </div>
-
-      <div className="attendance-student-list">
-        {filteredStudents.map((student) => (
-          <article className="attendance-student-row" key={student.id}>
-            <div className="attendance-student-person">
-              <div className="student-avatar"><Users size={17} /></div>
-              <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId} · Roll {student.rollNumber}</span></div>
-            </div>
-            <div className="attendance-segmented" role="group" aria-label={`Attendance for ${student.firstName} ${student.lastName}`}>
-              {statusOptions.map((option) => (
-                <button type="button" key={option.status} aria-pressed={(statuses[student.id] ?? 'PRESENT') === option.status} className={`${(statuses[student.id] ?? 'PRESENT') === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => setDraft((current) => ({
+        <div className="attendance-student-list">
+          {filteredStudents.map((student) => (
+            <article className="attendance-student-row" key={student.id}>
+              <div className="attendance-student-person">
+                <div className="student-avatar"><Users size={17} /></div>
+                <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId} · Roll {student.rollNumber}</span></div>
+              </div>
+              <div className="attendance-segmented" role="group" aria-label={`Attendance for ${student.firstName} ${student.lastName}`}>
+                {statusOptions.map((option) => (
+                  <button type="button" key={option.status} aria-pressed={(statuses[student.id] ?? 'PRESENT') === option.status} className={`${(statuses[student.id] ?? 'PRESENT') === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => setDraft((current) => ({
+                    key: draftKey,
+                    statuses: { ...(current.key === draftKey ? current.statuses : {}), [student.id]: option.status },
+                    notes: current.key === draftKey ? current.notes : {},
+                  }))}>{option.label}</button>
+                ))}
+              </div>
+              {statuses[student.id] !== 'PRESENT' ? (
+                <input className="attendance-note" value={notes[student.id] ?? ''} onChange={(event) => setDraft((current) => ({
                   key: draftKey,
-                  statuses: { ...(current.key === draftKey ? current.statuses : {}), [student.id]: option.status },
-                  notes: current.key === draftKey ? current.notes : {},
-                }))}>{option.label}</button>
-              ))}
-            </div>
-            {statuses[student.id] !== 'PRESENT' ? (
-              <input className="attendance-note" value={notes[student.id] ?? ''} onChange={(event) => setDraft((current) => ({
-                key: draftKey,
-                statuses: current.key === draftKey ? current.statuses : {},
-                notes: { ...(current.key === draftKey ? current.notes : {}), [student.id]: event.target.value },
-              }))} placeholder="Optional note" aria-label={`Optional note for ${student.firstName} ${student.lastName}`} />
-            ) : null}
-          </article>
-        ))}
-      </div>
-
-      {saveError ? <div className="attendance-empty-notice" role="alert">{saveError}</div> : null}
-      <footer className="attendance-save-footer">
-        <div className="attendance-totals">
-          <span><i className="total-dot present-dot" /> Present: <strong>{totals.present}</strong></span>
-          <span><i className="total-dot absent-dot" /> Absent: <strong>{totals.absent}</strong></span>
-          <span><i className="total-dot late-dot" /> Late: <strong>{totals.late}</strong></span>
+                  statuses: current.key === draftKey ? current.statuses : {},
+                  notes: { ...(current.key === draftKey ? current.notes : {}), [student.id]: event.target.value },
+                }))} placeholder="Optional note" aria-label={`Optional note for ${student.firstName} ${student.lastName}`} />
+              ) : null}
+            </article>
+          ))}
         </div>
-        <button type="submit" className="primary-button attendance-save-button" disabled={saving}>{saving ? 'Saving…' : existingSession ? 'Save Changes' : 'Save Attendance'}</button>
-      </footer>
-    </form>
+
+        {saveError ? <div className="attendance-empty-notice" role="alert">{saveError}</div> : null}
+        <footer className="attendance-save-footer">
+          <div className="attendance-totals">
+            <span><i className="total-dot present-dot" /> Present: <strong>{totals.present}</strong></span>
+            <span><i className="total-dot absent-dot" /> Absent: <strong>{totals.absent}</strong></span>
+            <span><i className="total-dot late-dot" /> Late: <strong>{totals.late}</strong></span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {existingSession && (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={saving}
+                onClick={() => setShowCorrectionModal(true)}
+              >
+                Audited Correction
+              </button>
+            )}
+            <button type="submit" className="primary-button attendance-save-button" disabled={saving}>
+              {saving ? 'Saving…' : existingSession ? 'Save Changes' : 'Save Attendance'}
+            </button>
+          </div>
+        </footer>
+      </form>
+
+      {showCorrectionModal && existingSession && (
+        <AttendanceCorrectionModal
+          isOpen={showCorrectionModal}
+          sessionId={existingSession.id}
+          className={attendanceClass.className}
+          section={attendanceClass.section}
+          date={date}
+          records={attendanceClass.students.map((student) => ({
+            student_id: student.id,
+            student_name: `${student.firstName} ${student.lastName}`,
+            status: (statuses[student.id] ?? 'PRESENT') as 'PRESENT' | 'ABSENT' | 'LATE',
+            note: notes[student.id] ?? '',
+          }))}
+          onClose={() => setShowCorrectionModal(false)}
+          onSave={async (payload) => {
+            if (onCorrectAttendance) {
+              await onCorrectAttendance(payload)
+            } else {
+              await correctAttendanceSession(payload)
+              if (onRefresh) onRefresh()
+            }
+            navigate(`/attendance?date=${date}`)
+          }}
+        />
+      )}
+    </>
   )
 }
 
-function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, onOpen }: {
+function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, onOpen, onCorrect }: {
   attendanceClass: AttendanceClass
   date: string
   attendance: AttendanceState
   canEdit: boolean
   onOpen: () => void
+  onCorrect?: () => void
 }) {
   const session = getSessionForClass(attendance, date, attendanceClass)
   const records = session ? getSessionRecords(attendance, session.id) : []
   const counts = getAttendanceCounts(records)
   const status = !session ? 'Not Marked' : records.length < attendanceClass.students.length ? 'In Progress' : 'Completed'
+  const actions: ActionItem[] = []
+  if (canEdit && session && onCorrect) {
+    actions.push({
+      label: 'Correct Attendance',
+      onClick: onCorrect,
+    })
+  }
   return (
     <article className="attendance-class-card">
-      <div className="attendance-class-card-heading"><strong>{attendanceClass.className}-{attendanceClass.section}</strong><span className={`attendance-status ${status.toLowerCase().replace(' ', '-')}`}>{status}</span></div>
+      <div className="attendance-class-card-heading">
+        <strong>{attendanceClass.className}-{attendanceClass.section}</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span className={`attendance-status ${status.toLowerCase().replace(' ', '-')}`}>{status}</span>
+          {actions.length > 0 && <RecordActionMenu actions={actions} />}
+        </div>
+      </div>
       <div className="attendance-class-card-grid">
         <span>Students <strong>{attendanceClass.students.length}</strong></span>
         <span>Present <strong>{session ? counts.present : '—'}</strong></span>

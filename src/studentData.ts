@@ -1,6 +1,6 @@
 import type { Role } from './mockData'
 
-export type StudentStatus = 'Active' | 'Inactive' | 'Graduated'
+export type StudentStatus = 'Active' | 'Inactive' | 'Graduated' | 'Archived'
 
 export type StudentActivity = {
   date: string

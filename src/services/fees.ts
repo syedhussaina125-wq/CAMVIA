@@ -16,6 +16,8 @@ type InvoiceRow = {
   due_date: string
   created_at: string
   updated_at: string
+  voided_at?: string | null
+  void_reason?: string | null
 }
 
 type InvoiceItemRow = {
@@ -36,6 +38,8 @@ type PaymentRow = {
   note: string
   idempotency_key: string
   received_by: string
+  voided_at?: string | null
+  void_reason?: string | null
 }
 
 function requireSupabase() {
@@ -80,7 +84,7 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
   const invoiceRows = await fetchAllRows<InvoiceRow>(
     db,
     'fee_invoices',
-    'id, organization_id, school_id, campus_id, student_id, fee_period, due_date, created_at, updated_at',
+    'id, organization_id, school_id, campus_id, student_id, fee_period, due_date, created_at, updated_at, voided_at, void_reason',
   )
   const invoiceIds = invoiceRows.map((invoice) => invoice.id)
   const [itemRows, paymentRows] = invoiceIds.length
@@ -89,7 +93,7 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
       fetchAllRows<PaymentRow>(
         db,
         'fee_payments',
-        'id, invoice_id, student_id, amount, payment_date, payment_method, reference, note, idempotency_key, received_by',
+        'id, invoice_id, student_id, amount, payment_date, payment_method, reference, note, idempotency_key, received_by, voided_at, void_reason',
         invoiceIds,
       ),
     ])
@@ -124,9 +128,11 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
         dueDate: row.due_date,
         totalAmount: lineItems.reduce((total, item) => total + item.amount, 0),
         paidAmount: 0,
-        status: 'Pending' as const,
+        status: (row.voided_at ? 'Voided' : 'Pending') as import('../feeData').FeeStatus,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        voidedAt: row.voided_at ?? null,
+        voidReason: row.void_reason ?? null,
         lineItems,
       }]
     }),
@@ -140,6 +146,8 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
       note: row.note,
       recordedByUserId: profileDisplayId(row.received_by),
       idempotencyKey: row.idempotency_key,
+      voidedAt: row.voided_at ?? null,
+      voidReason: row.void_reason ?? null,
     })),
   }
 }
@@ -221,3 +229,50 @@ export async function createFeeInvoice(
   }
   return fetchFeeState(students)
 }
+
+export async function updateFeeInvoice(
+  students: Student[],
+  payload: {
+    invoiceId: string
+    dueDate: string
+    lineItems: Array<{ label: string; amount: number }>
+    reason: string
+  },
+): Promise<FeeState> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('update_fee_invoice', {
+    p_invoice_id: payload.invoiceId,
+    p_due_date: payload.dueDate,
+    p_line_items: payload.lineItems,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+  return fetchFeeState(students)
+}
+
+export async function voidFeeInvoice(
+  students: Student[],
+  payload: { invoiceId: string; reason: string },
+): Promise<FeeState> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('void_fee_invoice', {
+    p_invoice_id: payload.invoiceId,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+  return fetchFeeState(students)
+}
+
+export async function voidFeePayment(
+  students: Student[],
+  payload: { paymentId: string; reason: string },
+): Promise<FeeState> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('void_fee_payment', {
+    p_payment_id: payload.paymentId,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+  return fetchFeeState(students)
+}
+

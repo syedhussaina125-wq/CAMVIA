@@ -83,9 +83,9 @@ import { getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail
 import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments, type TeacherAssignment } from './services/students'
 import { fetchProfiles } from './services/users'
 import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput, type TeacherAssignmentScope } from './services/userManagement'
-import { fetchAttendanceState, saveAttendance as saveLiveAttendance } from './services/attendance'
+import { fetchAttendanceState, saveAttendance as saveLiveAttendance, correctAttendanceSession } from './services/attendance'
 import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
-import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication } from './services/communication'
+import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication, deleteCommunicationDraft } from './services/communication'
 import { fetchLiveAlerts } from './services/alerts'
 import {
   fetchAdministrationSnapshot,
@@ -410,13 +410,19 @@ function defaultDashboardForRole(role: Role) {
   return '/dashboard'
 }
 
-function AttendanceRoute({ user, students, attendance, loading, error, onRetry }: {
+function AttendanceRoute({ user, students, attendance, loading, error, onRetry, onRefresh, onCorrectAttendance }: {
   user: SessionUser
   students: Student[]
   attendance: AttendanceState
   loading: boolean
   error: string
   onRetry: () => void
+  onRefresh?: () => void
+  onCorrectAttendance?: (payload: {
+    sessionId: string
+    records: Array<{ student_id: string; status: 'PRESENT' | 'ABSENT' | 'LATE'; note?: string }>
+    reason: string
+  }) => Promise<void>
 }) {
   const navigate = useNavigate()
   return (
@@ -427,6 +433,8 @@ function AttendanceRoute({ user, students, attendance, loading, error, onRetry }
       loading={loading}
       error={error}
       onRetry={onRetry}
+      onRefresh={onRefresh}
+      onCorrectAttendance={onCorrectAttendance}
       onPrepareMessage={(studentId) => navigate(
         `/communication?studentId=${encodeURIComponent(studentId)}&sourceType=ATTENDANCE&sourceId=${encodeURIComponent(studentId)}`,
       )}
@@ -1157,6 +1165,45 @@ function App() {
     }
   }
 
+  const handleDeleteCommunicationDraft = async (messageId: string, reason: string): Promise<boolean> => {
+    if (!session) {
+      setToast({ type: 'error', text: 'Sign in to manage parent communication.' })
+      return false
+    }
+    try {
+      setCommunication(await deleteCommunicationDraft(messageId, reason, students))
+      await refreshAlerts(session.authUserId)
+      setToast({ type: 'success', text: 'Communication draft deleted.' })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The communication draft could not be deleted.'
+      console.error('[Supabase] Communication draft delete failed:', message)
+      setToast({ type: 'error', text: message })
+      return false
+    }
+  }
+
+  const handleCorrectAttendanceSession = async (payload: {
+    sessionId: string
+    records: Array<{ student_id: string; status: 'PRESENT' | 'ABSENT' | 'LATE'; note?: string }>
+    reason: string
+  }): Promise<void> => {
+    if (!session) {
+      setToast({ type: 'error', text: 'Sign in to manage attendance.' })
+      return
+    }
+    try {
+      const updated = await correctAttendanceSession(payload)
+      setAttendance(updated)
+      setToast({ type: 'success', text: 'Attendance session corrected successfully.' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to correct attendance session.'
+      console.error('[Supabase] Attendance correction failed:', message)
+      setToast({ type: 'error', text: message })
+      throw error
+    }
+  }
+
   const visibleAlerts = session && alertSnapshot.ownerId === session.authUserId ? alertSnapshot.items : []
   const visibleAlertsLoading = !session || alertSnapshot.ownerId !== session.authUserId || alertsLoading
   const visibleAlertsError = alertSnapshot.ownerId === session?.authUserId ? alertsError : ''
@@ -1208,25 +1255,26 @@ function App() {
                     onRetry={() => session ? refreshStudents(session) : undefined}
                     onAddStudent={handleAddStudent}
                     onImportStudents={handleImportStudents}
+                    onRefresh={() => session ? refreshStudents(session) : undefined}
                   />
                 ) : null
               }
             />
             <Route
               path="/students/:studentId"
-              element={session ? <StudentDetailPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} /> : null}
+              element={session ? <StudentDetailPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRefresh={() => session ? refreshStudents(session) : undefined} /> : null}
             />
             <Route
               path="/attendance"
-              element={session ? <AttendanceRoute user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} /> : null}
+              element={session ? <AttendanceRoute user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
             />
             <Route
               path="/attendance/take/:classId"
-              element={session ? <TakeAttendancePage user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} /> : null}
+              element={session ? <TakeAttendancePage user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
             />
-            <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
-            <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
-            <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} /> : null} />
+            <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
+            <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
+            <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onRefresh={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} onDeleteDraft={handleDeleteCommunicationDraft} /> : null} />
             <Route path="/alerts" element={session ? <AlertsPage user={session} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} /> : null} />
             <Route path="/approvals" element={session ? <ApprovalsPage user={session} students={students} communication={communication} loading={communicationLoading} error={communicationError} onRetry={handleRefreshCommunication} onOperation={handleCommunicationOperation} /> : null} />
             <Route path="/ask-edu" element={session ? <AskEduPage user={session} students={students} fees={fees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} /> : null} />

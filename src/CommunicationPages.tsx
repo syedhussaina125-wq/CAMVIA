@@ -21,6 +21,8 @@ import {
 import type { AttendanceState } from './attendanceData'
 import type { FeeState } from './feeData'
 import type { SchoolUser } from './mockData'
+import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
+import { deleteCommunicationDraft } from './services/communication'
 
 type CommunicationPageProps = {
   user: CommunicationUser
@@ -34,6 +36,8 @@ type CommunicationPageProps = {
   onRetry: () => void
   onSaveDraft: (draft: CommunicationDraftSubmission, submit: boolean) => Promise<{ messageId?: string; error?: string }>
   onOperation: (operation: CommunicationOperation) => Promise<boolean>
+  onDeleteDraft?: (messageId: string, reason: string) => Promise<boolean>
+  onRefresh?: () => void
 }
 
 type CommunicationTab = 'Drafts' | 'Awaiting Approval' | 'Sent'
@@ -61,6 +65,7 @@ export function CommunicationPage(props: CommunicationPageProps) {
   const [channelFilter, setChannelFilter] = useState('')
   const [editing, setEditing] = useState<DraftFormState | null>(null)
   const [selectedMessageId, setSelectedMessageId] = useState('')
+  const [deletingMessage, setDeletingMessage] = useState<CommunicationMessageView | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -299,6 +304,7 @@ export function CommunicationPage(props: CommunicationPageProps) {
             rejectReason={rejectReason}
             onRejectReason={setRejectReason}
             onEdit={() => editMessage(message)}
+            onDelete={setDeletingMessage}
             onOperation={runOperation}
             isReviewer={isReviewer}
           /> : null
@@ -315,10 +321,38 @@ export function CommunicationPage(props: CommunicationPageProps) {
             setSuccess('')
           }}
           onEdit={editMessage}
+          onDelete={setDeletingMessage}
           tab={tab}
         /> : <CommunicationEmptyState tab={tab} />}
         </div>
       </section>
+
+      {deletingMessage && (
+        <DestructiveActionModal
+          isOpen={Boolean(deletingMessage)}
+          title="Delete Communication Draft"
+          prompt={`Are you sure you want to delete this draft message for ${deletingMessage.student.firstName} ${deletingMessage.student.lastName}? This action will permanently remove the draft and record an audit log.`}
+          confirmLabel="Delete Draft"
+          danger
+          onClose={() => setDeletingMessage(null)}
+          onConfirm={async (reason) => {
+            try {
+              if (props.onDeleteDraft) {
+                const ok = await props.onDeleteDraft(deletingMessage.id, reason)
+                if (!ok) return
+              } else {
+                await deleteCommunicationDraft(deletingMessage.id, reason, props.students)
+                if (props.onRefresh) props.onRefresh()
+              }
+              setSuccess('Communication draft deleted.')
+              setDeletingMessage(null)
+              setSelectedMessageId('')
+            } catch (delError) {
+              setError(delError instanceof Error ? delError.message : 'Failed to delete communication draft.')
+            }
+          }}
+        />
+      )}
     </section>
   )
 }
@@ -376,12 +410,13 @@ function CommunicationEditor({ form, students, fees, user, onChange, onCancel, o
   )
 }
 
-function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit, tab }: {
+function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit, onDelete, tab }: {
   messages: CommunicationMessageView[]
   userNames: Map<number, string>
   user: CommunicationUser
   onSelect: (message: CommunicationMessageView) => void
   onEdit: (message: CommunicationMessageView) => void
+  onDelete: (message: CommunicationMessageView) => void
   tab: CommunicationTab
 }) {
   return (
@@ -389,42 +424,81 @@ function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit,
       <div className="communication-table-wrap">
         <table className="communication-table">
           <thead><tr><th>Student</th><th>Guardian</th><th>Type</th><th>Channel</th><th>Status</th><th>Created By</th><th>Date</th><th>Action</th></tr></thead>
-          <tbody>{messages.map((message) => <tr key={message.id}>
-            <td><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId}</small></td>
-            <td>{message.guardianName}</td><td>{message.type}</td><td>{message.channel}</td>
-            <td><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></td>
-            <td>{userNames.get(message.createdByUserId) ?? 'School staff'}</td><td>{formatDate(message.createdAt)}</td>
-            <td><button type="button" className="text-button" onClick={() => {
-              if ((message.status === 'DRAFT' || message.status === 'REJECTED') && (message.createdByUserId === user.id || user.role === 'admin')) onEdit(message)
-              else onSelect(message)
-            }}>{tab === 'Drafts' ? 'Edit' : 'Review'}</button></td>
-          </tr>)}</tbody>
+          <tbody>{messages.map((message) => {
+            const canEdit = (message.status === 'DRAFT' || message.status === 'REJECTED') && (message.createdByUserId === user.id || user.role === 'admin' || user.role === 'principal')
+            const canDelete = (message.status === 'DRAFT' || message.status === 'REJECTED') && (user.role === 'admin' || user.role === 'principal' || message.createdByUserId === user.id)
+            const actions: ActionItem[] = []
+            if (canDelete) {
+              actions.push({
+                label: 'Delete Draft',
+                danger: true,
+                onClick: () => onDelete(message),
+              })
+            }
+            return (
+              <tr key={message.id}>
+                <td><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId}</small></td>
+                <td>{message.guardianName}</td><td>{message.type}</td><td>{message.channel}</td>
+                <td><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></td>
+                <td>{userNames.get(message.createdByUserId) ?? 'School staff'}</td><td>{formatDate(message.createdAt)}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button type="button" className="text-button" onClick={() => {
+                      if (canEdit && tab === 'Drafts') onEdit(message)
+                      else onSelect(message)
+                    }}>{tab === 'Drafts' ? 'Edit' : 'Review'}</button>
+                    {actions.length > 0 && <RecordActionMenu actions={actions} />}
+                  </div>
+                </td>
+              </tr>
+            )
+          })}</tbody>
         </table>
       </div>
-      <div className="communication-mobile-list">{messages.map((message) => <article className="communication-mobile-card" key={message.id}>
-        <div className="communication-mobile-heading"><div><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId} · {message.guardianName}</small></div><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></div>
-        <div className="communication-mobile-meta"><span>{message.type}</span><span>{message.channel}</span><span>{userNames.get(message.createdByUserId) ?? 'School staff'}</span><span>{formatDate(message.createdAt)}</span></div>
-        <button type="button" className="secondary-button small-button" onClick={() => {
-          if ((message.status === 'DRAFT' || message.status === 'REJECTED') && (message.createdByUserId === user.id || user.role === 'admin')) onEdit(message)
-          else onSelect(message)
-        }}>{tab === 'Drafts' ? 'Edit' : 'Review'}</button>
-      </article>)}</div>
+      <div className="communication-mobile-list">{messages.map((message) => {
+        const canEdit = (message.status === 'DRAFT' || message.status === 'REJECTED') && (message.createdByUserId === user.id || user.role === 'admin' || user.role === 'principal')
+        const canDelete = (message.status === 'DRAFT' || message.status === 'REJECTED') && (user.role === 'admin' || user.role === 'principal' || message.createdByUserId === user.id)
+        const actions: ActionItem[] = []
+        if (canDelete) {
+          actions.push({
+            label: 'Delete Draft',
+            danger: true,
+            onClick: () => onDelete(message),
+          })
+        }
+        return (
+          <article className="communication-mobile-card" key={message.id}>
+            <div className="communication-mobile-heading"><div><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId} · {message.guardianName}</small></div><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></div>
+            <div className="communication-mobile-meta"><span>{message.type}</span><span>{message.channel}</span><span>{userNames.get(message.createdByUserId) ?? 'School staff'}</span><span>{formatDate(message.createdAt)}</span></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+              <button type="button" className="secondary-button small-button" onClick={() => {
+                if (canEdit && tab === 'Drafts') onEdit(message)
+                else onSelect(message)
+              }}>{tab === 'Drafts' ? 'Edit' : 'Review'}</button>
+              {actions.length > 0 && <RecordActionMenu actions={actions} />}
+            </div>
+          </article>
+        )
+      })}</div>
     </>
   )
 }
 
-function CommunicationReview({ message, user, userNames, rejectReason, onRejectReason, onEdit, onOperation, isReviewer }: {
+function CommunicationReview({ message, user, userNames, rejectReason, onRejectReason, onEdit, onDelete, onOperation, isReviewer }: {
   message: CommunicationMessageView
   user: CommunicationUser
   userNames: Map<number, string>
   rejectReason: string
   onRejectReason: (reason: string) => void
   onEdit: () => void
+  onDelete: (message: CommunicationMessageView) => void
   onOperation: (operation: CommunicationOperation, tab?: CommunicationTab) => void
   isReviewer: boolean
 }) {
   const mayEdit = ['DRAFT', 'REJECTED', 'AWAITING_APPROVAL'].includes(message.status) &&
     (message.createdByUserId === user.id || user.role === 'admin' || user.role === 'principal')
+  const canDelete = (message.status === 'DRAFT' || message.status === 'REJECTED') &&
+    (user.role === 'admin' || user.role === 'principal' || message.createdByUserId === user.id)
   return (
     <section className="communication-review-card">
       <div className="communication-review-heading"><div><p className="eyebrow">Message review</p><h2>{message.student.firstName} {message.student.lastName}</h2><p>{message.guardianName} · {message.type} · {message.channel}</p></div><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></div>
@@ -433,6 +507,16 @@ function CommunicationReview({ message, user, userNames, rejectReason, onRejectR
       <div className="communication-audit-history"><strong>History</strong>{message.history.map((entry, index) => <span key={`${entry.action}-${entry.timestamp}-${index}`}>{entry.action} · {entry.userName || userNames.get(entry.userId) || 'School staff'} · {formatDateTime(entry.timestamp)}</span>)}</div>
       <div className="communication-review-actions">
         {mayEdit ? <button type="button" className="secondary-button" onClick={onEdit}>Edit</button> : null}
+        {canDelete ? (
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ color: '#dc2626' }}
+            onClick={() => onDelete(message)}
+          >
+            Delete Draft
+          </button>
+        ) : null}
         {message.status === 'DRAFT' && (message.createdByUserId === user.id || user.role === 'admin') ? <button type="button" className="primary-button" onClick={() => onOperation({ type: 'submit', messageId: message.id }, 'Awaiting Approval')}>Submit for Approval</button> : null}
         {isReviewer && message.status === 'AWAITING_APPROVAL' ? <>
           <button type="button" className="secondary-button reject-button" onClick={() => onOperation({ type: 'reject', messageId: message.id, reason: rejectReason }, 'Drafts')}><X size={15} /> Reject</button>

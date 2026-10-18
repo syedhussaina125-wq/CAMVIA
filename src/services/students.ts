@@ -89,7 +89,11 @@ function mapStudent(
     organizationId: row.organization_id,
     schoolId: row.school_id,
     campusId: row.campus_id,
-    status: row.status.toUpperCase() === 'ACTIVE' ? 'Active' : 'Inactive',
+    status: row.status.toUpperCase() === 'ACTIVE'
+      ? 'Active'
+      : row.status.toUpperCase() === 'ARCHIVED'
+        ? 'Archived'
+        : 'Inactive',
     campus: campusName,
     guardian: {
       id: guardian?.id,
@@ -266,3 +270,99 @@ export async function createStudentRecord(
   if (!created) throw new Error('Student was created, but could not be loaded in your authorized scope.')
   return created
 }
+
+export async function updateStudent(payload: {
+  studentId: string
+  campusId: string
+  firstName: string
+  lastName: string
+  className: string
+  section: string
+  rollNumber: string
+  dateOfBirth?: string | null
+  gender?: string | null
+  reason: string
+}): Promise<Student> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('update_student', {
+    p_student_id: payload.studentId,
+    p_campus_id: payload.campusId,
+    p_first_name: payload.firstName,
+    p_last_name: payload.lastName,
+    p_class_name: payload.className,
+    p_section: payload.section,
+    p_roll_number: payload.rollNumber || null,
+    p_date_of_birth: payload.dateOfBirth || null,
+    p_gender: payload.gender || null,
+    p_reason: payload.reason,
+  })
+
+  if (error) throw error
+  const updated = await fetchStudentById(payload.studentId)
+  if (!updated) throw new Error('Student was updated, but could not be re-loaded.')
+  return updated
+}
+
+export async function archiveStudent(studentId: string, reason: string): Promise<void> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('archive_student', {
+    p_student_id: studentId,
+    p_reason: reason,
+  })
+  if (error) throw error
+}
+
+export async function updateGuardian(payload: {
+  guardianId: string
+  firstName: string
+  lastName: string
+  phone?: string | null
+  email?: string | null
+  address?: string | null
+  reason: string
+}): Promise<void> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('update_guardian', {
+    p_guardian_id: payload.guardianId,
+    p_first_name: payload.firstName,
+    p_last_name: payload.lastName,
+    p_phone: payload.phone || null,
+    p_email: payload.email || null,
+    p_address: payload.address || null,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+}
+
+export async function linkStudentGuardian(payload: {
+  studentId: string
+  guardianId: string
+  relationship: string
+  isPrimary: boolean
+  reason: string
+}): Promise<void> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('link_student_guardian', {
+    p_student_id: payload.studentId,
+    p_guardian_id: payload.guardianId,
+    p_relationship: payload.relationship || null,
+    p_is_primary: payload.isPrimary,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+}
+
+export async function unlinkStudentGuardian(payload: {
+  studentId: string
+  guardianId: string
+  reason: string
+}): Promise<void> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('unlink_student_guardian', {
+    p_student_id: payload.studentId,
+    p_guardian_id: payload.guardianId,
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+}
+

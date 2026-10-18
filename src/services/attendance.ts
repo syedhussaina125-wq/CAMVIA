@@ -164,3 +164,23 @@ export async function saveAttendance(
 
   return fetchAttendanceState()
 }
+
+export async function correctAttendanceSession(payload: {
+  sessionId: string
+  records: Array<{ student_id: string; status: 'PRESENT' | 'ABSENT' | 'LATE'; note?: string }>
+  reason: string
+}): Promise<AttendanceState> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('correct_attendance_session', {
+    p_session_id: payload.sessionId,
+    p_records: payload.records.map((r) => ({
+      student_id: r.student_id,
+      status: r.status,
+      note: (r.note ?? '').trim(),
+    })),
+    p_reason: payload.reason,
+  })
+  if (error) throw error
+  return fetchAttendanceState()
+}
+

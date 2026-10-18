@@ -18,6 +18,9 @@ import {
   type FeeState,
   type PaymentMethod,
 } from './feeData'
+import { RecordActionMenu, DestructiveActionModal } from './components/RecordActionControls'
+import { InvoiceEditModal } from './components/InvoiceEditModal'
+import { updateFeeInvoice, voidFeeInvoice, voidFeePayment } from './services/fees'
 
 type FeesPagesProps = {
   user: FeeAccessUser & { name: string }
@@ -29,6 +32,7 @@ type FeesPagesProps = {
   onRecordPayment: (payment: FeePaymentSubmission) => Promise<boolean>
   onCreateInvoice?: (invoice: FeeInvoiceCreationInput) => Promise<boolean>
   onRetry: () => void
+  onRefresh?: () => void
 }
 
 const paymentMethods: PaymentMethod[] = ['Cash', 'Bank Transfer', 'Card', 'Online']
@@ -109,7 +113,7 @@ export function FeesPage(props: FeesPagesProps) {
           setSectionFilter('')
         }}><option value="">All classes</option>{classes.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>Section<select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)}><option value="">All sections</option>{sections.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue'].map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue', 'Voided'].map((item) => <option key={item}>{item}</option>)}</select></label>
       </div>
 
       <div className="fees-summary-grid">
@@ -175,6 +179,10 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   const { studentId = '' } = useParams()
   const [activeInvoiceId, setActiveInvoiceId] = useState('')
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [editingInvoice, setEditingInvoice] = useState<FeeInvoiceView | null>(null)
+  const [voidingInvoice, setVoidingInvoice] = useState<FeeInvoiceView | null>(null)
+  const [voidingPayment, setVoidingPayment] = useState<FeePayment | null>(null)
+  const [actionError, setActionError] = useState('')
 
   const invoices = useMemo(
     () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => invoice.studentId === studentId),
@@ -195,14 +203,42 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
     .sort((left, right) => right.date.localeCompare(left.date))
   const principalReadOnly = props.user.role === 'principal'
 
+  const handleUpdateInvoice = async (payload: {
+    invoiceId: string
+    dueDate: string
+    lineItems: Array<{ label: string; amount: number }>
+    reason: string
+  }) => {
+    setActionError('')
+    await updateFeeInvoice(props.students, payload)
+    if (props.onRefresh) props.onRefresh()
+  }
+
+  const handleVoidInvoice = async (reason: string) => {
+    if (!voidingInvoice) return
+    setActionError('')
+    await voidFeeInvoice(props.students, { invoiceId: voidingInvoice.id, reason })
+    if (props.onRefresh) props.onRefresh()
+  }
+
+  const handleVoidPayment = async (reason: string) => {
+    if (!voidingPayment) return
+    setActionError('')
+    await voidFeePayment(props.students, { paymentId: voidingPayment.id, reason })
+    if (props.onRefresh) props.onRefresh()
+  }
+
+  const canMutate = canMutateFeeData(props.user)
+
   return (
     <section className="fees-page fee-detail-page">
       <button type="button" className="back-link" onClick={() => navigate('/fees')}><ArrowLeft size={16} /> Fees &amp; Collections</button>
+      {actionError ? <p className="fee-form-error" role="alert" style={{ marginBottom: '12px' }}>{actionError}</p> : null}
       <div className="fees-page-heading detail-heading">
         <div><p className="eyebrow">Student fee account</p><h1>{student.firstName} {student.lastName}</h1><p>{student.studentId} <span>·</span> {student.className}-{student.section}</p></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span className="fee-role-note">{principalReadOnly ? 'Read-only overview' : 'Authorized fee record'}</span>
-          {canMutateFeeData(props.user) && props.onCreateInvoice ? (
+          {canMutate && props.onCreateInvoice ? (
             <button
               type="button"
               className="primary-button small-button"
@@ -214,6 +250,8 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
         </div>
       </div>
 
+      {actionError ? <p className="communication-feedback error" role="alert">{actionError}</p> : null}
+
       <div className="fees-summary-grid detail-metrics">
         <FeeMetric label="Total expected" value={formatCurrency(metrics.expected)} icon={FileText} tone="blue" />
         <FeeMetric label="Total paid" value={formatCurrency(metrics.collected)} icon={Banknote} tone="green" />
@@ -224,32 +262,103 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
       <div className="fee-detail-grid">
         <div className="fee-detail-main">
           <section className="fees-panel">
-            <div className="fees-panel-heading"><div><h2>Monthly fee items</h2><p>Choose an invoice to review or record a payment.</p></div></div>
+            <div className="fees-panel-heading">
+              <div><h2>Monthly fee items</h2><p>Choose an invoice to review or record a payment.</p></div>
+            </div>
             <div className="fee-invoice-list">
               {invoices.map((item) => (
-                <button type="button" key={item.id} className={`fee-invoice-option ${invoice.id === item.id ? 'selected' : ''}`} onClick={() => setActiveInvoiceId(item.id)}>
-                  <span><strong>{formatMonth(item.month)}</strong><small>Due {formatDate(item.dueDate)}</small></span>
-                  <span><strong>{formatCurrency(item.outstandingAmount)}</strong><small className={`fee-status-badge ${statusClass(item.status)}`}>{item.status}</small></span>
-                </button>
+                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button type="button" style={{ flex: 1 }} className={`fee-invoice-option ${invoice.id === item.id ? 'selected' : ''}`} onClick={() => setActiveInvoiceId(item.id)}>
+                    <span><strong>{formatMonth(item.month)}</strong><small>Due {formatDate(item.dueDate)}</small></span>
+                    <span><strong>{formatCurrency(item.outstandingAmount)}</strong><small className={`fee-status-badge ${statusClass(item.status)}`}>{item.status}</small></span>
+                  </button>
+                  {canMutate && !item.voidedAt && (
+                    <RecordActionMenu
+                      actions={[
+                        ...(item.paidAmount === 0 ? [{
+                          label: 'Edit Invoice',
+                          onClick: () => setEditingInvoice(item),
+                        }] : []),
+                        ...(item.paidAmount === 0 ? [{
+                          label: 'Void Invoice',
+                          danger: true,
+                          onClick: () => setVoidingInvoice(item),
+                        }] : []),
+                      ]}
+                    />
+                  )}
+                </div>
               ))}
             </div>
             <div className="fee-line-items">
-              <h3>{formatMonth(invoice.month)} breakdown</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>{formatMonth(invoice.month)} breakdown</h3>
+                {invoice.voidedAt ? <span style={{ color: '#dc2626', fontWeight: 600, fontSize: '13px' }}>VOIDED: {invoice.voidReason || 'No reason specified'}</span> : null}
+              </div>
               {invoice.lineItems.map((item) => <div key={item.id}><span>{item.label}</span><strong>{formatCurrency(item.amount)}</strong></div>)}
               <div className="fee-line-total"><span>Total</span><strong>{formatCurrency(invoice.totalAmount)}</strong></div>
             </div>
           </section>
 
-          {canMutateFeeData(props.user) && invoice.outstandingAmount > 0 ? <PaymentForm key={invoice.id} invoice={invoice} onRecord={props.onRecordPayment} /> : null}
+          {canMutate && !invoice.voidedAt && invoice.outstandingAmount > 0 ? <PaymentForm key={invoice.id} invoice={invoice} onRecord={props.onRecordPayment} /> : null}
         </div>
 
         <section className="fees-panel payment-history-panel">
           <div className="fees-panel-heading"><div><h2>Payment history</h2><p>Recorded transactions for this student</p></div></div>
           {payments.length ? <div className="payment-history-list">
-            {payments.map((payment) => <PaymentRow key={payment.id} payment={payment} users={props.schoolUsers} />)}
+            {payments.map((payment) => (
+              <div key={payment.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: '8px' }}>
+                <div style={{ flex: 1 }}>
+                  <PaymentRow payment={payment} users={props.schoolUsers} />
+                  {payment.voidedAt && <small style={{ color: '#dc2626', display: 'block', marginTop: '2px' }}>VOIDED: {payment.voidReason || 'No reason specified'}</small>}
+                </div>
+                {canMutate && !payment.voidedAt && (
+                  <RecordActionMenu
+                    actions={[{
+                      label: 'Void Payment',
+                      danger: true,
+                      onClick: () => setVoidingPayment(payment),
+                    }]}
+                  />
+                )}
+              </div>
+            ))}
           </div> : <p className="student-muted">No payments have been recorded yet.</p>}
         </section>
       </div>
+
+      {editingInvoice && (
+        <InvoiceEditModal
+          isOpen={Boolean(editingInvoice)}
+          invoice={editingInvoice}
+          onClose={() => setEditingInvoice(null)}
+          onSave={handleUpdateInvoice}
+        />
+      )}
+
+      {voidingInvoice && (
+        <DestructiveActionModal
+          isOpen={Boolean(voidingInvoice)}
+          title="Void Fee Invoice"
+          prompt={`Are you sure you want to void the ${voidingInvoice.month} invoice for ${student.firstName} ${student.lastName}? This will cancel the receivable balance while preserving audit history.`}
+          confirmLabel="Void Invoice"
+          danger
+          onClose={() => setVoidingInvoice(null)}
+          onConfirm={handleVoidInvoice}
+        />
+      )}
+
+      {voidingPayment && (
+        <DestructiveActionModal
+          isOpen={Boolean(voidingPayment)}
+          title="Void Fee Payment"
+          prompt={`Are you sure you want to void this ${formatCurrency(voidingPayment.amount)} payment recorded on ${formatDate(voidingPayment.date)}? The invoice balance will be restored.`}
+          confirmLabel="Void Payment"
+          danger
+          onClose={() => setVoidingPayment(null)}
+          onConfirm={handleVoidPayment}
+        />
+      )}
 
       {showCreateModal && props.onCreateInvoice ? (
         <CreateInvoiceModal

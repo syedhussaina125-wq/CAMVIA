@@ -15,7 +15,20 @@ import {
   type NewStudent,
   type Student,
 } from './studentData'
-import { fetchStudentById, fetchStudentCreationOptions, type StudentCampusOption, type TeacherAssignment } from './services/students'
+import {
+  fetchStudentById,
+  fetchStudentCreationOptions,
+  type StudentCampusOption,
+  type TeacherAssignment,
+  updateStudent,
+  archiveStudent,
+  updateGuardian,
+  linkStudentGuardian,
+  unlinkStudentGuardian,
+} from './services/students'
+import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
+import { StudentEditModal } from './components/StudentEditModal'
+import { GuardianModal } from './components/GuardianModal'
 
 type StudentPageUser = {
   id: number
@@ -38,6 +51,7 @@ type StudentsPageProps = {
   onRetry: () => void
   onAddStudent: (student: NewStudent, campusId: string) => Promise<void>
   onImportStudents: (students: NewStudent[]) => boolean
+  onRefresh?: () => void
 }
 
 type DetailPageProps = {
@@ -55,6 +69,7 @@ type DetailPageProps = {
   alerts: AlertItem[]
   alertsLoading: boolean
   alertsError: string
+  onRefresh?: () => void
 }
 
 type StudentTab = 'Overview' | 'Attendance' | 'Fees' | 'Communication'
@@ -86,7 +101,7 @@ const studentCsvFields: (keyof NewStudent | 'guardianName' | 'guardianPhone' | '
   'guardianEmail',
 ]
 
-export function StudentsPage({ user, students, loading, error, onRetry, onAddStudent, onImportStudents }: StudentsPageProps) {
+export function StudentsPage({ user, students, loading, error, onRetry, onAddStudent, onImportStudents, onRefresh }: StudentsPageProps) {
   const navigate = useNavigate()
   const accessibleStudents = students
   const [query, setQuery] = useState('')
@@ -94,6 +109,9 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [sectionFilter, setSectionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null)
+  const [archivingStudent, setArchivingStudent] = useState<Student | null>(null)
+  const [actionError, setActionError] = useState('')
   const [form, setForm] = useState<NewStudent>(emptyStudentForm)
   const [campuses, setCampuses] = useState<StudentCampusOption[]>([])
   const [teacherScopes, setTeacherScopes] = useState<TeacherAssignment[]>([])
@@ -214,6 +232,58 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     }
   }
 
+  const handleEditStudent = async (payload: {
+    studentId: string
+    campusId: string
+    firstName: string
+    lastName: string
+    className: string
+    section: string
+    rollNumber: string
+    dateOfBirth?: string | null
+    gender?: string | null
+    reason: string
+  }) => {
+    setActionError('')
+    await updateStudent(payload)
+    if (onRefresh) onRefresh()
+  }
+
+  const handleArchiveStudent = async (reason: string) => {
+    if (!archivingStudent) return
+    setActionError('')
+    await archiveStudent(archivingStudent.id, reason)
+    if (onRefresh) onRefresh()
+  }
+
+  const getStudentActions = (student: Student): ActionItem[] => {
+    if (student.status === 'Archived') return []
+    const actions: ActionItem[] = []
+
+    if (user.role === 'admin') {
+      actions.push({
+        label: 'Edit Student',
+        onClick: () => setEditingStudent(student),
+      })
+      actions.push({
+        label: 'Archive Student',
+        danger: true,
+        onClick: () => setArchivingStudent(student),
+      })
+    } else if (user.role === 'principal') {
+      actions.push({
+        label: 'Edit Class & Section',
+        onClick: () => setEditingStudent(student),
+      })
+    } else if (user.role === 'teacher') {
+      actions.push({
+        label: 'Quick Edit Roll No.',
+        onClick: () => setEditingStudent(student),
+      })
+    }
+    return actions
+  }
+
   if (error) {
     return <StudentListState title="We couldn't load students." detail={error} isError onRetry={onRetry} />
   }
@@ -229,6 +299,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <p className="eyebrow">Student directory</p>
           <h1>Students</h1>
           <p className="students-intro">Find a student and open their school overview.</p>
+          {actionError ? <p className="communication-feedback error" role="alert">{actionError}</p> : null}
         </div>
         {canCreateStudents ? (
           <div className="students-actions">
@@ -347,6 +418,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <option>Active</option>
           <option>Inactive</option>
           <option>Graduated</option>
+          <option>Archived</option>
         </select>
       </div>
 
@@ -357,41 +429,76 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <div className="student-table-card">
             <table className="student-table">
               <thead>
-                <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th /></tr>
+                <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th>Actions</th></tr>
               </thead>
               <tbody>
-                {filteredStudents.map((student) => (
-                  <tr key={student.id}>
-                    <td><strong>{student.firstName} {student.lastName}</strong></td>
-                    <td>{student.studentId}</td><td>{student.className}</td><td>{student.section}</td><td>{student.rollNumber}</td>
-                    <td><span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span></td>
-                    <td><button type="button" className="student-link" onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>View profile</button></td>
-                  </tr>
-                ))}
+                {filteredStudents.map((student) => {
+                  const studentActions = getStudentActions(student)
+                  return (
+                    <tr key={student.id}>
+                      <td><strong>{student.firstName} {student.lastName}</strong></td>
+                      <td>{student.studentId}</td><td>{student.className}</td><td>{student.section}</td><td>{student.rollNumber}</td>
+                      <td><span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span></td>
+                      <td style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button type="button" className="student-link" onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>View profile</button>
+                        {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
           <div className="student-mobile-list">
-            {filteredStudents.map((student) => (
-              <article className="student-mobile-card" key={student.id} onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>
-                <div className="student-mobile-title">
-                  <div className="student-avatar"><UserRound size={18} /></div>
-                  <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId}</span></div>
-                  <span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span>
-                </div>
-                <div className="student-mobile-meta"><span>{student.className}-{student.section}</span><span>Roll {student.rollNumber}</span></div>
-                <button type="button" className="student-link" onClick={(event) => { event.stopPropagation(); navigate(`/students/${encodeURIComponent(student.id)}`) }}>Open Student 360</button>
-              </article>
-            ))}
+            {filteredStudents.map((student) => {
+              const studentActions = getStudentActions(student)
+              return (
+                <article className="student-mobile-card" key={student.id} onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>
+                  <div className="student-mobile-title">
+                    <div className="student-avatar"><UserRound size={18} /></div>
+                    <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId}</span></div>
+                    <span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span>
+                  </div>
+                  <div className="student-mobile-meta"><span>{student.className}-{student.section}</span><span>Roll {student.rollNumber}</span></div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
+                    <button type="button" className="student-link" onClick={(event) => { event.stopPropagation(); navigate(`/students/${encodeURIComponent(student.id)}`) }}>Open Student 360</button>
+                    {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                  </div>
+                </article>
+              )
+            })}
           </div>
         </>
       )}
       <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleStudents.length} students</p>
+
+      {editingStudent && (
+        <StudentEditModal
+          isOpen={Boolean(editingStudent)}
+          student={editingStudent}
+          userRole={user.role}
+          campuses={campuses}
+          onClose={() => setEditingStudent(null)}
+          onSave={handleEditStudent}
+        />
+      )}
+
+      {archivingStudent && (
+        <DestructiveActionModal
+          isOpen={Boolean(archivingStudent)}
+          title="Archive Student"
+          prompt={`Are you sure you want to archive ${archivingStudent.firstName} ${archivingStudent.lastName} (${archivingStudent.studentId})? The student will become non-operational, blocking new attendance, invoices, and communications, while preserving historical records.`}
+          confirmLabel="Archive Student"
+          danger
+          onClose={() => setArchivingStudent(null)}
+          onConfirm={handleArchiveStudent}
+        />
+      )}
     </section>
   )
 }
 
-export function StudentDetailPage({ user, students, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError }: DetailPageProps) {
+export function StudentDetailPage({ user, students, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError, onRefresh }: DetailPageProps) {
   const navigate = useNavigate()
   const { studentId = '' } = useParams()
   const [pageState, setPageState] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -399,6 +506,25 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   const [detailError, setDetailError] = useState('')
   const [retryCount, setRetryCount] = useState(0)
   const [prevStudentId, setPrevStudentId] = useState(studentId)
+  const [activeTab, setActiveTab] = useState<StudentTab>('Overview')
+  const [editingStudent, setEditingStudent] = useState(false)
+  const [archivingStudent, setArchivingStudent] = useState(false)
+  const [guardianModalMode, setGuardianModalMode] = useState<'edit' | 'link' | null>(null)
+  const [unlinkingGuardian, setUnlinkingGuardian] = useState(false)
+  const [campuses, setCampuses] = useState<StudentCampusOption[]>([])
+  const [actionError, setActionError] = useState('')
+
+  useEffect(() => {
+    if (user.role === 'admin' || user.role === 'principal') {
+      void fetchStudentCreationOptions(
+        'admin',
+        user.schoolId ?? null,
+        user.organizationId ?? null,
+        user.teacherAssignments ?? [],
+      ).then((options) => setCampuses(options.campuses)).catch(() => {})
+    }
+  }, [user.role, user.schoolId, user.organizationId, user.teacherAssignments])
+
   if (prevStudentId !== studentId) {
     setPrevStudentId(studentId)
     setPageState('loading')
@@ -418,7 +544,6 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   const communicationMessages = authorizedStudent
     ? getAccessibleCommunication(communication, students, user).filter((message) => message.studentId === authorizedStudent.id)
     : []
-  const [activeTab, setActiveTab] = useState<StudentTab>('Overview')
 
   useEffect(() => {
     let active = true
@@ -457,19 +582,120 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   const tabs: StudentTab[] = ['Overview', 'Attendance', 'Fees', 'Communication'].filter(
     (tab): tab is StudentTab => canViewStudentTab(user.role, tab as StudentTab),
   )
-  const selectedTab = tabs.includes(activeTab) ? activeTab : 'Overview'
+  const selectedTab = tabs.includes(activeTab) ? activeTab : tabs[0] ?? 'Overview'
+
+  const handleEditStudent = async (payload: {
+    studentId: string
+    campusId: string
+    firstName: string
+    lastName: string
+    className: string
+    section: string
+    rollNumber: string
+    dateOfBirth?: string | null
+    gender?: string | null
+    reason: string
+  }) => {
+    setActionError('')
+    const updated = await updateStudent(payload)
+    setAuthorizedStudent(updated)
+    if (onRefresh) onRefresh()
+  }
+
+  const handleArchiveStudent = async (reason: string) => {
+    if (!authorizedStudent) return
+    setActionError('')
+    await archiveStudent(authorizedStudent.id, reason)
+    const updated = await fetchStudentById(authorizedStudent.id)
+    setAuthorizedStudent(updated)
+    if (onRefresh) onRefresh()
+  }
+
+  const handleUpdateGuardian = async (payload: {
+    guardianId: string
+    firstName: string
+    lastName: string
+    phone?: string
+    email?: string
+    address?: string
+    reason: string
+  }) => {
+    setActionError('')
+    await updateGuardian(payload)
+    const updated = await fetchStudentById(authorizedStudent.id)
+    setAuthorizedStudent(updated)
+    if (onRefresh) onRefresh()
+  }
+
+  const handleLinkGuardian = async (payload: {
+    studentId: string
+    guardianId: string
+    relationship: string
+    isPrimary: boolean
+    reason: string
+  }) => {
+    setActionError('')
+    await linkStudentGuardian(payload)
+    const updated = await fetchStudentById(authorizedStudent.id)
+    setAuthorizedStudent(updated)
+    if (onRefresh) onRefresh()
+  }
+
+  const handleUnlinkGuardian = async (reason: string) => {
+    if (!authorizedStudent?.guardian.id) return
+    setActionError('')
+    await unlinkStudentGuardian({
+      studentId: authorizedStudent.id,
+      guardianId: authorizedStudent.guardian.id,
+      reason,
+    })
+    const updated = await fetchStudentById(authorizedStudent.id)
+    setAuthorizedStudent(updated)
+    if (onRefresh) onRefresh()
+  }
+
+  const studentActions: ActionItem[] = []
+  if (authorizedStudent.status !== 'Archived') {
+    if (user.role === 'admin') {
+      studentActions.push({
+        label: 'Edit Student',
+        onClick: () => setEditingStudent(true),
+      })
+      studentActions.push({
+        label: 'Archive Student',
+        danger: true,
+        onClick: () => setArchivingStudent(true),
+      })
+    } else if (user.role === 'principal') {
+      studentActions.push({
+        label: 'Edit Class & Section',
+        onClick: () => setEditingStudent(true),
+      })
+    } else if (user.role === 'teacher') {
+      studentActions.push({
+        label: 'Quick Edit Roll No.',
+        onClick: () => setEditingStudent(true),
+      })
+    }
+  }
 
   return (
     <section className="student-detail-page">
       <button type="button" className="back-link" onClick={() => navigate('/students')}><ArrowLeft size={16} /> Students</button>
-      <div className="student-detail-header">
-        <div className="student-avatar student-avatar-large"><UserRound size={24} /></div>
-        <div className="student-detail-name">
-          <p className="eyebrow">Student 360</p>
-          <h1>{authorizedStudent.firstName} {authorizedStudent.lastName}</h1>
-          <p>{authorizedStudent.studentId} <span>·</span> {authorizedStudent.className}-{authorizedStudent.section}</p>
+      {actionError ? <p className="communication-feedback error" role="alert">{actionError}</p> : null}
+      <div className="student-detail-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <div className="student-avatar student-avatar-large"><UserRound size={24} /></div>
+          <div className="student-detail-name">
+            <p className="eyebrow">Student 360</p>
+            <h1>{authorizedStudent.firstName} {authorizedStudent.lastName}</h1>
+            <p>{authorizedStudent.studentId} <span>·</span> {authorizedStudent.className}-{authorizedStudent.section}</p>
+          </div>
         </div>
-        <span className={`status-pill ${authorizedStudent.status === 'Active' ? 'success' : 'muted'}`}>{authorizedStudent.status}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span className={`status-pill ${authorizedStudent.status === 'Active' ? 'success' : 'muted'}`}>{authorizedStudent.status}</span>
+          {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+        </div>
       </div>
 
       <nav className="student-tabs" aria-label="Student information">
@@ -478,7 +704,72 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
         ))}
       </nav>
 
-      {selectedTab === 'Overview' ? <StudentOverview student={authorizedStudent} role={user.role} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} feeInvoices={feeInvoices} feesLoading={feesLoading} feesError={feesError} alerts={alerts} alertsLoading={alertsLoading} alertsError={alertsError} /> : null}
+      {editingStudent && (
+        <StudentEditModal
+          isOpen={editingStudent}
+          student={authorizedStudent}
+          userRole={user.role}
+          campuses={campuses}
+          onClose={() => setEditingStudent(false)}
+          onSave={handleEditStudent}
+        />
+      )}
+
+      {archivingStudent && (
+        <DestructiveActionModal
+          isOpen={archivingStudent}
+          title="Archive Student"
+          prompt={`Are you sure you want to archive ${authorizedStudent.firstName} ${authorizedStudent.lastName} (${authorizedStudent.studentId})? The student will become non-operational, blocking new attendance, invoices, and communications, while preserving historical records.`}
+          confirmLabel="Archive Student"
+          danger
+          onClose={() => setArchivingStudent(false)}
+          onConfirm={handleArchiveStudent}
+        />
+      )}
+
+      {guardianModalMode && (
+        <GuardianModal
+          isOpen={Boolean(guardianModalMode)}
+          mode={guardianModalMode}
+          studentId={authorizedStudent.id}
+          guardian={authorizedStudent.guardian}
+          userRole={user.role}
+          onClose={() => setGuardianModalMode(null)}
+          onUpdate={handleUpdateGuardian}
+          onLink={handleLinkGuardian}
+        />
+      )}
+
+      {unlinkingGuardian && (
+        <DestructiveActionModal
+          isOpen={unlinkingGuardian}
+          title="Unlink Guardian"
+          prompt={`Are you sure you want to unlink ${authorizedStudent.guardian.name} from ${authorizedStudent.firstName} ${authorizedStudent.lastName}? If this guardian has no other active student links, they will be archived automatically.`}
+          confirmLabel="Unlink Guardian"
+          danger
+          onClose={() => setUnlinkingGuardian(false)}
+          onConfirm={handleUnlinkGuardian}
+        />
+      )}
+
+      {selectedTab === 'Overview' ? (
+        <StudentOverview
+          student={authorizedStudent}
+          role={user.role}
+          attendance={attendance}
+          attendanceLoading={attendanceLoading}
+          attendanceError={attendanceError}
+          feeInvoices={feeInvoices}
+          feesLoading={feesLoading}
+          feesError={feesError}
+          alerts={alerts}
+          alertsLoading={alertsLoading}
+          alertsError={alertsError}
+          onEditGuardian={() => setGuardianModalMode('edit')}
+          onLinkGuardian={() => setGuardianModalMode('link')}
+          onUnlinkGuardian={() => setUnlinkingGuardian(true)}
+        />
+      ) : null}
       {selectedTab === 'Attendance' ? <StudentAttendance student={authorizedStudent} attendance={attendance} loading={attendanceLoading} error={attendanceError} /> : null}
       {selectedTab === 'Fees' && canViewStudentTab(user.role, 'Fees') ? <StudentFees invoices={feeInvoices} payments={feePayments} loading={feesLoading} error={feesError} onRetry={onRetryFees} /> : null}
       {selectedTab === 'Communication' ? <StudentCommunication student={authorizedStudent} messages={communicationMessages} user={user} invoices={feeInvoices} users={users} /> : null}
@@ -486,7 +777,22 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   )
 }
 
-function StudentOverview({ student, role, attendance, attendanceLoading, attendanceError, feeInvoices, feesLoading, feesError, alerts, alertsLoading, alertsError }: {
+function StudentOverview({
+  student,
+  role,
+  attendance,
+  attendanceLoading,
+  attendanceError,
+  feeInvoices,
+  feesLoading,
+  feesError,
+  alerts,
+  alertsLoading,
+  alertsError,
+  onEditGuardian,
+  onLinkGuardian,
+  onUnlinkGuardian,
+}: {
   student: Student
   role: Role
   attendance: AttendanceState
@@ -498,6 +804,9 @@ function StudentOverview({ student, role, attendance, attendanceLoading, attenda
   alerts: AlertItem[]
   alertsLoading: boolean
   alertsError: string
+  onEditGuardian?: () => void
+  onLinkGuardian?: () => void
+  onUnlinkGuardian?: () => void
 }) {
   const canViewSensitiveOverview = role !== 'finance'
   const canViewFees = canViewStudentTab(role, 'Fees')
@@ -535,12 +844,48 @@ function StudentOverview({ student, role, attendance, attendanceLoading, attenda
         </>
       ) : null}
       <section className="student-info-card">
-        <h2>Guardian information</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <h2 style={{ margin: 0 }}>Guardian information</h2>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {student.status !== 'Archived' && (role === 'admin' || role === 'principal') && student.guardian.id && (
+              <button
+                type="button"
+                className="secondary-button icon-only-button"
+                style={{ padding: '4px 8px', fontSize: '12px' }}
+                onClick={onEditGuardian}
+              >
+                Edit Details
+              </button>
+            )}
+            {student.status !== 'Archived' && role === 'admin' && (
+              <>
+                <button
+                  type="button"
+                  className="secondary-button icon-only-button"
+                  style={{ padding: '4px 8px', fontSize: '12px' }}
+                  onClick={onLinkGuardian}
+                >
+                  Link New
+                </button>
+                {student.guardian.id && (
+                  <button
+                    type="button"
+                    className="secondary-button icon-only-button"
+                    style={{ padding: '4px 8px', fontSize: '12px', color: '#dc2626' }}
+                    onClick={onUnlinkGuardian}
+                  >
+                    Unlink
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
         <dl className="student-info-grid">
-          <InfoField label="Name" value={student.guardian.name} />
+          <InfoField label="Name" value={student.guardian.name || 'No guardian assigned'} />
           <InfoField label="Relationship" value={student.guardian.relationship ?? ''} />
-          <InfoField label="Phone" value={student.guardian.phone} />
-          <InfoField label="Email" value={student.guardian.email} />
+          <InfoField label="Phone" value={student.guardian.phone || '—'} />
+          <InfoField label="Email" value={student.guardian.email || '—'} />
         </dl>
       </section>
       {canViewFees ? (

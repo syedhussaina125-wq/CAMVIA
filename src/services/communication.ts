@@ -190,3 +190,18 @@ export async function transitionCommunication(
   if (error) throw error
   return fetchCommunicationState(students)
 }
+
+export async function deleteCommunicationDraft(
+  messageId: string,
+  reason: string,
+  students: Student[],
+): Promise<CommunicationState> {
+  const db = requireSupabase()
+  const { error } = await db.rpc('delete_communication_draft', {
+    p_message_id: messageId,
+    p_reason: reason,
+  })
+  if (error) throw error
+  return fetchCommunicationState(students)
+}
+

@@ -1,7 +1,7 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
 
-export type FeeStatus = 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue'
+export type FeeStatus = 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue' | 'Voided'
 export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Online'
 export type FeeLineItem = {
   id: string
@@ -24,6 +24,8 @@ export type FeeInvoice = {
   status: FeeStatus
   createdAt: string
   updatedAt: string
+  voidedAt?: string | null
+  voidReason?: string | null
   lineItems: FeeLineItem[]
 }
 
@@ -37,6 +39,8 @@ export type FeePayment = {
   note: string
   recordedByUserId: number
   idempotencyKey: string
+  voidedAt?: string | null
+  voidReason?: string | null
 }
 
 export type FeeState = {
@@ -144,6 +148,7 @@ export function getFeeInvoices(
 
   const paymentsByInvoice = new Map<string, number>()
   for (const payment of state.payments) {
+    if (payment.voidedAt) continue
     paymentsByInvoice.set(payment.invoiceId, roundMoney((paymentsByInvoice.get(payment.invoiceId) ?? 0) + payment.amount))
   }
 
@@ -155,16 +160,19 @@ export function getFeeInvoices(
     } else if (invoice.schoolName !== user.schoolName || invoice.campusId !== campusKey(user.campusName)) {
       return []
     }
-    const paidAmount = paymentsByInvoice.get(invoice.id) ?? 0
-    const outstandingAmount = roundMoney(Math.max(0, invoice.totalAmount - paidAmount))
-    const overdueDays = outstandingAmount > 0 ? daysBetween(invoice.dueDate, today) : 0
-    const status: FeeStatus = outstandingAmount === 0
-      ? 'Paid'
-      : paidAmount > 0
-        ? 'Partially Paid'
-        : invoice.dueDate < today
-          ? 'Overdue'
-          : 'Pending'
+    const isVoided = Boolean(invoice.voidedAt)
+    const paidAmount = isVoided ? 0 : (paymentsByInvoice.get(invoice.id) ?? 0)
+    const outstandingAmount = isVoided ? 0 : roundMoney(Math.max(0, invoice.totalAmount - paidAmount))
+    const overdueDays = !isVoided && outstandingAmount > 0 ? daysBetween(invoice.dueDate, today) : 0
+    const status: FeeStatus = isVoided
+      ? 'Voided'
+      : outstandingAmount === 0
+        ? 'Paid'
+        : paidAmount > 0
+          ? 'Partially Paid'
+          : invoice.dueDate < today
+            ? 'Overdue'
+            : 'Pending'
     return [{ ...invoice, student, paidAmount, outstandingAmount, status, overdueDays }]
   })
 }
@@ -208,7 +216,7 @@ export function getFeeCollectionTrend(
 ) {
   if (!Array.isArray(state?.payments) || state.payments.length === 0) return []
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user, today).map((invoice) => invoice.id))
-  const relevantPayments = state.payments.filter((payment) => authorizedInvoiceIds.has(payment.invoiceId))
+  const relevantPayments = state.payments.filter((payment) => !payment.voidedAt && authorizedInvoiceIds.has(payment.invoiceId))
   if (relevantPayments.length === 0) return []
 
   const trend = Array.from({ length: 7 }, (_, index) => {
@@ -233,6 +241,6 @@ export function getFeePaymentsCollected(
   if (!Array.isArray(state?.payments)) return 0
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user).map((invoice) => invoice.id))
   return roundMoney(state.payments
-    .filter((payment) => payment.date.startsWith(`${month}-`) && authorizedInvoiceIds.has(payment.invoiceId))
+    .filter((payment) => !payment.voidedAt && payment.date.startsWith(`${month}-`) && authorizedInvoiceIds.has(payment.invoiceId))
     .reduce((sum, payment) => sum + payment.amount, 0))
 }
