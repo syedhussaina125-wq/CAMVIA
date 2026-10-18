@@ -2632,13 +2632,21 @@ textarea {
   min-width: 0;
 }
 
-.school-display-name {
+.topbar-crumb-sep {
+  color: #94a3b8;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.school-display-name,
+.topbar-school-name {
   font-size: 13.5px;
   font-weight: 500;
   color: #475569;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 260px;
 }
 
 .campus-selector-pill {

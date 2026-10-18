@@ -159,14 +159,14 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
         <article className="attendance-metric blue"><span>Total in Trash</span><strong>{counts.total}</strong></article>
         <article className="attendance-metric green"><span>Students</span><strong>{counts.students}</strong></article>
         <article className="attendance-metric purple"><span>Guardians</span><strong>{counts.guardians}</strong></article>
-        <article className="attendance-metric amber"><span>Expiring Soon (&le;7d)</span><strong>{counts.expiringSoon}</strong></article>
+        <article className="attendance-metric amber"><span>Expiring Soon (≤ 7 days)</span><strong>{counts.expiringSoon}</strong></article>
       </div>
 
       {actionError && <p className="communication-feedback error" role="alert">{actionError}</p>}
       {actionSuccess && <p className="communication-feedback success" role="status">{actionSuccess}</p>}
       {error && <p className="communication-feedback error" role="alert">{error}</p>}
 
-      <div className="student-table-card">
+      <div className="table-card" style={{ borderRadius: '18px', border: '1px solid #e9effb', boxShadow: '0 10px 22px rgba(19, 42, 77, 0.035)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', padding: '16px', borderBottom: '1px solid #edf2fb' }}>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
