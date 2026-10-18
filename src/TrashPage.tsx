@@ -166,9 +166,9 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
       {actionSuccess && <p className="communication-feedback success" role="status">{actionSuccess}</p>}
       {error && <p className="communication-feedback error" role="alert">{error}</p>}
 
-      <div className="table-card">
-        <div className="students-filters" style={{ borderBottom: '1px solid #e2e8f0', padding: '16px' }}>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+      <div className="student-table-card">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', padding: '16px', borderBottom: '1px solid #edf2fb' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               type="button"
               className={tab === 'ALL' ? 'primary-button small-button' : 'secondary-button small-button'}
@@ -199,7 +199,7 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
             </button>
           </div>
 
-          <label className="students-search" style={{ margin: 0, minWidth: '240px' }}>
+          <label className="student-search" style={{ margin: 0, width: '100%', maxWidth: '340px', minHeight: '40px' }}>
             <Search size={16} />
             <input
               value={query}
