@@ -38,6 +38,7 @@ import {
   Wallet,
   X,
   Zap,
+  Trash2,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -61,6 +62,7 @@ const TakeAttendancePage = lazy(() => import('./AttendancePages').then((module) 
 const FeeStudentDetailPage = lazy(() => import('./FeesPages').then((module) => ({ default: module.FeeStudentDetailPage })))
 const FeesPage = lazy(() => import('./FeesPages').then((module) => ({ default: module.FeesPage })))
 const CommunicationPage = lazy(() => import('./CommunicationPages').then((module) => ({ default: module.CommunicationPage })))
+const TrashPage = lazy(() => import('./TrashPage').then((module) => ({ default: module.TrashPage })))
 import { type AlertItem } from './alertsData'
 import {
   getAccessibleStudents,
@@ -246,6 +248,7 @@ const routeTitles: Record<string, string> = {
   '/reports': 'Reports',
   '/users': 'Users',
   '/my-classes': 'My Classes',
+  '/trash': 'Trash',
 }
 
 const navByRole: Record<Role, NavItem[]> = {
@@ -259,6 +262,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
     { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
     { label: 'Administration', path: '/administration', icon: UserCog },
+    { label: 'Trash', path: '/trash', icon: Trash2 },
   ],
   principal: [
     { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
@@ -291,7 +295,7 @@ const navByRole: Record<Role, NavItem[]> = {
 }
 
 const allowedRoutes: Record<Role, string[]> = {
-  admin: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports', '/users'],
+  admin: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports', '/users', '/trash'],
   principal: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports'],
   finance: ['/finance/dashboard', '/students', '/fees', '/alerts', '/communication', '/ask-edu'],
   teacher: ['/teacher/dashboard', '/my-classes', '/students', '/attendance', '/communication', '/alerts'],
@@ -1173,11 +1177,11 @@ function App() {
     try {
       setCommunication(await deleteCommunicationDraft(messageId, reason, students))
       await refreshAlerts(session.authUserId)
-      setToast({ type: 'success', text: 'Communication draft deleted.' })
+      setToast({ type: 'success', text: 'Communication draft moved to Trash.' })
       return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'The communication draft could not be deleted.'
-      console.error('[Supabase] Communication draft delete failed:', message)
+      const message = error instanceof Error ? error.message : 'The communication draft could not be moved to Trash.'
+      console.error('[Supabase] Communication draft move to trash failed:', message)
       setToast({ type: 'error', text: message })
       return false
     }
@@ -1209,6 +1213,17 @@ function App() {
   const visibleAlertsError = alertSnapshot.ownerId === session?.authUserId ? alertsError : ''
   const handleRefreshAlerts = async () => {
     if (session) await refreshAlerts(session.authUserId)
+  }
+
+  const handleRefreshAll = async () => {
+    if (!session) return
+    await Promise.allSettled([
+      refreshStudents(session),
+      handleRefreshAttendance(),
+      handleRefreshFees(),
+      handleRefreshCommunication(),
+      handleRefreshAlerts(),
+    ])
   }
 
   return (
@@ -1314,6 +1329,10 @@ function App() {
                 onUpdateUser={handleUpdateSchoolUser}
                 onDeactivateUser={handleDeactivateSchoolUser}
               /> : null}
+            />
+            <Route
+              path="/trash"
+              element={session?.role === 'admin' ? <TrashPage onRefreshAll={handleRefreshAll} /> : null}
             />
           </Route>
         </Route>

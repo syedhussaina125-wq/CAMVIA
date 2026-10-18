@@ -81,6 +81,7 @@ export async function fetchCommunicationState(students: Student[]): Promise<Comm
     const { data, error } = await db
       .from('communication_messages')
       .select('id, organization_id, school_id, campus_id, student_id, created_by, message_type, channel, body, source_type, source_id, status, requires_approval, submitted_at, approved_by, approved_at, rejected_by, rejected_at, rejection_reason, sent_by, sent_at, created_at, updated_at')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .range(offset, offset + pageSize - 1)
     if (error) throw error
@@ -197,7 +198,7 @@ export async function deleteCommunicationDraft(
   students: Student[],
 ): Promise<CommunicationState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('delete_communication_draft', {
+  const { error } = await db.rpc('trash_communication_draft', {
     p_message_id: messageId,
     p_reason: reason,
   })

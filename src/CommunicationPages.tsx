@@ -330,9 +330,9 @@ export function CommunicationPage(props: CommunicationPageProps) {
       {deletingMessage && (
         <DestructiveActionModal
           isOpen={Boolean(deletingMessage)}
-          title="Delete Communication Draft"
-          prompt={`Are you sure you want to delete this draft message for ${deletingMessage.student.firstName} ${deletingMessage.student.lastName}? This action will permanently remove the draft and record an audit log.`}
-          confirmLabel="Delete Draft"
+          title="Move Communication Draft to Trash"
+          prompt="This record will be moved to Trash and can be restored for 30 days. After that, it cannot be recovered."
+          confirmLabel="Move to Trash"
           danger
           onClose={() => setDeletingMessage(null)}
           onConfirm={async (reason) => {
@@ -344,11 +344,11 @@ export function CommunicationPage(props: CommunicationPageProps) {
                 await deleteCommunicationDraft(deletingMessage.id, reason, props.students)
                 if (props.onRefresh) props.onRefresh()
               }
-              setSuccess('Communication draft deleted.')
+              setSuccess('Communication draft moved to Trash.')
               setDeletingMessage(null)
               setSelectedMessageId('')
             } catch (delError) {
-              setError(delError instanceof Error ? delError.message : 'Failed to delete communication draft.')
+              setError(delError instanceof Error ? delError.message : 'Failed to move communication draft to Trash.')
             }
           }}
         />
@@ -461,7 +461,7 @@ function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit,
         const actions: ActionItem[] = []
         if (canDelete) {
           actions.push({
-            label: 'Delete Draft',
+            label: 'Move to Trash',
             danger: true,
             onClick: () => onDelete(message),
           })
@@ -514,7 +514,7 @@ function CommunicationReview({ message, user, userNames, rejectReason, onRejectR
             style={{ color: '#dc2626' }}
             onClick={() => onDelete(message)}
           >
-            Delete Draft
+            Move to Trash
           </button>
         ) : null}
         {message.status === 'DRAFT' && (message.createdByUserId === user.id || user.role === 'admin') ? <button type="button" className="primary-button" onClick={() => onOperation({ type: 'submit', messageId: message.id }, 'Awaiting Approval')}>Submit for Approval</button> : null}

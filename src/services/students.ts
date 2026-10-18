@@ -118,7 +118,8 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
       .select('student_id, guardian_id, relationship, is_primary')
       .in('student_id', studentIds),
     db.from('guardians')
-      .select('id, first_name, last_name, phone, email'),
+      .select('id, first_name, last_name, phone, email')
+      .is('deleted_at', null),
     db.from('schools')
       .select('id, name')
       .in('id', schoolIds),
@@ -165,6 +166,7 @@ export async function fetchStudents(): Promise<Student[]> {
   const { data, error } = await db
     .from('students')
     .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
+    .is('deleted_at', null)
     .order('last_name')
     .order('first_name')
 
@@ -182,6 +184,7 @@ export async function fetchStudentById(studentUuid: string): Promise<Student | n
     .from('students')
     .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
     .eq('id', studentUuid)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (error) throw error

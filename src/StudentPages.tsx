@@ -26,6 +26,7 @@ import {
   linkStudentGuardian,
   unlinkStudentGuardian,
 } from './services/students'
+import { trashStudent } from './services/trash'
 import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
 import { StudentEditModal } from './components/StudentEditModal'
 import { GuardianModal } from './components/GuardianModal'
@@ -111,6 +112,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [showAddForm, setShowAddForm] = useState(false)
   const [editingStudent, setEditingStudent] = useState<Student | null>(null)
   const [archivingStudent, setArchivingStudent] = useState<Student | null>(null)
+  const [trashingStudent, setTrashingStudent] = useState<Student | null>(null)
   const [actionError, setActionError] = useState('')
   const [form, setForm] = useState<NewStudent>(emptyStudentForm)
   const [campuses, setCampuses] = useState<StudentCampusOption[]>([])
@@ -256,6 +258,13 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     if (onRefresh) onRefresh()
   }
 
+  const handleTrashStudent = async (reason: string) => {
+    if (!trashingStudent) return
+    setActionError('')
+    await trashStudent(trashingStudent.id, reason)
+    if (onRefresh) onRefresh()
+  }
+
   const getStudentActions = (student: Student): ActionItem[] => {
     if (student.status === 'Archived') return []
     const actions: ActionItem[] = []
@@ -267,8 +276,13 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       })
       actions.push({
         label: 'Archive Student',
-        danger: true,
+        danger: false,
         onClick: () => setArchivingStudent(student),
+      })
+      actions.push({
+        label: 'Move to Trash',
+        danger: true,
+        onClick: () => setTrashingStudent(student),
       })
     } else if (user.role === 'principal') {
       actions.push({
@@ -494,6 +508,18 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           onConfirm={handleArchiveStudent}
         />
       )}
+
+      {trashingStudent && (
+        <DestructiveActionModal
+          isOpen={Boolean(trashingStudent)}
+          title="Move Student to Trash"
+          prompt="This record will be moved to Trash and can be restored for 30 days. After that, it cannot be recovered."
+          confirmLabel="Move to Trash"
+          danger
+          onClose={() => setTrashingStudent(null)}
+          onConfirm={handleTrashStudent}
+        />
+      )}
     </section>
   )
 }
@@ -509,6 +535,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   const [activeTab, setActiveTab] = useState<StudentTab>('Overview')
   const [editingStudent, setEditingStudent] = useState(false)
   const [archivingStudent, setArchivingStudent] = useState(false)
+  const [trashingStudent, setTrashingStudent] = useState(false)
   const [guardianModalMode, setGuardianModalMode] = useState<'edit' | 'link' | null>(null)
   const [unlinkingGuardian, setUnlinkingGuardian] = useState(false)
   const [campuses, setCampuses] = useState<StudentCampusOption[]>([])
@@ -611,6 +638,13 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     if (onRefresh) onRefresh()
   }
 
+  const handleTrashStudent = async (reason: string) => {
+    if (!authorizedStudent) return
+    setActionError('')
+    await trashStudent(authorizedStudent.id, reason)
+    navigate('/students')
+  }
+
   const handleUpdateGuardian = async (payload: {
     guardianId: string
     firstName: string
@@ -663,8 +697,13 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
       })
       studentActions.push({
         label: 'Archive Student',
-        danger: true,
+        danger: false,
         onClick: () => setArchivingStudent(true),
+      })
+      studentActions.push({
+        label: 'Move to Trash',
+        danger: true,
+        onClick: () => setTrashingStudent(true),
       })
     } else if (user.role === 'principal') {
       studentActions.push({
@@ -724,6 +763,18 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
           danger
           onClose={() => setArchivingStudent(false)}
           onConfirm={handleArchiveStudent}
+        />
+      )}
+
+      {trashingStudent && (
+        <DestructiveActionModal
+          isOpen={trashingStudent}
+          title="Move Student to Trash"
+          prompt="This record will be moved to Trash and can be restored for 30 days. After that, it cannot be recovered."
+          confirmLabel="Move to Trash"
+          danger
+          onClose={() => setTrashingStudent(false)}
+          onConfirm={handleTrashStudent}
         />
       )}
 
