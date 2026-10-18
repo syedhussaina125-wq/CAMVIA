@@ -1,6 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type { Student } from '../studentData'
-import type { FeePaymentSubmission, FeeState, PaymentMethod } from '../feeData'
+import type { FeeInvoiceCreationInput, FeePaymentSubmission, FeeState, PaymentMethod } from '../feeData'
 
 const client = supabase as any
 const pageSize = 1000
@@ -168,6 +168,24 @@ export async function recordFeePayment(
     target_note: submission.note,
     target_idempotency_key: submission.idempotencyKey,
   })
+  if (error) throw error
+  return fetchFeeState(students)
+}
+
+export async function createFeeInvoice(
+  students: Student[],
+  submission: FeeInvoiceCreationInput,
+): Promise<FeeState> {
+  const db = requireSupabase()
+  const feePeriod = submission.feePeriod.length === 7 ? `${submission.feePeriod}-01` : submission.feePeriod
+
+  const { error } = await db.rpc('create_fee_invoice', {
+    target_student_id: submission.studentId,
+    target_fee_period: feePeriod,
+    target_due_date: submission.dueDate,
+    target_line_items: submission.lineItems,
+  })
+
   if (error) throw error
   return fetchFeeState(students)
 }

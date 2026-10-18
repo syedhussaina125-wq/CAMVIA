@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, ArrowLeft, Banknote, FileText, Search, Wallet, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Banknote, FileText, Plus, Search, Trash2, Wallet, X, type LucideIcon } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { SchoolUser } from './mockData'
 import type { Student } from './studentData'
@@ -11,6 +11,7 @@ import {
   localDateKey,
   localMonthKey,
   type FeeAccessUser,
+  type FeeInvoiceCreationInput,
   type FeeInvoiceView,
   type FeePayment,
   type FeePaymentSubmission,
@@ -26,6 +27,7 @@ type FeesPagesProps = {
   feeError: string
   schoolUsers: SchoolUser[]
   onRecordPayment: (payment: FeePaymentSubmission) => Promise<boolean>
+  onCreateInvoice?: (invoice: FeeInvoiceCreationInput) => Promise<boolean>
   onRetry: () => void
 }
 
@@ -39,6 +41,7 @@ export function FeesPage(props: FeesPagesProps) {
   const [classFilter, setClassFilter] = useState('')
   const [sectionFilter, setSectionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   const allInvoices = useMemo(
     () => getFeeInvoices(props.feeState, props.students, props.user),
@@ -81,6 +84,15 @@ export function FeesPage(props: FeesPagesProps) {
           <h1>Fees &amp; Collections</h1>
           <p>Track collections, outstanding balances, and follow-up priorities.</p>
         </div>
+        {canMutateFeeData(props.user) && props.onCreateInvoice ? (
+          <button
+            type="button"
+            className="primary-button small-button"
+            onClick={() => setShowCreateModal(true)}
+          >
+            <Plus size={16} /> Create Invoice
+          </button>
+        ) : null}
       </div>
 
       <div className="help-banner">
@@ -145,6 +157,15 @@ export function FeesPage(props: FeesPagesProps) {
           </section>
         </aside>
       </div>
+
+      {showCreateModal && props.onCreateInvoice ? (
+        <CreateInvoiceModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          students={props.students}
+          onCreate={props.onCreateInvoice}
+        />
+      ) : null}
     </section>
   )
 }
@@ -153,6 +174,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   const navigate = useNavigate()
   const { studentId = '' } = useParams()
   const [activeInvoiceId, setActiveInvoiceId] = useState('')
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   const invoices = useMemo(
     () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => invoice.studentId === studentId),
@@ -178,7 +200,18 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
       <button type="button" className="back-link" onClick={() => navigate('/fees')}><ArrowLeft size={16} /> Fees &amp; Collections</button>
       <div className="fees-page-heading detail-heading">
         <div><p className="eyebrow">Student fee account</p><h1>{student.firstName} {student.lastName}</h1><p>{student.studentId} <span>·</span> {student.className}-{student.section}</p></div>
-        <span className="fee-role-note">{principalReadOnly ? 'Read-only overview' : 'Authorized fee record'}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span className="fee-role-note">{principalReadOnly ? 'Read-only overview' : 'Authorized fee record'}</span>
+          {canMutateFeeData(props.user) && props.onCreateInvoice ? (
+            <button
+              type="button"
+              className="primary-button small-button"
+              onClick={() => setShowCreateModal(true)}
+            >
+              <Plus size={15} /> Create Invoice
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="fees-summary-grid detail-metrics">
@@ -217,6 +250,16 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
           </div> : <p className="student-muted">No payments have been recorded yet.</p>}
         </section>
       </div>
+
+      {showCreateModal && props.onCreateInvoice ? (
+        <CreateInvoiceModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          students={props.students}
+          defaultStudentId={student.id}
+          onCreate={props.onCreateInvoice}
+        />
+      ) : null}
     </section>
   )
 }
@@ -352,4 +395,266 @@ function statusClass(status: FeeInvoiceView['status']): string {
 
 function attentionLevel(invoice: FeeInvoiceView): 'HIGH' | 'MEDIUM' | 'NOTICE' {
   return invoice.overdueDays > 60 ? 'HIGH' : invoice.overdueDays > 30 ? 'MEDIUM' : 'NOTICE'
+}
+
+function CreateInvoiceModal({
+  isOpen,
+  onClose,
+  students,
+  defaultStudentId,
+  onCreate,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  students: Student[]
+  defaultStudentId?: string
+  onCreate: (submission: FeeInvoiceCreationInput) => Promise<boolean>
+}) {
+  const [studentId, setStudentId] = useState(defaultStudentId ?? '')
+  const [feePeriod, setFeePeriod] = useState(localMonthKey())
+  const [dueDate, setDueDate] = useState(() => {
+    const next = new Date()
+    next.setDate(next.getDate() + 14)
+    return localDateKey(next)
+  })
+  const [lineItems, setLineItems] = useState<Array<{ id: string; label: string; amount: string }>>([
+    { id: '1', label: 'Monthly Tuition Fee', amount: '' },
+  ])
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  if (!isOpen) return null
+
+  const activeStudents = students.filter((student) => student.status === 'Active')
+
+  const totalAmount = lineItems.reduce((sum, item) => {
+    const val = parseFloat(item.amount)
+    return sum + (Number.isFinite(val) && val > 0 ? val : 0)
+  }, 0)
+
+  const handleAddLineItem = () => {
+    setLineItems((current) => [
+      ...current,
+      { id: String(Date.now() + Math.random()), label: '', amount: '' },
+    ])
+  }
+
+  const handleRemoveLineItem = (id: string) => {
+    if (lineItems.length <= 1) return
+    setLineItems((current) => current.filter((item) => item.id !== id))
+  }
+
+  const handleUpdateLineItem = (id: string, field: 'label' | 'amount', value: string) => {
+    setLineItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
+    )
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (submitting) return
+    setError('')
+    setSuccess('')
+
+    if (!studentId) {
+      setError('Please select an active student.')
+      return
+    }
+    if (!feePeriod) {
+      setError('Please select a fee period.')
+      return
+    }
+    if (!dueDate) {
+      setError('Please enter a due date.')
+      return
+    }
+    const normalizedPeriod = feePeriod.length === 7 ? `${feePeriod}-01` : feePeriod
+    if (dueDate < normalizedPeriod) {
+      setError('Invoice due date cannot be earlier than the fee period month.')
+      return
+    }
+    if (lineItems.length === 0) {
+      setError('Please add at least one line item.')
+      return
+    }
+    for (const item of lineItems) {
+      if (!item.label.trim()) {
+        setError('Every line item must have a non-empty description.')
+        return
+      }
+      const val = parseFloat(item.amount)
+      if (!Number.isFinite(val) || val <= 0) {
+        setError(`Amount for "${item.label.trim()}" must be greater than zero.`)
+        return
+      }
+    }
+    if (totalAmount <= 0) {
+      setError('Total invoice amount must be greater than zero.')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const saved = await onCreate({
+        studentId,
+        feePeriod: normalizedPeriod,
+        dueDate,
+        lineItems: lineItems.map((item) => ({
+          label: item.label.trim(),
+          amount: parseFloat(item.amount),
+        })),
+      })
+      if (saved) {
+        setSuccess('Fee invoice created successfully.')
+        setTimeout(() => {
+          onClose()
+        }, 800)
+      } else {
+        setError('Invoice could not be created. Please review the details.')
+      }
+    } catch (createErr) {
+      setError(createErr instanceof Error ? createErr.message : 'Unable to create fee invoice.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="user-modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="user-modal invoice-create-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-labelledby="create-invoice-title"
+      >
+        <div className="user-modal-heading">
+          <div>
+            <h2 id="create-invoice-title">Create Fee Invoice</h2>
+            <p className="student-muted" style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>
+              Issue a new monthly fee invoice with verified line items.
+            </p>
+          </div>
+          <button type="button" className="text-button" onClick={onClose} disabled={submitting}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="invoice-create-form" onSubmit={handleSubmit}>
+          <div className="invoice-form-grid">
+            <label>
+              Student *
+              <select
+                required
+                value={studentId}
+                onChange={(e) => setStudentId(e.target.value)}
+                disabled={submitting || Boolean(defaultStudentId)}
+              >
+                <option value="">Select an active student</option>
+                {activeStudents.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.firstName} {s.lastName} · {s.studentId} ({s.className}-{s.section})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Fee Month / Period *
+              <input
+                type="month"
+                required
+                value={feePeriod}
+                onChange={(e) => setFeePeriod(e.target.value)}
+                disabled={submitting}
+              />
+            </label>
+
+            <label>
+              Due Date *
+              <input
+                type="date"
+                required
+                value={dueDate}
+                min={feePeriod ? `${feePeriod}-01` : undefined}
+                onChange={(e) => setDueDate(e.target.value)}
+                disabled={submitting}
+              />
+            </label>
+          </div>
+
+          <div className="invoice-line-items-section">
+            <div className="invoice-line-items-heading">
+              <h3>Line Items</h3>
+              <button
+                type="button"
+                className="secondary-button small-button"
+                onClick={handleAddLineItem}
+                disabled={submitting}
+              >
+                <Plus size={14} /> Add Line Item
+              </button>
+            </div>
+
+            <div className="invoice-line-items-list">
+              {lineItems.map((item, index) => (
+                <div key={item.id} className="invoice-line-item-row">
+                  <div className="invoice-item-label-col">
+                    <label className="visually-hidden">Line item description {index + 1}</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Tuition Fee, Exam Fee, Transport"
+                      required
+                      value={item.label}
+                      onChange={(e) => handleUpdateLineItem(item.id, 'label', e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <div className="invoice-item-amount-col">
+                    <label className="visually-hidden">Line item amount {index + 1}</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      placeholder="Amount (PKR)"
+                      required
+                      value={item.amount}
+                      onChange={(e) => handleUpdateLineItem(item.id, 'amount', e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="invoice-item-remove-button"
+                    title="Remove line item"
+                    disabled={lineItems.length <= 1 || submitting}
+                    onClick={() => handleRemoveLineItem(item.id)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="invoice-live-total-card">
+              <span>Calculated Total</span>
+              <strong>PKR {new Intl.NumberFormat('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(totalAmount)}</strong>
+            </div>
+          </div>
+
+          {error ? <p className="fee-form-error" role="alert">{error}</p> : null}
+          {success ? <p className="fee-form-success" role="status">{success}</p> : null}
+
+          <div className="user-modal-actions">
+            <button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>
+              Cancel
+            </button>
+            <button type="submit" className="primary-button" disabled={submitting || totalAmount <= 0}>
+              {submitting ? 'Creating Invoice…' : 'Create Invoice'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
 }

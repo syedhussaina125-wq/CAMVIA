@@ -63,6 +63,16 @@ export type FeePaymentSubmission = {
   idempotencyKey: string
 }
 
+export type FeeInvoiceCreationInput = {
+  studentId: string
+  feePeriod: string
+  dueDate: string
+  lineItems: Array<{
+    label: string
+    amount: number
+  }>
+}
+
 export type FeeInvoiceView = FeeInvoice & {
   student: Student
   paidAmount: number

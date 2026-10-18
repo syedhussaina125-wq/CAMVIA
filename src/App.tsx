@@ -84,7 +84,7 @@ import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAs
 import { fetchProfiles } from './services/users'
 import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput, type TeacherAssignmentScope } from './services/userManagement'
 import { fetchAttendanceState, saveAttendance as saveLiveAttendance } from './services/attendance'
-import { fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
+import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication } from './services/communication'
 import { fetchLiveAlerts } from './services/alerts'
 import {
@@ -101,6 +101,7 @@ import {
   getFeeMetrics,
   getFeePaymentsCollected,
   localMonthKey,
+  type FeeInvoiceCreationInput,
   type FeePaymentSubmission,
   type FeeState,
 } from './feeData'
@@ -1088,6 +1089,25 @@ function App() {
     }
   }
 
+  const handleCreateFeeInvoice = async (submission: FeeInvoiceCreationInput): Promise<boolean> => {
+    if (!session) {
+      setToast({ type: 'error', text: 'Sign in to create fee invoices.' })
+      return false
+    }
+    try {
+      const nextFees = await createLiveFeeInvoice(students, submission)
+      setFees(nextFees)
+      await refreshAlerts(session.authUserId)
+      setToast({ type: 'success', text: 'Fee invoice created successfully.' })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create fee invoice.'
+      console.error('[Supabase] Fee invoice creation failed:', message)
+      setToast({ type: 'error', text: message })
+      return false
+    }
+  }
+
   const handleRefreshCommunication = async () => {
     setCommunicationLoading(true)
     setCommunicationError('')
@@ -1204,8 +1224,8 @@ function App() {
               path="/attendance/take/:classId"
               element={session ? <TakeAttendancePage user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} /> : null}
             />
-            <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} /> : null} />
-            <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} /> : null} />
+            <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
+            <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
             <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} /> : null} />
             <Route path="/alerts" element={session ? <AlertsPage user={session} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} /> : null} />
             <Route path="/approvals" element={session ? <ApprovalsPage user={session} students={students} communication={communication} loading={communicationLoading} error={communicationError} onRetry={handleRefreshCommunication} onOperation={handleCommunicationOperation} /> : null} />
