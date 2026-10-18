@@ -9,6 +9,7 @@ import {
   Lightbulb,
   LockKeyhole,
   Mail,
+  Menu,
   Moon,
   Sun,
   Banknote,
@@ -35,6 +36,7 @@ import {
   UserCog,
   Users,
   Wallet,
+  X,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
@@ -995,7 +997,13 @@ function App() {
     if (!campusId) throw new Error('Select an authorized campus.')
 
     try {
-      await createLiveStudent(payload, campusId)
+      const sanitizedPayload: NewStudent = session.role === 'teacher'
+        ? {
+            ...payload,
+            guardian: { name: '', phone: '', email: '' },
+          }
+        : payload
+      await createLiveStudent(sanitizedPayload, campusId)
       const refreshedStudents = await refreshStudents(session)
       if (!refreshedStudents || resolvedUserId.current !== session.authUserId) {
         throw new Error('Student was created, but the current student list could not be refreshed.')
@@ -2038,6 +2046,7 @@ function AppShell({
 }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const pageTitle = location.pathname.startsWith('/students/')
     ? 'Student 360'
@@ -2049,6 +2058,12 @@ function AppShell({
   useEffect(() => {
     if (user) document.title = `${pageTitle} | CAMVIA`
   }, [pageTitle, user])
+
+  const [prevPath, setPrevPath] = useState(location.pathname)
+  if (prevPath !== location.pathname) {
+    setPrevPath(location.pathname)
+    setSidebarOpen(false)
+  }
 
   if (!user) {
     return null
@@ -2064,9 +2079,19 @@ function AppShell({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
-          <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" />
+          <div className="sidebar-brand-row">
+            <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" />
+            <button
+              type="button"
+              className="icon-button sidebar-close-btn"
+              aria-label="Close sidebar"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <X size={18} />
+            </button>
+          </div>
           <span className="sidebar-subtitle">School Intelligence</span>
         </div>
 
@@ -2082,7 +2107,10 @@ function AppShell({
                 key={item.path}
                 type="button"
                 className={`nav-item ${isActive ? 'active' : ''}`}
-                onClick={() => navigate(item.path)}
+                onClick={() => {
+                  navigate(item.path)
+                  setSidebarOpen(false)
+                }}
               >
                 <span className="nav-icon-wrap"><Icon size={18} /></span>
                 <span>{item.label}</span>
@@ -2093,21 +2121,52 @@ function AppShell({
         </nav>
 
         <div className="sidebar-footer">
-          <button type="button" className="nav-item profile-item" onClick={() => navigate(defaultDashboardForRole(user.role))}>
+          <button
+            type="button"
+            className="nav-item profile-item"
+            onClick={() => {
+              navigate(defaultDashboardForRole(user.role))
+              setSidebarOpen(false)
+            }}
+          >
             <span className="nav-icon-wrap"><UserCog size={18} /></span>
             <span>Profile</span>
           </button>
 
-          <button type="button" className="nav-item danger-item" onClick={onLogout}>
+          <button
+            type="button"
+            className="nav-item danger-item"
+            onClick={() => {
+              setSidebarOpen(false)
+              onLogout()
+            }}
+          >
             <span className="nav-icon-wrap"><LogOut size={18} /></span>
             <span>Logout</span>
           </button>
         </div>
       </aside>
 
+      {sidebarOpen ? (
+        <div
+          className="sidebar-backdrop"
+          aria-hidden="true"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+
       <div className="content-shell">
         <header className="topbar">
           <div className="topbar-left">
+            <button
+              type="button"
+              className="icon-button mobile-menu-btn"
+              aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+              aria-expanded={sidebarOpen}
+              onClick={() => setSidebarOpen((value) => !value)}
+            >
+              <Menu size={20} />
+            </button>
             <span className="topbar-page-label">{pageTitle}</span>
             <span className="topbar-crumb-sep">•</span>
             <span className="topbar-school-name">{user.schoolName}</span>

@@ -155,8 +155,14 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     event.preventDefault()
     setStudentSaveError('')
     setStudentSaving(true)
+    const submissionPayload: NewStudent = user.role === 'teacher'
+      ? {
+          ...form,
+          guardian: { name: '', phone: '', email: '' },
+        }
+      : form
     try {
-      await onAddStudent(form, campusId)
+      await onAddStudent(submissionPayload, campusId)
       setForm(emptyStudentForm)
       setShowAddForm(false)
     } catch (saveError) {
@@ -272,9 +278,17 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <label>Roll number<input disabled={studentSaving} value={form.rollNumber} onChange={(event) => setForm((current) => ({ ...current, rollNumber: event.target.value }))} /></label>
           <label>Date of birth<input disabled={studentSaving} type="date" value={form.dateOfBirth} onChange={(event) => setForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
           <label>Gender<select disabled={studentSaving} value={form.gender} onChange={(event) => setForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Select</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
-          <label>Guardian name<input disabled={studentSaving} value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
-          <label>Guardian phone<input disabled={studentSaving} type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
-          <label>Guardian email<input disabled={studentSaving} type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
+          {user.role === 'admin' ? (
+            <>
+              <label>Guardian name<input disabled={studentSaving} value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
+              <label>Guardian phone<input disabled={studentSaving} type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
+              <label>Guardian email<input disabled={studentSaving} type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
+            </>
+          ) : (
+            <p className="student-muted" style={{ gridColumn: '1 / -1', margin: '0.5rem 0' }}>
+              Guardian information must be added by an Admin.
+            </p>
+          )}
           <div className="student-form-actions">
             <button type="button" className="secondary-button small-button" disabled={studentSaving} onClick={() => setShowAddForm(false)}>Cancel</button>
             <button type="submit" className="primary-button small-button" disabled={studentSaving || creationOptionsLoading || Boolean(creationOptionsError) || campuses.length === 0 || !campusId}>{studentSaving ? 'Saving…' : 'Save Student'}</button>

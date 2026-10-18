@@ -129,8 +129,21 @@ Deno.serve(async (request: Request) => {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-  if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+
+  const secretKeysRaw = Deno.env.get('SUPABASE_SECRET_KEYS')
+
+  if (!secretKeysRaw) {
+    throw new Error('Supabase secret keys are not configured')
+  }
+
+  const secretKeys = JSON.parse(secretKeysRaw)
+  const secretKey = secretKeys.default
+
+  if (!secretKey) {
+    throw new Error('Default Supabase secret key is unavailable')
+  }
+
+  if (!supabaseUrl || !anonKey) {
     console.error('User provisioning function is missing required Supabase server configuration.')
     return response(500, { error: 'Secure user provisioning is not configured.' })
   }
@@ -139,7 +152,7 @@ Deno.serve(async (request: Request) => {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
     auth: { autoRefreshToken: false, persistSession: false },
   })
-  const service = createClient(supabaseUrl, serviceRoleKey, {
+  const service = createClient(supabaseUrl, secretKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
