@@ -1,7 +1,7 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
 
-export type FeeStatus = 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue' | 'Voided'
+export type FeeStatus = 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue' | 'Cancelled' | 'Voided'
 export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Online'
 export type FeeLineItem = {
   id: string
@@ -165,7 +165,7 @@ export function getFeeInvoices(
     const outstandingAmount = isVoided ? 0 : roundMoney(Math.max(0, invoice.totalAmount - paidAmount))
     const overdueDays = !isVoided && outstandingAmount > 0 ? daysBetween(invoice.dueDate, today) : 0
     const status: FeeStatus = isVoided
-      ? 'Voided'
+      ? 'Cancelled'
       : outstandingAmount === 0
         ? 'Paid'
         : paidAmount > 0

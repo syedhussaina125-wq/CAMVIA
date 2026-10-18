@@ -261,6 +261,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Approval Center', path: '/approvals', icon: ShieldCheck },
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
     { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
+    { label: 'Reports', path: '/reports', icon: Gauge },
     { label: 'Administration', path: '/administration', icon: UserCog },
     { label: 'Trash', path: '/trash', icon: Trash2 },
   ],

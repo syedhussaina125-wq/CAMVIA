@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { formatRpcErrorMessage } from '../utils/errorMapping'
 
 type GuardianModalProps = {
   isOpen: boolean
@@ -88,7 +89,7 @@ export function GuardianModal({
       }
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Guardian operation failed.')
+      setError(formatRpcErrorMessage(err))
     } finally {
       setSubmitting(false)
     }

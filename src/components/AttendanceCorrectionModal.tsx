@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { formatRpcErrorMessage } from '../utils/errorMapping'
 
 export type AttendanceCorrectionRecord = {
   student_id: string
@@ -57,7 +58,7 @@ export function AttendanceCorrectionModal({
       })
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to correct attendance.')
+      setError(formatRpcErrorMessage(err))
     } finally {
       setSaving(false)
     }

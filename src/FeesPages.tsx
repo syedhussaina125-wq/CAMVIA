@@ -21,6 +21,7 @@ import {
 import { RecordActionMenu, DestructiveActionModal } from './components/RecordActionControls'
 import { InvoiceEditModal } from './components/InvoiceEditModal'
 import { updateFeeInvoice, voidFeeInvoice, voidFeePayment } from './services/fees'
+import { formatRpcErrorMessage } from './utils/errorMapping'
 
 type FeesPagesProps = {
   user: FeeAccessUser & { name: string }
@@ -113,7 +114,7 @@ export function FeesPage(props: FeesPagesProps) {
           setSectionFilter('')
         }}><option value="">All classes</option>{classes.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>Section<select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)}><option value="">All sections</option>{sections.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue', 'Voided'].map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue', 'Cancelled'].map((item) => <option key={item}>{item}</option>)}</select></label>
       </div>
 
       <div className="fees-summary-grid">
@@ -217,15 +218,23 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   const handleVoidInvoice = async (reason: string) => {
     if (!voidingInvoice) return
     setActionError('')
-    await voidFeeInvoice(props.students, { invoiceId: voidingInvoice.id, reason })
-    if (props.onRefresh) props.onRefresh()
+    try {
+      await voidFeeInvoice(props.students, { invoiceId: voidingInvoice.id, reason })
+      if (props.onRefresh) props.onRefresh()
+    } catch (err) {
+      setActionError(formatRpcErrorMessage(err))
+    }
   }
 
   const handleVoidPayment = async (reason: string) => {
     if (!voidingPayment) return
     setActionError('')
-    await voidFeePayment(props.students, { paymentId: voidingPayment.id, reason })
-    if (props.onRefresh) props.onRefresh()
+    try {
+      await voidFeePayment(props.students, { paymentId: voidingPayment.id, reason })
+      if (props.onRefresh) props.onRefresh()
+    } catch (err) {
+      setActionError(formatRpcErrorMessage(err))
+    }
   }
 
   const canMutate = canMutateFeeData(props.user)
@@ -280,7 +289,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
                           onClick: () => setEditingInvoice(item),
                         }] : []),
                         ...(item.paidAmount === 0 ? [{
-                          label: 'Void Invoice',
+                          label: 'Cancel Invoice',
                           danger: true,
                           onClick: () => setVoidingInvoice(item),
                         }] : []),
@@ -293,7 +302,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
             <div className="fee-line-items">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0 }}>{formatMonth(invoice.month)} breakdown</h3>
-                {invoice.voidedAt ? <span style={{ color: '#dc2626', fontWeight: 600, fontSize: '13px' }}>VOIDED: {invoice.voidReason || 'No reason specified'}</span> : null}
+                {invoice.voidedAt ? <span style={{ color: '#dc2626', fontWeight: 600, fontSize: '13px' }}>CANCELLED: {invoice.voidReason || 'No reason specified'}</span> : null}
               </div>
               {invoice.lineItems.map((item) => <div key={item.id}><span>{item.label}</span><strong>{formatCurrency(item.amount)}</strong></div>)}
               <div className="fee-line-total"><span>Total</span><strong>{formatCurrency(invoice.totalAmount)}</strong></div>
@@ -310,12 +319,12 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
               <div key={payment.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: '8px' }}>
                 <div style={{ flex: 1 }}>
                   <PaymentRow payment={payment} users={props.schoolUsers} />
-                  {payment.voidedAt && <small style={{ color: '#dc2626', display: 'block', marginTop: '2px' }}>VOIDED: {payment.voidReason || 'No reason specified'}</small>}
+                  {payment.voidedAt && <small style={{ color: '#dc2626', display: 'block', marginTop: '2px' }}>CANCELLED: {payment.voidReason || 'No reason specified'}</small>}
                 </div>
                 {canMutate && !payment.voidedAt && (
                   <RecordActionMenu
                     actions={[{
-                      label: 'Void Payment',
+                      label: 'Cancel Payment',
                       danger: true,
                       onClick: () => setVoidingPayment(payment),
                     }]}
@@ -339,9 +348,9 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
       {voidingInvoice && (
         <DestructiveActionModal
           isOpen={Boolean(voidingInvoice)}
-          title="Void Fee Invoice"
-          prompt={`Are you sure you want to void the ${voidingInvoice.month} invoice for ${student.firstName} ${student.lastName}? This will cancel the receivable balance while preserving audit history.`}
-          confirmLabel="Void Invoice"
+          title="Cancel Fee Invoice"
+          prompt="Are you sure you want to cancel this invoice? It will remain in invoice history but will no longer be active."
+          confirmLabel="Cancel Invoice"
           danger
           onClose={() => setVoidingInvoice(null)}
           onConfirm={handleVoidInvoice}
@@ -351,9 +360,9 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
       {voidingPayment && (
         <DestructiveActionModal
           isOpen={Boolean(voidingPayment)}
-          title="Void Fee Payment"
-          prompt={`Are you sure you want to void this ${formatCurrency(voidingPayment.amount)} payment recorded on ${formatDate(voidingPayment.date)}? The invoice balance will be restored.`}
-          confirmLabel="Void Payment"
+          title="Cancel Fee Payment"
+          prompt="Are you sure you want to cancel this payment? It will remain in payment history but will no longer be counted."
+          confirmLabel="Cancel Payment"
           danger
           onClose={() => setVoidingPayment(null)}
           onConfirm={handleVoidPayment}
@@ -535,7 +544,7 @@ function CreateInvoiceModal({
 
   if (!isOpen) return null
 
-  const activeStudents = students.filter((student) => student.status === 'Active')
+  const activeStudents = students.filter((student) => student.status === 'Active' && !(student as any).deleted_at && !(student as any).deletedAt)
 
   const totalAmount = lineItems.reduce((sum, item) => {
     const val = parseFloat(item.amount)

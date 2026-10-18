@@ -7,6 +7,7 @@ import {
   restoreTrashedGuardian,
   restoreTrashedStudent,
 } from './services/trash'
+import { formatRpcErrorMessage } from './utils/errorMapping'
 
 type TrashTab = 'ALL' | 'STUDENTS' | 'GUARDIANS' | 'COMMUNICATIONS'
 
@@ -100,7 +101,7 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
       await loadItems()
       if (onRefreshAll) onRefreshAll()
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to restore record.')
+      setActionError(formatRpcErrorMessage(err))
     } finally {
       setRestoring(false)
     }
@@ -113,7 +114,7 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
       case 'GUARDIAN':
         return 'fee-status-badge fee-status-partially-paid'
       case 'COMMUNICATION_DRAFT':
-        return 'fee-status-badge fee-status-voided'
+        return 'fee-status-badge fee-status-cancelled'
       default:
         return 'fee-status-badge'
     }

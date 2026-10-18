@@ -73,6 +73,9 @@ export function CommunicationPage(props: CommunicationPageProps) {
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const authorizedStudents = useMemo(
     () => props.students.filter((student) =>
+      student.status === 'Active' &&
+      !(student as any).deleted_at &&
+      !(student as any).deletedAt &&
       (!props.user.organizationId || student.organizationId === props.user.organizationId) &&
       (!props.user.schoolId || student.schoolId === props.user.schoolId) &&
       (props.user.role !== 'teacher' || props.user.teacherAssignments?.some((assignment) =>

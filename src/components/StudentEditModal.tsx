@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import type { Student } from '../studentData'
 import type { Role } from '../mockData'
+import { formatRpcErrorMessage } from '../utils/errorMapping'
 
 type StudentEditModalProps = {
   isOpen: boolean
@@ -71,7 +72,7 @@ export function StudentEditModal({
       })
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update student.')
+      setError(formatRpcErrorMessage(err))
     } finally {
       setSaving(false)
     }

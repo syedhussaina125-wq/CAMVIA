@@ -5640,6 +5640,8 @@ a:focus-visible {
 .fee-status-badge.partially-paid { color: #7650ba; background: #f2edfc; }
 .fee-status-badge.pending { color: #93670c; background: #fff5dc; }
 .fee-status-badge.overdue { color: #bd3d56; background: #ffedf0; }
+.fee-status-badge.cancelled,
+.fee-status-badge.voided { color: #64748b; background: #f1f5f9; }
 .fee-mobile-list { display: none; }
 
 .fees-empty,

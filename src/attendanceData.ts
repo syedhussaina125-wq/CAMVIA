@@ -109,6 +109,7 @@ export function getAttendanceClasses(students: Student[]): AttendanceClass[] {
 
   for (const student of students) {
     if (!student.schoolId || !student.campusId || !student.organizationId) continue
+    if (student.status !== 'Active' || (student as any).deleted_at || (student as any).deletedAt) continue
     const id = getAttendanceClassId(student.className, student.section, student.campusId)
     const current = groups.get(id)
     if (current) {

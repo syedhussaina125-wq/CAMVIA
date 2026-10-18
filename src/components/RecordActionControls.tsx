@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { MoreVertical, ShieldAlert } from 'lucide-react'
+import { formatRpcErrorMessage } from '../utils/errorMapping'
 
 export type ActionItem = {
   label: string
@@ -128,7 +129,7 @@ export function DestructiveActionModal({
       await onConfirm(reason.trim())
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed.')
+      setError(formatRpcErrorMessage(err))
     } finally {
       setSubmitting(false)
     }

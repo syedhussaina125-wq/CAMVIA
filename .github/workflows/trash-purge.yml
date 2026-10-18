@@ -1,0 +1,23 @@
+name: CAMVIA Daily Trash Purge
+
+on:
+  schedule:
+    # Runs daily at 03:00 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  purge:
+    name: Purge Expired Trash Records
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invoke Purge Edge Function
+        run: |
+          if [ -z "${{ secrets.SUPABASE_URL }}" ] || [ -z "${{ secrets.SUPABASE_SECRET_KEY }}" ]; then
+            echo "Required secrets (SUPABASE_URL or SUPABASE_SECRET_KEY) are not configured. Skipping."
+            exit 0
+          fi
+          RESPONSE=$(curl -s -X POST "${{ secrets.SUPABASE_URL }}/functions/v1/purge-expired-trash" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SECRET_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Purge outcome: $RESPONSE"

@@ -128,7 +128,7 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
         dueDate: row.due_date,
         totalAmount: lineItems.reduce((total, item) => total + item.amount, 0),
         paidAmount: 0,
-        status: (row.voided_at ? 'Voided' : 'Pending') as import('../feeData').FeeStatus,
+        status: (row.voided_at ? 'Cancelled' : 'Pending') as import('../feeData').FeeStatus,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         voidedAt: row.voided_at ?? null,
