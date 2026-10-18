@@ -748,69 +748,6 @@
   line-height: 1.5;
 }
 
-.morning-brief {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(47, 107, 255, 0.06), rgba(34, 211, 238, 0.06));
-  border: 1px solid rgba(139, 92, 246, 0.12);
-  border-radius: 24px;
-  padding: 22px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  box-shadow: 0 10px 20px rgba(47, 107, 255, 0.04);
-}
-
-.brief-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.brief-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #2d3d7a;
-}
-
-.brief-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.55);
-  color: #2d3d7a;
-}
-
-.brief-title h3 {
-  margin: 0;
-  color: #1b2d52;
-}
-
-.brief-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.55);
-  color: #2d3d7a;
-  border: 1px solid rgba(47, 107, 255, 0.08);
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-
-.morning-brief p {
-  margin: 0;
-  color: #4e647f;
-  line-height: 1.7;
-}
-
-.brief-actions {
-  display: flex;
-  justify-content: flex-end;
-}
 
 .chart-shell {
   background: linear-gradient(180deg, #fbfdff 0%, #f6f8ff 100%);
@@ -2237,63 +2174,6 @@ html {
   color: #8a9ab2;
 }
 
-.morning-brief {
-  position: relative;
-  overflow: hidden;
-  gap: 13px;
-  padding: 20px 22px;
-  border-color: rgba(129, 117, 220, 0.15);
-  background: linear-gradient(112deg, #f1f4ff 0%, #f6f2ff 54%, #eefaff 100%);
-  box-shadow: 0 7px 18px rgba(76, 86, 176, 0.045);
-}
-
-.morning-brief::after {
-  position: absolute;
-  top: -42px;
-  right: -12px;
-  width: 150px;
-  height: 150px;
-  border: 1px solid rgba(116, 119, 220, 0.11);
-  border-radius: 50%;
-  box-shadow: 0 0 0 16px rgba(116, 119, 220, 0.035), 0 0 0 34px rgba(116, 119, 220, 0.025);
-  content: '';
-  pointer-events: none;
-}
-
-.brief-header,
-.morning-brief > p,
-.brief-actions {
-  position: relative;
-  z-index: 1;
-}
-
-.brief-title {
-  gap: 11px;
-}
-
-.brief-icon {
-  width: 40px;
-  height: 40px;
-  color: #5d55bc;
-  background: linear-gradient(145deg, #fff, #eceaff);
-  box-shadow: 0 3px 8px rgba(67, 68, 145, 0.08);
-}
-
-.brief-badge {
-  color: #666398;
-  background: rgba(255, 255, 255, 0.58);
-  border-color: rgba(126, 119, 188, 0.12);
-  font-size: 0.67rem;
-}
-
-.morning-brief p {
-  max-width: 78ch;
-  line-height: 1.6;
-}
-
-.brief-actions .primary-button {
-  box-shadow: 0 5px 12px rgba(47, 107, 255, 0.16);
-}
 
 .chart-shell {
   padding: 10px 14px 4px;
@@ -3237,26 +3117,33 @@ textarea {
   background: #FECACA;
 }
 
-/* AI Morning Brief: auto 1fr auto layout spanning full width */
+/* AI Morning Brief: Fluid Auto-Adjustable Zero-Clipping Layout */
 .morning-brief {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
+  flex-direction: row;
   align-items: center;
+  justify-content: space-between;
   gap: 20px;
-  padding: 18px 24px;
-  border-radius: var(--camvia-radius-lg);
+  min-height: 96px;
+  height: auto !important;
+  max-height: none !important;
+  padding: 20px 24px;
+  border-radius: var(--camvia-radius-lg, 18px);
   background: linear-gradient(135deg, #EEF4FF 0%, #F5F1FF 52%, #EFF8FF 100%);
   border: 1px solid #DCE6F8;
-  box-shadow: var(--camvia-shadow-card);
+  box-shadow: var(--camvia-shadow-card, 0 4px 20px rgba(15, 30, 90, 0.035));
   width: 100%;
   box-sizing: border-box;
+  overflow: visible !important;
 }
 
 .brief-ai-avatar {
   width: 48px;
   height: 48px;
+  min-width: 48px;
+  min-height: 48px;
   border-radius: 14px;
-  background: linear-gradient(135deg, var(--camvia-blue) 0%, var(--camvia-purple) 100%);
+  background: linear-gradient(135deg, var(--camvia-blue, #2F6BFF) 0%, var(--camvia-purple, #8B5CF6) 100%);
   color: #ffffff;
   display: flex;
   align-items: center;
@@ -3265,31 +3152,43 @@ textarea {
   flex-shrink: 0;
 }
 
+.brief-ai-avatar svg {
+  flex-shrink: 0;
+}
+
 .brief-center-content {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  gap: 6px;
 }
 
 .brief-title {
   font-size: 16.5px;
   font-weight: 700;
-  color: var(--camvia-navy);
+  color: var(--camvia-navy, #152d4f);
   margin: 0;
+  line-height: 1.35;
+  padding: 1px 0 2px;
+  overflow-wrap: break-word;
 }
 
 .brief-summary {
   font-size: 14px;
   color: #334155;
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0;
+  padding: 0;
+  overflow-wrap: break-word;
 }
 
 .brief-right-actions {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  justify-content: center;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -3301,31 +3200,40 @@ textarea {
   color: #7C3AED;
   font-size: 11px;
   font-weight: 700;
-  padding: 3px 10px;
+  padding: 4px 11px;
   border-radius: 999px;
   white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.3;
 }
 
 .brief-cta-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  background: linear-gradient(110deg, var(--camvia-blue), #3979F4);
+  background: linear-gradient(110deg, var(--camvia-blue, #2F6BFF), #3979F4);
   color: #ffffff;
   border: none;
-  border-radius: var(--camvia-radius-md);
-  padding: 9px 16px;
+  border-radius: var(--camvia-radius-md, 10px);
+  padding: 9px 18px;
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(47, 107, 255, 0.2);
   transition: all 180ms ease;
   white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.35;
 }
 
 .brief-cta-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(47, 107, 255, 0.3);
+}
+
+.brief-cta-btn svg {
+  flex-shrink: 0;
 }
 
 /* Dashboard Sections: Needs Attention (~60%) vs Quick Actions (~40%) */
@@ -3832,18 +3740,36 @@ a:focus-visible {
   }
 
   .morning-brief {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     gap: 14px;
-    padding: 16px;
+    padding: 18px 16px;
+    height: auto !important;
+    min-height: fit-content !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border-radius: 16px;
+  }
+
+  .brief-center-content {
+    width: 100%;
   }
 
   .brief-right-actions {
+    flex-direction: column;
     align-items: stretch;
     width: 100%;
+    gap: 10px;
+  }
+
+  .brief-badge {
+    align-self: flex-start;
   }
 
   .brief-cta-btn {
     width: 100%;
+    min-height: 42px;
     justify-content: center;
   }
 
