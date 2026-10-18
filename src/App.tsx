@@ -1101,10 +1101,10 @@ function App() {
       setToast({ type: 'success', text: 'Fee invoice created successfully.' })
       return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to create fee invoice.'
-      console.error('[Supabase] Fee invoice creation failed:', message)
+      const message = error instanceof Error ? error.message : 'Invoice could not be created. Please review the details.'
+      console.error('[Supabase] Fee invoice creation failed:', error)
       setToast({ type: 'error', text: message })
-      return false
+      throw error
     }
   }
 

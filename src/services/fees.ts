@@ -172,6 +172,36 @@ export async function recordFeePayment(
   return fetchFeeState(students)
 }
 
+export function mapFeeInvoiceError(error: unknown): Error {
+  if (typeof error === 'object' && error !== null) {
+    const err = error as { code?: string | number; message?: string; details?: string }
+    const code = String(err.code ?? '')
+    const message = String(err.message ?? '')
+    const details = String(err.details ?? '')
+
+    const hasDuplicateEvidence =
+      code === '23505' ||
+      /duplicate|already exists|unique/i.test(message) ||
+      /duplicate|already exists|unique/i.test(details)
+
+    if (hasDuplicateEvidence) {
+      return new Error('An invoice already exists for this student for the selected fee period.')
+    }
+  }
+
+  if (error instanceof Error && error.message) {
+    if (
+      error.message === 'An invoice already exists for this student for the selected fee period.' ||
+      error.message.includes('23505') ||
+      /duplicate|already exists|unique/i.test(error.message)
+    ) {
+      return new Error('An invoice already exists for this student for the selected fee period.')
+    }
+  }
+
+  return new Error('Invoice could not be created. Please review the details.')
+}
+
 export async function createFeeInvoice(
   students: Student[],
   submission: FeeInvoiceCreationInput,
@@ -186,6 +216,8 @@ export async function createFeeInvoice(
     target_line_items: submission.lineItems,
   })
 
-  if (error) throw error
+  if (error) {
+    throw mapFeeInvoiceError(error)
+  }
   return fetchFeeState(students)
 }

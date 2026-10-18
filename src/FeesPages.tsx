@@ -514,7 +514,7 @@ function CreateInvoiceModal({
         setError('Invoice could not be created. Please review the details.')
       }
     } catch (createErr) {
-      setError(createErr instanceof Error ? createErr.message : 'Unable to create fee invoice.')
+      setError(createErr instanceof Error ? createErr.message : 'Invoice could not be created. Please review the details.')
     } finally {
       setSubmitting(false)
     }
