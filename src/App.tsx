@@ -3718,7 +3718,7 @@ function AdministrationPage({
       ) : null}
       {!loading && !error && snapshot ? (
         <>
-          <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+          <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))' }}>
             <div className="panel-card">
               <h3>School profile</h3>
               <form className="user-form" onSubmit={handleSchoolSave}>
@@ -3739,7 +3739,7 @@ function AdministrationPage({
               <h3>Campus settings</h3>
               {snapshot.campuses.length ? (
                 <>
-                  <label className="user-form"><span>Campus</span><select disabled={campusSaving} value={selectedCampusId} onChange={(event) => { setCampusId(event.target.value); setCampusForm({}); setCampusSaved(false); setCampusError('') }}>{snapshot.campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name} · {campus.code}</option>)}</select></label>
+                  <label className="campus-selector-field"><span>Campus</span><select disabled={campusSaving} value={selectedCampusId} onChange={(event) => { setCampusId(event.target.value); setCampusForm({}); setCampusSaved(false); setCampusError('') }}>{snapshot.campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name} · {campus.code}</option>)}</select></label>
                   {selectedCampus ? (
                     <form className="user-form" onSubmit={handleCampusSave}>
                       <label><span>Campus name</span><input required maxLength={160} disabled={!canEdit || campusSaving} value={campusForm.name ?? selectedCampus.name} onChange={(event) => setCampusForm((current) => ({ ...current, name: event.target.value }))} /></label>

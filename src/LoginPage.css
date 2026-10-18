@@ -441,7 +441,7 @@
   .login-page { padding: 24px 16px; }
   .login-page .login-panel { max-width: 600px; grid-template-columns: minmax(0, 1fr); min-height: 0; }
   .login-page .login-brand-panel { padding: 30px 30px 160px; }
-  .login-page .login-logo { width: 340px; margin-bottom: 20px; }
+  .login-page .login-logo { width: min(340px, 100%); margin-bottom: 20px; }
   .login-page .login-headline { font-size: 38px; }
   .login-page .login-description { font-size: 16px; }
   .login-page .login-form-panel { padding: 88px 30px 38px; }

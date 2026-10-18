@@ -1097,9 +1097,17 @@
 
 .user-form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: 16px;
   padding: 18px;
+}
+
+.campus-selector-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #29426d;
+  font-weight: 600;
 }
 
 .user-form label,
@@ -1113,13 +1121,19 @@
 
 .user-form input,
 .user-form select,
+.campus-selector-field select,
 .login-form input {
+  min-width: 0;
   border: 1px solid #dfeaf9;
   border-radius: 12px;
   background: #f8fbff;
   padding: 11px 12px;
   font: inherit;
   color: #1d3053;
+}
+
+.campus-selector-field select {
+  width: 100%;
 }
 
 .table-card {
@@ -4557,6 +4571,20 @@ a:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .student-detail-header {
+    flex-wrap: wrap;
+  }
+
+  .student-detail-header > div:first-child {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+
+  .student-detail-header > div:last-child {
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+
   .students-heading {
     align-items: flex-start;
     flex-direction: column;
@@ -5776,7 +5804,19 @@ a:focus-visible {
 
 @media (max-width: 640px) {
   .fees-page { gap: 16px; }
-  .fees-page-heading { align-items: flex-start; }
+  .fees-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .fees-page-heading > .primary-button {
+    width: 100%;
+    justify-content: center;
+  }
+  .detail-heading > div:last-child {
+    width: 100%;
+    align-items: stretch !important;
+    flex-direction: column;
+  }
   .fees-filters,
   .fees-panel { padding: 14px; }
   .fees-summary-grid { grid-template-columns: minmax(0, 1fr); }
