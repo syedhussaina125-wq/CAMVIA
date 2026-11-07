@@ -1,13 +1,93 @@
 :root {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #1a2a45;
-  background: #f8fbff;
+  color: #1E2A78;
+  background: #f6fbff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* ==========================================================================
+     CAMVIA Master Design Tokens (Source of Truth: CAMVIA Login Page Reference)
+     ========================================================================== */
+
+  /* Primary & Accent Palette */
+  --camvia-navy: #1E2A78;
+  --camvia-navy-dark: #1E2A78;
+  --camvia-navy-primary: #1E2A78;
+  --camvia-deep-indigo: #1E2A78;
+  --camvia-blue: #3B82F6;
+  --camvia-blue-hover: #2563EB;
+  --camvia-blue-light: #60A5FA;
+  --camvia-blue-soft: #EFF6FF;
+  --camvia-blue-muted: #DBEAFE;
+  --camvia-cyan: #14B8A6;
+  --camvia-cyan-light: #5EEAD4;
+  --camvia-cyan-soft: #F0FDFA;
+  --camvia-teal: #14B8A6;
+  --camvia-purple: #A78BFA;
+  --camvia-purple-light: #C4B5FD;
+  --camvia-purple-soft: #F5F3FF;
+
+  /* Neutral Backgrounds & Surfaces */
+  --camvia-bg: #f6fbff;
+  --camvia-bg-alt: #f0f5fc;
+  --camvia-surface: #ffffff;
+  --camvia-surface-glass: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(246, 250, 255, 0.82));
+  --camvia-surface-hover: #f3f8ff;
+  --camvia-border: #d7e4f8;
+  --camvia-border-subtle: #eaf1fc;
+  --camvia-border-focus: #3d83ff;
+
+  /* Typography Colors */
+  --camvia-text-primary: #1E2A78;
+  --camvia-text-secondary: #5a6e94;
+  --camvia-text-muted: #798dae;
+  --camvia-text-dim: #94a3b8;
+  --camvia-text-main: #1E2A78;
+  --camvia-text-inverse: #ffffff;
+
+  /* Gradients */
+  --camvia-gradient-primary: linear-gradient(110deg, #3B82F6 0%, #60A5FA 48%, #14B8A6 100%);
+  --camvia-gradient-primary-hover: linear-gradient(110deg, #2563EB 0%, #3B82F6 48%, #14B8A6 100%);
+  --camvia-gradient-sidebar: linear-gradient(180deg, #1E2A78 0%, #243A8D 100%);
+  --camvia-gradient-hero: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(20, 184, 166, 0.08) 50%, rgba(167, 139, 250, 0.05) 100%);
+  --camvia-gradient-card-blue: linear-gradient(135deg, #dbe9ff, #f0f6ff);
+  --camvia-gradient-card-purple: linear-gradient(135deg, #ecdfff, #f8f3ff);
+  --camvia-gradient-card-cyan: linear-gradient(135deg, #cbf6fe, #eefdff);
+  --camvia-gradient-card-green: linear-gradient(135deg, #d3fae8, #f0fdf7);
+
+  /* Semantic Alerts & Badges */
+  --camvia-success: #059669;
+  --camvia-success-bg: #ecfdf5;
+  --camvia-success-border: #a7f3d0;
+  --camvia-warning: #d97706;
+  --camvia-warning-bg: #fffbeb;
+  --camvia-warning-border: #fde68a;
+  --camvia-danger: #dc2626;
+  --camvia-danger-bg: #fef2f2;
+  --camvia-danger-border: #fecaca;
+  --camvia-info: #3B82F6;
+  --camvia-info-bg: #eff6ff;
+  --camvia-info-border: #bfdbfe;
+
+  /* Shadows */
+  --camvia-shadow-sm: 0 2px 6px rgba(15, 30, 90, 0.04);
+  --camvia-shadow-md: 0 6px 18px rgba(15, 30, 90, 0.06);
+  --camvia-shadow-lg: 0 16px 36px rgba(15, 30, 90, 0.09);
+  --camvia-shadow-card: 0 6px 20px rgba(15, 30, 90, 0.045);
+  --camvia-shadow-hover: 0 12px 28px rgba(15, 30, 90, 0.08);
+  --camvia-shadow-glow: 0 10px 24px rgba(18, 102, 255, 0.22);
+  --camvia-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
+  /* Border Radii */
+  --camvia-radius-sm: 8px;
+  --camvia-radius-md: 12px;
+  --camvia-radius-lg: 18px;
+  --camvia-radius-xl: 24px;
+  --camvia-radius-pill: 9999px;
 }
 
 * {
@@ -15,16 +95,21 @@
 }
 
 html {
-  background: #f8fbff;
+  background: #f6fbff;
   -webkit-text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(96, 153, 255, 0.12) 0%, transparent 24%),
-    linear-gradient(180deg, #f8fbff 0%, #f2f7ff 100%);
+  min-height: 100dvh;
+  color: var(--camvia-text-primary);
+  background-color: #f6fbff;
+  background-image:
+    radial-gradient(ellipse 65% 45% at 80% 12%, rgba(200, 228, 255, 0.5) 0%, transparent 60%),
+    radial-gradient(ellipse 55% 55% at 15% 75%, rgba(213, 204, 255, 0.28) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 60% at 45% 40%, rgba(228, 239, 255, 0.5) 0%, rgba(246, 251, 255, 0.85) 100%);
+  background-attachment: fixed;
   overflow-x: hidden;
 }
 
@@ -37,7 +122,7 @@ textarea {
 }
 
 button {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
 button:hover {
@@ -58,7 +143,7 @@ a {
   text-decoration: none;
 }
 
-/* Global Typography & Vertical Headroom Protection */
+/* Global Typography & Headroom Protection */
 h1,
 h2,
 h3,
@@ -66,7 +151,7 @@ h4,
 h5,
 h6 {
   margin-top: 0;
-  color: #152d4f;
+  color: var(--camvia-navy-dark);
   text-rendering: optimizeLegibility;
   overflow-wrap: break-word;
   word-break: break-word;
@@ -74,19 +159,19 @@ h6 {
 }
 
 h1 {
-  line-height: 1.32;
+  line-height: 1.3;
   padding-top: 2px;
   padding-bottom: 4px;
 }
 
 h2 {
-  line-height: 1.34;
+  line-height: 1.32;
   padding-top: 2px;
   padding-bottom: 3px;
 }
 
 h3 {
-  line-height: 1.36;
+  line-height: 1.34;
   padding-top: 1px;
   padding-bottom: 2px;
 }

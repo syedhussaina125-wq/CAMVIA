@@ -1,10 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   ChartNoAxesColumnIncreasing,
   CheckCircle2,
   Eye,
+  EyeOff,
   KeyRound,
   Lightbulb,
   LockKeyhole,
@@ -53,7 +55,7 @@ import {
 import {
   type Role,
   type SchoolUser,
-  type UserStatus,
+  type SessionUser,
 } from './mockData'
 const StudentDetailPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentDetailPage })))
 const StudentsPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentsPage })))
@@ -63,9 +65,12 @@ const FeeStudentDetailPage = lazy(() => import('./FeesPages').then((module) => (
 const FeesPage = lazy(() => import('./FeesPages').then((module) => ({ default: module.FeesPage })))
 const CommunicationPage = lazy(() => import('./CommunicationPages').then((module) => ({ default: module.CommunicationPage })))
 const TrashPage = lazy(() => import('./TrashPage').then((module) => ({ default: module.TrashPage })))
+const AskEduPage = lazy(() => import('./AskEduPage').then((module) => ({ default: module.AskEduPage })))
+const ReportsPage = lazy(() => import('./ReportsPage').then((module) => ({ default: module.ReportsPage })))
+const AdministrationPage = lazy(() => import('./AdministrationPages').then((module) => ({ default: module.AdministrationPage })))
+const ProfilesDirectoryPage = lazy(() => import('./AdministrationPages').then((module) => ({ default: module.ProfilesDirectoryPage })))
 import { type AlertItem } from './alertsData'
 import {
-  getAccessibleStudents,
   type NewStudent,
   type Student,
 } from './studentData'
@@ -81,10 +86,10 @@ import {
   type AttendanceSubmission,
 } from './attendanceData'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
-import { getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail, signOut as signOutSupabase, updateUserPassword, type AppProfile } from './services/auth'
-import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments, type TeacherAssignment } from './services/students'
+import { formatMMSS, getActiveLockout, getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail, signOut as signOutSupabase, updateUserPassword, type AppProfile } from './services/auth'
+import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments } from './services/students'
 import { fetchProfiles } from './services/users'
-import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput, type TeacherAssignmentScope } from './services/userManagement'
+import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput } from './services/userManagement'
 import { fetchAttendanceState, saveAttendance as saveLiveAttendance, correctAttendanceSession } from './services/attendance'
 import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication, deleteCommunicationDraft } from './services/communication'
@@ -114,23 +119,13 @@ import {
   type CommunicationOperation,
   type CommunicationState,
 } from './communicationData'
-import camviaLogo from './assets/camvia-light-logo.png'
+import { AIBuddy } from './components/ai-buddy/AIBuddy'
+import { AskCamviaProvider } from './components/ai-buddy/AskCamviaContext'
+import { dispatchBuddyEvent } from './components/ai-buddy/events'
+import camviaLogo from './assets/camvia-dark-logo.png'
+import schoolBuildingIllustration from './assets/school-building-reference.png'
 import './App.css'
 import './LoginPage.css'
-
-type SessionUser = {
-  id: number
-  authUserId: string
-  organizationId: string | null
-  schoolId: string | null
-  campusId: string | null
-  name: string
-  email: string
-  role: Role
-  schoolName: string
-  campusName: string
-  teacherAssignments: TeacherAssignment[]
-}
 
 const emptyAttendanceState: AttendanceState = { sessions: [], records: [] }
 const emptyCommunicationState: CommunicationState = { messages: [] }
@@ -173,6 +168,16 @@ type QuickAction = {
 type TrendPoint = {
   day: string
   value: number
+}
+
+type DashboardActivity = {
+  id: string
+  title: string
+  detail: string
+  occurredAt: string
+  path: string
+  icon: LucideIcon
+  tone: 'blue' | 'teal' | 'purple'
 }
 
 type DashboardConfig = {
@@ -269,13 +274,11 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { label: 'Students', path: '/students', icon: GraduationCap },
     { label: 'Attendance', path: '/attendance', icon: ClipboardCheck },
-    { label: 'Fees & Collections', path: '/fees', icon: Wallet },
     { label: 'Alerts', path: '/alerts', icon: BellRing },
     { label: 'Approval Center', path: '/approvals', icon: ShieldCheck },
     { label: 'Parent Communication', path: '/communication', icon: MessageSquareText },
     { label: 'Ask CAMVIA', path: '/ask-edu', icon: Sparkles },
     { label: 'Reports', path: '/reports', icon: Gauge },
-    { label: 'Administration', path: '/administration', icon: UserCog },
   ],
   finance: [
     { label: 'Dashboard', path: '/finance/dashboard', icon: LayoutDashboard },
@@ -297,7 +300,7 @@ const navByRole: Record<Role, NavItem[]> = {
 
 const allowedRoutes: Record<Role, string[]> = {
   admin: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports', '/users', '/trash'],
-  principal: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports'],
+  principal: ['/dashboard', '/students', '/attendance', '/alerts', '/approvals', '/communication', '/ask-edu', '/reports'],
   finance: ['/finance/dashboard', '/students', '/fees', '/alerts', '/communication', '/ask-edu'],
   teacher: ['/teacher/dashboard', '/my-classes', '/students', '/attendance', '/communication', '/alerts'],
 }
@@ -319,14 +322,16 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     },
     attention: [],
     quickActions: [
-      { label: 'Add User', description: 'Create a new staff, teacher or admin account', icon: UserCog, path: '/users' },
-      { label: 'Import Students', description: 'Bulk import students from a file', icon: GraduationCap, path: '/students' },
-      { label: 'View Alerts', description: 'Check all recent alerts and notifications', icon: BellRing, path: '/alerts' },
+      { label: 'Add Student', description: 'Create a student record for this school', icon: GraduationCap, path: '/students' },
+      { label: 'Add User', description: 'Invite a staff or teacher account', icon: UserCog, path: '/users' },
+      { label: 'Mark Attendance', description: 'Open today’s class attendance workflow', icon: ClipboardCheck, path: '/attendance' },
+      { label: 'View Alerts', description: 'Review active school follow-ups', icon: BellRing, path: '/alerts' },
     ],
     trend: [],
   },
   principal: {
     stats: [
+      { label: 'Students', value: '0', subLabel: 'Total students', tone: 'blue', icon: Users },
       { label: 'Attendance', value: '0%', subLabel: 'Today', tone: 'blue', icon: ClipboardCheck },
       { label: 'Present', value: '0', subLabel: 'Students present', tone: 'green', icon: Users },
       { label: 'Absent', value: '0', subLabel: 'Students absent', tone: 'amber', icon: AlertTriangle },
@@ -344,6 +349,7 @@ const dashboardFixtures: Record<Role, DashboardConfig> = {
     quickActions: [
       { label: 'View Attendance', description: 'Review daily attendance performance and risks', icon: ClipboardCheck, path: '/attendance' },
       { label: 'View Students', description: 'Open student records and academic summaries', icon: GraduationCap, path: '/students' },
+      { label: 'Review Approvals', description: 'Approve submitted parent communications', icon: ShieldCheck, path: '/approvals' },
       { label: 'Review Alerts', description: 'Check the latest school and campus alerts', icon: BellRing, path: '/alerts' },
     ],
     trend: [],
@@ -502,7 +508,7 @@ function App() {
   }
 
   const refreshAdministration = async (owner: SessionUser) => {
-    if ((owner.role !== 'admin' && owner.role !== 'principal') || !owner.organizationId || !owner.schoolId) {
+    if (owner.role !== 'admin' || !owner.organizationId || !owner.schoolId) {
       setAdministration(null)
       setAdministrationLoading(false)
       setAdministrationError('')
@@ -642,75 +648,115 @@ function App() {
     const nextSession = await buildSessionUser(profile)
     if (resolutionId !== authResolutionId.current) return null
     setAlertSnapshot({ ownerId: profile.id, items: [] })
-    setAlertsLoading(true)
-    setAlertsError('')
     setSession(nextSession)
     setAdministration(null)
-    setAdministrationLoading(nextSession.role === 'admin' || nextSession.role === 'principal')
-    setAdministrationError('')
     resolvedUserId.current = profile.id
     setAuthError('')
     setAuthLoading(false)
+
+    const userRole = nextSession.role
+    const needsAttendance = userRole === 'admin' || userRole === 'principal' || userRole === 'teacher'
+    const needsFees = userRole === 'admin' || userRole === 'finance'
+    const needsComms = true
+    const needsProfiles = userRole === 'admin' || userRole === 'principal'
+    const needsAdmin = userRole === 'admin'
+
+    setAdministrationLoading(needsAdmin)
+    setAdministrationError('')
+    setProfilesLoading(needsProfiles)
+    setProfilesError('')
+    setAlertsLoading(true)
+    setAlertsError('')
     setStudentsLoading(true)
     setStudentsError('')
-    setAttendanceLoading(true)
+    setAttendanceLoading(needsAttendance)
     setAttendanceError('')
-    setFeesLoading(true)
+    setFeesLoading(needsFees)
     setFeesError('')
-    setCommunicationLoading(true)
+    setCommunicationLoading(needsComms)
     setCommunicationError('')
-    setProfilesLoading(nextSession.role === 'admin' || nextSession.role === 'principal')
-    setProfilesError('')
+
     const loadedStudentRows = await refreshStudents(nextSession)
     const loadedStudents = loadedStudentRows ?? []
     const studentLoadFailed = loadedStudentRows === null
-    try {
-      const nextAttendance = await fetchAttendanceState()
-      if (resolutionId === authResolutionId.current) setAttendance(nextAttendance)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to load attendance from Supabase.'
-      console.error('[Supabase] Attendance request failed:', message)
-      if (resolutionId === authResolutionId.current) {
-        setAttendanceError('Attendance could not be loaded from Supabase. Please retry.')
-        setAttendance(emptyAttendanceState)
-      }
-    } finally {
-      if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
+
+    const parallelTasks: Promise<unknown>[] = []
+
+    if (needsAttendance) {
+      parallelTasks.push(
+        fetchAttendanceState()
+          .then((nextAttendance) => {
+            if (resolutionId === authResolutionId.current) setAttendance(nextAttendance)
+          })
+          .catch((error) => {
+            console.error('[Supabase] Attendance request failed:', error)
+            if (resolutionId === authResolutionId.current) {
+              setAttendanceError('Attendance could not be loaded from Supabase. Please retry.')
+              setAttendance(emptyAttendanceState)
+            }
+          })
+          .finally(() => {
+            if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
+          })
+      )
     }
-    try {
-      if (studentLoadFailed) throw new Error('Student scope could not be loaded for fee records.')
-      const nextFees = await fetchFeeState(loadedStudents)
-      if (resolutionId === authResolutionId.current) setFees(nextFees)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to load fees from Supabase.'
-      console.error('[Supabase] Fee request failed:', message)
-      if (resolutionId === authResolutionId.current) {
-        setFeesError('Fee information could not be loaded from Supabase. Please retry.')
-        setFees({ invoices: [], payments: [] })
+
+    if (needsFees) {
+      if (studentLoadFailed) {
+        setFeesError('Student scope could not be loaded for fee records.')
+        setFeesLoading(false)
+      } else {
+        parallelTasks.push(
+          fetchFeeState(loadedStudents)
+            .then((nextFees) => {
+              if (resolutionId === authResolutionId.current) setFees(nextFees)
+            })
+            .catch((error) => {
+              console.error('[Supabase] Fee request failed:', error)
+              if (resolutionId === authResolutionId.current) {
+                setFeesError('Fee information could not be loaded from Supabase. Please retry.')
+                setFees({ invoices: [], payments: [] })
+              }
+            })
+            .finally(() => {
+              if (resolutionId === authResolutionId.current) setFeesLoading(false)
+            })
+        )
       }
-    } finally {
-      if (resolutionId === authResolutionId.current) setFeesLoading(false)
     }
-    try {
-      if (studentLoadFailed) throw new Error('Student scope could not be loaded for communication.')
-      const nextCommunication = await fetchCommunicationState(loadedStudents)
-      if (resolutionId === authResolutionId.current) {
-        window.localStorage.removeItem('edupulse_communication')
-        setCommunication(nextCommunication)
+
+    if (needsComms) {
+      if (studentLoadFailed) {
+        setCommunicationError('Student scope could not be loaded for communication.')
+        setCommunicationLoading(false)
+      } else {
+        parallelTasks.push(
+          fetchCommunicationState(loadedStudents)
+            .then((nextCommunication) => {
+              if (resolutionId === authResolutionId.current) {
+                window.localStorage.removeItem('edupulse_communication')
+                setCommunication(nextCommunication)
+              }
+            })
+            .catch((error) => {
+              console.error('[Supabase] Communication request failed:', error)
+              if (resolutionId === authResolutionId.current) {
+                setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
+                setCommunication(emptyCommunicationState)
+              }
+            })
+            .finally(() => {
+              if (resolutionId === authResolutionId.current) setCommunicationLoading(false)
+            })
+        )
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to load parent communication from Supabase.'
-      console.error('[Supabase] Communication request failed:', message)
-      if (resolutionId === authResolutionId.current) {
-        setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
-        setCommunication(emptyCommunicationState)
-      }
-    } finally {
-      if (resolutionId === authResolutionId.current) setCommunicationLoading(false)
     }
-    await refreshAlerts(profile.id)
-    await refreshProfiles(nextSession)
-    await refreshAdministration(nextSession)
+
+    parallelTasks.push(refreshAlerts(profile.id))
+    if (needsProfiles) parallelTasks.push(refreshProfiles(nextSession))
+    if (needsAdmin) parallelTasks.push(refreshAdministration(nextSession))
+
+    await Promise.allSettled(parallelTasks)
     return nextSession
   }
 
@@ -886,7 +932,7 @@ function App() {
     }
   }, [])
 
-  const handleLogin = async (email: string, password: string): Promise<{ role?: Role; error?: string }> => {
+  const handleLogin = async (email: string, password: string): Promise<{ role?: Role; error?: string; lockWaitSeconds?: number }> => {
     if (!isSupabaseConfigured) {
       return { error: 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before enabling login.' }
     }
@@ -894,7 +940,7 @@ function App() {
     const result = await signInWithEmail(email, password)
 
     if (!result.success || !result.profile) {
-      return { error: result.error ?? 'Unable to sign in with Supabase Auth.' }
+      return { error: result.error ?? 'Unable to sign in with Supabase Auth.', lockWaitSeconds: result.lockWaitSeconds }
     }
 
     const role = normalizeRole(result.profile.role)
@@ -938,6 +984,7 @@ function App() {
       setSession((current) => current ? { ...current, schoolName: school.name } : current)
       setToast({ type: 'success', text: 'School settings saved.' })
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       console.error('[Supabase] School settings update failed:', error instanceof Error ? error.message : 'Unknown error')
       throw error
     }
@@ -960,6 +1007,7 @@ function App() {
         : current)
       setToast({ type: 'success', text: 'Campus settings saved.' })
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       console.error('[Supabase] Campus settings update failed:', error instanceof Error ? error.message : 'Unknown error')
       throw error
     }
@@ -974,23 +1022,38 @@ function App() {
 
   const handleInviteSchoolUser = async (input: SchoolUserInput) => {
     const owner = requireSchoolAdmin()
-    await inviteSchoolUser(input)
-    await refreshProfiles(owner)
-    setToast({ type: 'success', text: 'Invitation sent. The new account is listed in Users.' })
+    try {
+      await inviteSchoolUser(input)
+      await refreshProfiles(owner)
+      setToast({ type: 'success', text: 'Invitation sent. The new account is listed in Users.' })
+    } catch (error) {
+      dispatchBuddyEvent('operation-error')
+      throw error
+    }
   }
 
   const handleUpdateSchoolUser = async (targetUserId: string, input: SchoolUserInput) => {
     const owner = requireSchoolAdmin()
-    await updateSchoolUser(targetUserId, input)
-    await refreshProfiles(owner)
-    setToast({ type: 'success', text: 'User account updated.' })
+    try {
+      await updateSchoolUser(targetUserId, input)
+      await refreshProfiles(owner)
+      setToast({ type: 'success', text: 'User account updated.' })
+    } catch (error) {
+      dispatchBuddyEvent('operation-error')
+      throw error
+    }
   }
 
   const handleDeactivateSchoolUser = async (targetUserId: string) => {
     const owner = requireSchoolAdmin()
-    await deactivateSchoolUser(targetUserId)
-    await refreshProfiles(owner)
-    setToast({ type: 'success', text: 'User deactivated. Historical records were retained.' })
+    try {
+      await deactivateSchoolUser(targetUserId)
+      await refreshProfiles(owner)
+      setToast({ type: 'success', text: 'User deactivated. Historical records were retained.' })
+    } catch (error) {
+      dispatchBuddyEvent('operation-error')
+      throw error
+    }
   }
 
   const handleCompleteTour = (role: Role) => {
@@ -1022,9 +1085,11 @@ function App() {
       if (!refreshedStudents || resolvedUserId.current !== session.authUserId) {
         throw new Error('Student was created, but the current student list could not be refreshed.')
       }
+      dispatchBuddyEvent('student-created')
       await refreshAlerts(session.authUserId)
       setToast({ type: 'success', text: 'Student added successfully.' })
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       console.error('[Supabase] Student creation failed:', error instanceof Error ? error.message : 'Unknown error')
       throw new Error(error instanceof Error ? error.message : 'Unable to add this student.')
     }
@@ -1045,10 +1110,16 @@ function App() {
     }
     const attendanceClass = getAttendanceClasses(students).find((item) => item.id === submission.classId)
     if (!attendanceClass) throw new Error('This class is outside your authorized attendance scope.')
-    const nextState = await saveLiveAttendance(session, attendanceClass, submission)
-    setAttendance(nextState)
-    await refreshAlerts(session.authUserId)
-    return nextState
+    try {
+      const nextState = await saveLiveAttendance(session, attendanceClass, submission)
+      setAttendance(nextState)
+      dispatchBuddyEvent('attendance-saved')
+      await refreshAlerts(session.authUserId)
+      return nextState
+    } catch (error) {
+      dispatchBuddyEvent('operation-error')
+      throw error
+    }
   }
 
   const handleRefreshAttendance = async () => {
@@ -1091,10 +1162,12 @@ function App() {
     try {
       const nextFees = await recordLiveFeePayment(students, submission)
       setFees(nextFees)
-      await refreshAlerts(session.authUserId)
+      dispatchBuddyEvent('fee-recorded')
       setToast({ type: 'success', text: 'Payment recorded successfully.' })
+      await refreshAlerts(session.authUserId)
       return true
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'Unable to record fee payment.'
       console.error('[Supabase] Fee payment failed:', message)
       setToast({ type: 'error', text: message })
@@ -1114,6 +1187,7 @@ function App() {
       setToast({ type: 'success', text: 'Fee invoice created successfully.' })
       return true
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'Invoice could not be created. Please review the details.'
       console.error('[Supabase] Fee invoice creation failed:', error)
       setToast({ type: 'error', text: message })
@@ -1147,6 +1221,7 @@ function App() {
       await refreshAlerts(session.authUserId)
       return { messageId: result.messageId }
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'The communication could not be saved.'
       console.error('[Supabase] Communication save failed:', message)
       return { error: message }
@@ -1159,10 +1234,13 @@ function App() {
       return false
     }
     try {
-      setCommunication(await transitionCommunication(operation, students))
+      const nextState = await transitionCommunication(operation, students)
+      setCommunication(nextState)
+      if (operation.type === 'send') dispatchBuddyEvent('communication-sent')
       await refreshAlerts(session.authUserId)
       return true
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'The communication workflow action could not be completed.'
       console.error('[Supabase] Communication transition failed:', message)
       setToast({ type: 'error', text: message })
@@ -1181,6 +1259,7 @@ function App() {
       setToast({ type: 'success', text: 'Communication draft moved to Trash.' })
       return true
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'The communication draft could not be moved to Trash.'
       console.error('[Supabase] Communication draft move to trash failed:', message)
       setToast({ type: 'error', text: message })
@@ -1201,7 +1280,9 @@ function App() {
       const updated = await correctAttendanceSession(payload)
       setAttendance(updated)
       setToast({ type: 'success', text: 'Attendance session corrected successfully.' })
+      dispatchBuddyEvent('attendance-saved')
     } catch (error) {
+      dispatchBuddyEvent('operation-error')
       const message = error instanceof Error ? error.message : 'Failed to correct attendance session.'
       console.error('[Supabase] Attendance correction failed:', message)
       setToast({ type: 'error', text: message })
@@ -1231,6 +1312,19 @@ function App() {
     <BrowserRouter>
       <AuthRedirectHandler />
       <Suspense fallback={<div className="app-loading-state" role="status">Loading page…</div>}>
+      <AskCamviaProvider
+        key={session?.authUserId ?? 'anonymous'}
+        user={session}
+        students={students}
+        attendance={attendance}
+        attendanceLoading={attendanceLoading}
+        attendanceError={attendanceError}
+        fees={fees}
+        communication={communication}
+        alerts={visibleAlerts}
+        alertsLoading={visibleAlertsLoading}
+        alertsError={visibleAlertsError}
+      >
       <Routes>
         <Route path="/login" element={<LoginPage onLogin={handleLogin} loading={authLoading} authError={authError} />} />
         <Route path="/set-password" element={<SetPasswordPage mode="invite" />} />
@@ -1255,9 +1349,9 @@ function App() {
           }
         >
           <Route path="/" element={<Navigate to={session ? defaultDashboardForRole(session.role) : '/login'} replace />} />
-            <Route path="/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} />} />
-            <Route path="/finance/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} />} />
-            <Route path="/teacher/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} />} />
+            <Route path="/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+            <Route path="/finance/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+            <Route path="/teacher/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
             <Route
               path="/students"
               element={
@@ -1293,13 +1387,13 @@ function App() {
             <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onRefresh={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} onDeleteDraft={handleDeleteCommunicationDraft} /> : null} />
             <Route path="/alerts" element={session ? <AlertsPage user={session} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} /> : null} />
             <Route path="/approvals" element={session ? <ApprovalsPage user={session} students={students} communication={communication} loading={communicationLoading} error={communicationError} onRetry={handleRefreshCommunication} onOperation={handleCommunicationOperation} /> : null} />
-            <Route path="/ask-edu" element={session ? <AskEduPage user={session} students={students} fees={fees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} /> : null} />
+            <Route path="/ask-edu" element={session ? <AskEduPage /> : null} />
             <Route path="/reports" element={session ? <ReportsPage user={session} students={students} attendance={attendance} fees={fees} communication={communication} /> : null} />
             <Route path="/my-classes" element={session ? <MyClassesPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} /> : null} />
             <Route
               path="/administration"
               element={
-                session ? <AdministrationPage
+                session?.role === 'admin' ? <AdministrationPage
                   user={session}
                   snapshot={administration}
                   loading={administrationLoading}
@@ -1340,6 +1434,7 @@ function App() {
 
         <Route path="*" element={<Navigate to={session ? defaultDashboardForRole(session.role) : '/login'} replace />} />
       </Routes>
+      </AskCamviaProvider>
       </Suspense>
 
       {toast ? (
@@ -1767,11 +1862,13 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
                     />
                     <button
                       type="button"
+                      className="password-toggle-btn"
                       aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showPassword}
                       disabled={submitting}
                       onClick={() => setShowPassword((current) => !current)}
                     >
-                      {showPassword ? 'Hide' : 'Show'}
+                      {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                     </button>
                   </div>
                 </label>
@@ -1791,11 +1888,13 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
                     />
                     <button
                       type="button"
+                      className="password-toggle-btn"
                       aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      aria-pressed={showConfirmPassword}
                       disabled={submitting}
                       onClick={() => setShowConfirmPassword((current) => !current)}
                     >
-                      {showConfirmPassword ? 'Hide' : 'Show'}
+                      {showConfirmPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                     </button>
                   </div>
                 </label>
@@ -1849,7 +1948,7 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
 }
 
 function LoginPage({ onLogin, loading, authError }: {
-  onLogin: (email: string, password: string) => Promise<{ role?: Role; error?: string }>
+  onLogin: (email: string, password: string) => Promise<{ role?: Role; error?: string; lockWaitSeconds?: number }>
   loading: boolean
   authError: string
 }) {
@@ -1860,10 +1959,30 @@ function LoginPage({ onLogin, loading, authError }: {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [lockSeconds, setLockSeconds] = useState<number>(() => getActiveLockout().waitSeconds)
   const [loginNotice, setLoginNotice] = useState<string>(() => {
     const state = location.state as { notice?: string } | null
     return state?.notice ?? ''
   })
+
+  const isLocked = lockSeconds > 0
+
+  // Synchronize active lockout countdown
+  useEffect(() => {
+    if (!isLocked) return
+
+    const timer = window.setInterval(() => {
+      setLockSeconds((prev) => {
+        if (prev <= 1) {
+          setError('')
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [isLocked])
 
   // Password reset flow states
   const [forgotPasswordMode, setForgotPasswordMode] = useState(false)
@@ -1892,7 +2011,7 @@ function LoginPage({ onLogin, loading, authError }: {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
-    if (submitting || loading) return
+    if (submitting || loading || lockSeconds > 0) return
 
     setSubmitting(true)
     setError('')
@@ -1903,6 +2022,9 @@ function LoginPage({ onLogin, loading, authError }: {
       if (result.role) {
         navigate(defaultDashboardForRole(result.role))
         return
+      }
+      if (result.lockWaitSeconds && result.lockWaitSeconds > 0) {
+        setLockSeconds(result.lockWaitSeconds)
       }
       setError(result.error ?? 'Unable to sign in.')
     } catch {
@@ -2069,33 +2191,54 @@ function LoginPage({ onLogin, loading, authError }: {
                       type={showPassword ? 'text' : 'password'}
                       autoComplete="current-password"
                       required
-                      disabled={loading || submitting}
+                      disabled={loading || submitting || lockSeconds > 0}
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder="Enter password"
                     />
                     <button
                       type="button"
+                      className="password-toggle-btn"
                       aria-label={showPassword ? 'Hide password' : 'Show password'}
                       aria-pressed={showPassword}
-                      disabled={loading || submitting}
+                      disabled={loading || submitting || lockSeconds > 0}
                       onClick={() => setShowPassword((current) => !current)}
                     >
-                      {showPassword ? 'Hide' : 'Show'}
+                      {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                     </button>
                   </div>
                 </label>
 
-                {error || authError ? <p className="error-message" role="alert">{error || authError}</p> : null}
+                {lockSeconds > 0 ? (
+                  <div className="error-message lock-message" role="alert">
+                    <div className="lock-message-header">
+                      <LockKeyhole size={14} aria-hidden="true" />
+                      <span>Too many unsuccessful login attempts.</span>
+                    </div>
+                    <p className="lock-countdown">
+                      Please try again in <strong>{formatMMSS(lockSeconds)}</strong>
+                    </p>
+                  </div>
+                ) : error || authError ? (
+                  <p className="error-message" role="alert">{error || authError}</p>
+                ) : null}
 
-                <button type="submit" className="primary-button" disabled={loading || submitting}>
-                  {loading ? 'Checking session…' : submitting ? 'Signing in…' : 'Sign In'}
-                  <ArrowRight size={22} aria-hidden="true" />
+                <button type="submit" className="primary-button" disabled={loading || submitting || lockSeconds > 0}>
+                  <span>
+                    {loading
+                      ? 'Checking session…'
+                      : submitting
+                      ? 'Signing in…'
+                      : lockSeconds > 0
+                      ? `Locked (${formatMMSS(lockSeconds)})`
+                      : 'Sign In'}
+                  </span>
+                  {lockSeconds <= 0 && <ArrowRight size={20} aria-hidden="true" />}
                 </button>
 
                 <button
                   type="button"
-                  className="secondary-button"
+                  className="forgot-password-link"
                   disabled={loading || submitting}
                   onClick={() => {
                     setForgotPasswordMode(true)
@@ -2157,7 +2300,25 @@ function AppShell({
     return null
   }
 
-  const nav = navByRole[user.role]
+  const nav = user.role === 'admin' || user.role === 'principal'
+    ? [
+      navByRole[user.role][0],
+      navByRole[user.role][1],
+      navByRole[user.role][2],
+      ...(user.role === 'admin' ? [navByRole.admin[3]] : []),
+      ...navByRole[user.role].filter((item) => (
+        item.path !== '/dashboard' &&
+        item.path !== '/students' &&
+        item.path !== '/attendance' &&
+        item.path !== '/fees'
+      )).sort((left, right) => {
+        const order = ['/communication', '/alerts', '/approvals', '/ask-edu', '/reports', '/administration', '/trash']
+        const leftIndex = order.indexOf(left.path)
+        const rightIndex = order.indexOf(right.path)
+        return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex)
+      }),
+    ]
+    : navByRole[user.role]
   const initials = user.name
     .split(' ')
     .map((namePart) => namePart[0])
@@ -2166,7 +2327,7 @@ function AppShell({
     .toUpperCase()
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${user.role === 'admin' || user.role === 'principal' ? 'executive-shell' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
           <div className="sidebar-brand-row">
@@ -2180,12 +2341,15 @@ function AppShell({
               <X size={18} />
             </button>
           </div>
-          <span className="sidebar-subtitle">School Intelligence</span>
+          <span className="sidebar-subtitle">School Management System</span>
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
           {nav.map((item) => {
             const Icon = item.icon
+            const label = (user.role === 'admin' || user.role === 'principal') && item.label === 'Parent Communication'
+              ? 'Communication'
+              : item.label
             const isActive = location.pathname === item.path ||
               (item.path === '/students' && location.pathname.startsWith('/students/')) ||
               (item.path === '/attendance' && location.pathname.startsWith('/attendance/take/'))
@@ -2201,14 +2365,28 @@ function AppShell({
                 }}
               >
                 <span className="nav-icon-wrap"><Icon size={18} /></span>
-                <span>{item.label}</span>
+                <span>{label}</span>
                 {isActive ? <span className="nav-active-indicator" aria-hidden="true" /> : null}
               </button>
             )
           })}
         </nav>
 
+        <div className="sidebar-campus-selector" aria-label={`Selected campus: ${user.campusName}`}>
+          <Building2 size={20} aria-hidden="true" />
+          <span>{user.campusName}</span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </div>
+
         <div className="sidebar-footer">
+          <div className="sidebar-profile-card">
+            <div className="sidebar-profile-avatar">{initials}</div>
+            <div className="sidebar-profile-meta">
+              <span className="sidebar-profile-name">{user.name}</span>
+              <span className="sidebar-profile-role">{roleLabels[user.role]}</span>
+            </div>
+          </div>
+
           <button
             type="button"
             className="nav-item profile-item"
@@ -2258,17 +2436,12 @@ function AppShell({
             <span className="topbar-page-label">{pageTitle}</span>
             <span className="topbar-crumb-sep">•</span>
             <span className="topbar-school-name">{user.schoolName}</span>
-            <div className="campus-selector-pill" title="Selected campus">
-              <Building2 size={13} />
-              <span>{user.campusName}</span>
-              <ChevronDown size={13} className="selector-chevron" />
-            </div>
           </div>
 
           <div className="topbar-actions">
             <div className="search-box">
               <Search size={15} />
-              <input type="text" placeholder="Search..." readOnly aria-label="Search" />
+              <input type="text" placeholder="Search students, staff, or records..." readOnly aria-label="Search" />
             </div>
 
             <button type="button" className="icon-button notification-btn" aria-label="Notifications">
@@ -2276,7 +2449,20 @@ function AppShell({
               <span className="notification-dot" />
             </button>
 
-            <div className="profile-panel">
+            <div
+              className="profile-panel"
+              role="button"
+              tabIndex={0}
+              aria-label="User profile menu"
+              aria-expanded={profileOpen}
+              onClick={() => setProfileOpen((value) => !value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setProfileOpen((value) => !value)
+                }
+              }}
+            >
               <div className="profile-avatar">{initials}</div>
 
               <div className="profile-details">
@@ -2284,20 +2470,38 @@ function AppShell({
                 <span>{roleLabels[user.role]}</span>
               </div>
 
-              <button type="button" className="profile-toggle" aria-label="Open profile menu" onClick={() => setProfileOpen((value) => !value)}>
+              <button
+                type="button"
+                className="profile-toggle"
+                aria-label="Open profile menu"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setProfileOpen((value) => !value)
+                }}
+              >
                 <ChevronDown size={14} />
               </button>
 
               {profileOpen ? (
-                <div className="profile-menu">
-                  <button type="button" onClick={() => navigate(defaultDashboardForRole(user.role))}>My Profile</button>
-                  <button type="button" onClick={() => onRestartTour(user.role)}>Restart Tour</button>
-                  <button type="button" onClick={onLogout}>Logout</button>
+                <div className="profile-menu" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" onClick={() => { setProfileOpen(false); navigate(defaultDashboardForRole(user.role)) }}>My Profile</button>
+                  <button type="button" onClick={() => { setProfileOpen(false); onRestartTour(user.role) }}>Restart Tour</button>
+                  <button type="button" onClick={() => { setProfileOpen(false); onLogout() }}>Logout</button>
                 </div>
               ) : null}
             </div>
           </div>
         </header>
+
+        <div className="mobile-campus-strip">
+          <div className="campus-selector-pill mobile-campus-pill" title="Selected campus">
+            <Building2 size={13} />
+            <span className="campus-pill-name">{user.campusName}</span>
+            <span className="campus-pill-sep">•</span>
+            <span className="campus-pill-school">{user.schoolName}</span>
+            <ChevronDown size={13} className="selector-chevron" />
+          </div>
+        </div>
 
         {activeTourRole && tourOpen ? (
           <WalkthroughModal
@@ -2314,6 +2518,7 @@ function AppShell({
           <Outlet />
         </main>
       </div>
+      <AIBuddy />
     </div>
   )
 }
@@ -2357,7 +2562,7 @@ function WalkthroughModal({ steps, onClose, onComplete }: { steps: Array<{ title
   )
 }
 
-function DashboardPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts }: {
+function DashboardPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts, profiles, profilesLoading, profilesError, academicYear }: {
   user: SessionUser | null
   students: Student[]
   attendance: AttendanceState
@@ -2373,6 +2578,10 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   alertsLoading: boolean
   alertsError: string
   onRetryAlerts: () => void
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  profilesError: string
+  academicYear: string | null
 }) {
   const [prevRole, setPrevRole] = useState(user?.role)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -2411,7 +2620,22 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
 
   let dashboard: ReactNode
   if (user.role === 'admin' || user.role === 'principal') {
-    dashboard = <SchoolDashboard user={user} config={config} />
+    dashboard = (
+      <SchoolDashboard
+        user={user}
+        config={config}
+        students={students}
+        attendance={attendance}
+        fees={fees}
+        communication={communication}
+        alerts={alerts}
+        attendanceError={Boolean(attendanceError)}
+        profiles={profiles}
+        profilesLoading={profilesLoading}
+        profilesError={profilesError}
+        academicYear={academicYear}
+      />
+    )
   } else if (user.role === 'finance') {
     dashboard = <FinanceDashboard user={user} config={config} />
   } else {
@@ -2478,8 +2702,8 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   const classes = getAttendanceClasses(students)
   const todayCounts = getAttendanceForScope(attendance, classes, today).counts
   const attendanceAttention = getAttendanceAttention(attendance, students)
-  const rate = todayCounts.rate === null ? '0%' : `${todayCounts.rate}%`
-  const activeAlertCount = alertsUnavailable ? '0' : String(liveAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
+  const rate = todayCounts.rate === null ? '—' : `${todayCounts.rate}%`
+  const activeAlertCount = alertsUnavailable ? '—' : String(liveAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
   const authorizedStudentCount = classes.reduce((total, item) => total + item.students.length, 0)
   const stats = fixture.stats.map((stat) => {
     if (stat.label === 'Students') {
@@ -2490,13 +2714,13 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
       }
     }
     if (stat.label === 'Collected This Month') {
-      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : stat.subLabel }
+      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : stat.subLabel }
     }
     if (stat.label === 'Outstanding') {
-      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(feeMetrics.outstanding) }
+      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
     }
     if (stat.label === 'Overdue') {
-      return { ...stat, value: feesUnavailable ? 'PKR 0' : formatFeeCurrency(feeMetrics.overdue) }
+      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
     }
     if (stat.label === 'Parent Communications Awaiting Approval') {
       return { ...stat, value: String(communicationSummary.awaitingApproval) }
@@ -2507,14 +2731,14 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     if (stat.label === 'Attendance') {
       return {
         ...stat,
-        value: attendanceUnavailable ? '0%' : rate,
+        value: attendanceUnavailable ? '—' : rate,
         subLabel: attendanceUnavailable ? 'Attendance data unavailable' : todayCounts.total
           ? `${todayCounts.total} of ${authorizedStudentCount} authorized students recorded`
           : 'No attendance recorded today',
       }
     }
-    if (stat.label === 'Present') return { ...stat, value: attendanceUnavailable ? '0' : String(todayCounts.present) }
-    if (stat.label === 'Absent') return { ...stat, value: attendanceUnavailable ? '0' : String(todayCounts.absent) }
+    if (stat.label === 'Present') return { ...stat, value: attendanceUnavailable ? '—' : String(todayCounts.present) }
+    if (stat.label === 'Absent') return { ...stat, value: attendanceUnavailable ? '—' : String(todayCounts.absent) }
     if (stat.label === 'Attendance Alerts' || stat.label === 'Alerts' || stat.label === 'Open alerts') {
       return { ...stat, label: 'Alerts', value: activeAlertCount, subLabel: 'Across attendance, fees, and communication' }
     }
@@ -2574,7 +2798,11 @@ function alertToAttention(alert: AlertItem, user: SessionUser): AttentionItem {
       title: alert.title,
       detail: alert.detail,
       cta: 'View Student',
-      path: alert.studentId ? `/fees/${encodeURIComponent(alert.studentId)}` : '/fees',
+      path: alert.studentId
+        ? user.role === 'principal'
+          ? `/students/${encodeURIComponent(alert.studentId)}`
+          : `/fees/${encodeURIComponent(alert.studentId)}`
+        : user.role === 'principal' ? '/alerts' : '/fees',
     }
   }
   return {
@@ -2841,38 +3069,400 @@ function EmptyDashboardState({ role }: { role: Role }) {
   )
 }
 
-function SchoolDashboard({ user, config }: { user: SessionUser; config: DashboardConfig }) {
+function SchoolDashboard({
+  user,
+  config,
+  students,
+  attendance,
+  fees,
+  communication,
+  alerts,
+  attendanceError,
+  profiles,
+  profilesLoading,
+  profilesError,
+  academicYear,
+}: {
+  user: SessionUser
+  config: DashboardConfig
+  students: Student[]
+  attendance: AttendanceState
+  fees: FeeState
+  communication: CommunicationState
+  alerts: AlertItem[]
+  attendanceError: boolean
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  profilesError: string
+  academicYear: string | null
+}) {
   const navigate = useNavigate()
+  const activities = getDashboardActivities(user, students, attendance, fees, communication, alerts)
+  const attendanceStat = config.stats.find((stat) => stat.label === 'Attendance')
 
   return (
-    <section className="dashboard-page">
-      <DashboardHeader user={user} title={user.role === 'admin' ? 'Executive Dashboard' : 'School Operations Dashboard'} />
+    <section className="dashboard-page executive-dashboard">
+      <DashboardHeader user={user} title={user.role === 'admin' ? 'Executive Dashboard' : 'School Operations Dashboard'} academicYear={academicYear} />
 
-      <DashboardKpiGrid stats={config.stats} />
+      <ExecutiveKpiGrid
+        stats={config.stats}
+        campusId={user.campusId}
+        profiles={profiles}
+        profilesLoading={profilesLoading}
+        profilesError={profilesError}
+      />
 
-      {config.morningBrief ? (
-        <MorningBrief
-          summary={config.morningBrief.summary}
-          cta={config.morningBrief.cta}
-          onAction={() => navigate('/attendance')}
-        />
-      ) : null}
-
-      <div className="dashboard-grid">
-        <DashboardSection title="Needs Attention">
-          <AttentionList items={config.attention} onNavigate={navigate} />
+      <div className="executive-analytics-grid">
+        <DashboardSection
+          title="Attendance Overview"
+          icon={<CalendarDays size={18} className="panel-title-icon text-blue" />}
+          badgeText="Last 7 recorded days"
+        >
+          <AttendanceOverview
+            data={config.trend}
+            currentRate={attendanceStat?.value ?? '—'}
+            error={attendanceError}
+          />
         </DashboardSection>
-
-        <DashboardSection title="Quick Actions">
-          <QuickActions actions={config.quickActions} navigate={navigate} />
+        <DashboardSection
+          title="Student Distribution"
+          icon={<Users size={18} className="panel-title-icon text-blue" />}
+          badgeText={`${students.length} students`}
+        >
+          <StudentDistribution students={students} />
         </DashboardSection>
       </div>
 
-      <DashboardSection title="Attendance — Last 7 Days">
-        <SimpleTrendChart data={config.trend} emptyMessage="Attendance trend will appear after sessions are recorded." />
-      </DashboardSection>
+      <div className="executive-operations-grid">
+        <DashboardSection title="Needs Attention" badgeText={`${config.attention.length} items`}>
+          <AttentionList items={config.attention} onNavigate={navigate} />
+        </DashboardSection>
+        <DashboardSection
+          title="Recent Activities"
+          icon={<Activity size={18} className="panel-title-icon text-blue" />}
+          badgeText={`${activities.length} recent`}
+        >
+          <RecentActivities activities={activities} navigate={navigate} />
+        </DashboardSection>
+        <DashboardSection title="Quick Actions" badgeText="Shortcuts">
+          <QuickActions actions={config.quickActions} navigate={navigate} />
+        </DashboardSection>
+      </div>
     </section>
   )
+}
+
+function ExecutiveKpiGrid({ stats, campusId, profiles, profilesLoading, profilesError }: {
+  stats: StatItem[]
+  campusId: string | null
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  profilesError: string
+}) {
+  const labels = ['Students', 'Attendance', 'Collected This Month', 'Total Teachers']
+  const selectedStats = labels.flatMap((label) => {
+    if (label === 'Total Teachers') {
+      const activeTeachers = profiles.filter((profile) => (
+        profile.role === 'teacher' &&
+        profile.status === 'Active' &&
+        (!campusId || profile.campusId === campusId)
+      ))
+      return [{
+        label,
+        value: profilesLoading || profilesError ? '—' : String(activeTeachers.length),
+        subLabel: profilesLoading ? 'Loading teacher records' : profilesError ? 'Teacher data unavailable' : 'Active teachers',
+        tone: 'purple' as const,
+        icon: GraduationCap,
+      }]
+    }
+    const stat = stats.find((item) => item.label === label)
+    if (!stat) return []
+    const displayLabel = label === 'Students' ? 'Total Students' : label === 'Collected This Month' ? 'Fees Collected' : label
+    return [{ ...stat, label: displayLabel }]
+  })
+
+  return (
+    <div className="executive-kpi-grid">
+      {selectedStats.map((stat) => <StatCard key={stat.label} stat={stat} />)}
+    </div>
+  )
+}
+
+function AttendanceOverview({ data, currentRate, error }: {
+  data: TrendPoint[]
+  currentRate: string
+  error: boolean
+}) {
+  if (error || !data.length) {
+    return (
+      <div className="executive-chart-empty" role={error ? 'alert' : undefined}>
+        <span className="executive-empty-icon"><ClipboardCheck size={18} /></span>
+        <strong>{error ? 'Attendance data is unavailable' : 'No attendance recorded yet'}</strong>
+        <p>{error ? 'Retry attendance to refresh this overview.' : 'Recorded attendance sessions will appear here.'}</p>
+      </div>
+    )
+  }
+
+  const width = 620
+  const height = 220
+  const left = 38
+  const right = 10
+  const top = 14
+  const bottom = 36
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const points = data.map((point, index) => ({
+    ...point,
+    x: left + (index * plotWidth) / Math.max(data.length - 1, 1),
+    y: top + ((100 - point.value) / 100) * plotHeight,
+  }))
+  const line = points.map((point) => `${point.x},${point.y}`).join(' ')
+  const area = `${left},${top + plotHeight} ${line} ${left + plotWidth},${top + plotHeight}`
+
+  return (
+    <div className="attendance-overview">
+      <div className="attendance-chart-summary">
+        <div>
+          <span>Today&apos;s attendance</span>
+          <strong>{currentRate}</strong>
+        </div>
+        <span className="chart-period-label">Recorded sessions</span>
+      </div>
+      <svg className="attendance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance percentage over the last seven recorded days">
+        {[0, 50, 100].map((tick) => {
+          const y = top + ((100 - tick) / 100) * plotHeight
+          return (
+            <g key={tick}>
+              <line x1={left} y1={y} x2={width - right} y2={y} />
+              <text x={left - 10} y={y + 4} textAnchor="end">{tick}%</text>
+            </g>
+          )
+        })}
+        <polygon className="attendance-chart-area" points={area} />
+        <polyline className="attendance-chart-line" points={line} />
+        {points.map((point) => (
+          <g key={`${point.day}-${point.x}`}>
+            <circle className="attendance-chart-point" cx={point.x} cy={point.y} r="4" />
+            <title>{`${point.day}: ${point.value}%`}</title>
+            <text className="attendance-chart-day" x={point.x} y={height - 10} textAnchor="middle">{point.day}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+function StudentDistribution({ students }: { students: Student[] }) {
+  const groups = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const student of students) {
+      const className = student.className.trim() || 'Unassigned class'
+      counts.set(className, (counts.get(className) ?? 0) + 1)
+    }
+    const sorted = [...counts.entries()]
+      .sort(([leftName, leftCount], [rightName, rightCount]) => rightCount - leftCount || leftName.localeCompare(rightName))
+    const visible = sorted.slice(0, 4).map(([label, count]) => ({ label, count }))
+    const remaining = sorted.slice(4).reduce((total, [, count]) => total + count, 0)
+    if (remaining) visible.push({ label: 'Other classes', count: remaining })
+    return visible
+  }, [students])
+
+  if (!students.length) {
+    return (
+      <div className="executive-chart-empty">
+        <span className="executive-empty-icon"><Users size={18} /></span>
+        <strong>No student records yet</strong>
+        <p>Students will be grouped by class when records are available.</p>
+      </div>
+    )
+  }
+
+  const colors = ['#3B82F6', '#14B8A6', '#A78BFA', '#1E2A78', '#E5E7EB']
+  const radius = 48
+  const circumference = 2 * Math.PI * radius
+  const segments = groups.map((group, index) => ({
+    group,
+    length: (group.count / students.length) * circumference,
+    offset: (groups.slice(0, index).reduce((total, previous) => total + previous.count, 0) / students.length) * circumference,
+  }))
+
+  return (
+    <div className="student-distribution">
+      <div className="distribution-donut">
+        <svg viewBox="0 0 120 120" role="img" aria-label={`Student distribution across ${groups.length} class groups`}>
+          <circle className="distribution-track" cx="60" cy="60" r={radius} />
+          {segments.map(({ group, length, offset }, index) => (
+            <circle
+              key={group.label}
+              className="distribution-segment"
+              cx="60"
+              cy="60"
+              r={radius}
+              stroke={colors[index % colors.length]}
+              strokeDasharray={`${length} ${circumference - length}`}
+              strokeDashoffset={-offset}
+            >
+              <title>{`${group.label}: ${group.count} students`}</title>
+            </circle>
+          ))}
+        </svg>
+        <div className="distribution-total">
+          <strong>{students.length}</strong>
+          <span>students</span>
+        </div>
+      </div>
+      <ul className="distribution-legend">
+        {groups.map((group, index) => (
+          <li key={group.label}>
+            <span className="distribution-label">
+              <i style={{ backgroundColor: colors[index % colors.length] }} />
+              <span>{group.label}</span>
+            </span>
+            <span className="distribution-count">
+              {group.count}
+              <small>{Math.round((group.count / students.length) * 100)}%</small>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function getDashboardActivities(
+  user: SessionUser,
+  students: Student[],
+  attendance: AttendanceState,
+  fees: FeeState,
+  communication: CommunicationState,
+  alerts: AlertItem[],
+): DashboardActivity[] {
+  const activities: DashboardActivity[] = []
+  const classesById = new Map(getAttendanceClasses(students).map((attendanceClass) => [attendanceClass.id, attendanceClass]))
+
+  for (const session of attendance.sessions) {
+    const attendanceClass = classesById.get(session.classId)
+    if (!attendanceClass || session.status !== 'COMPLETED') continue
+    activities.push({
+      id: `attendance-${session.id}`,
+      title: 'Attendance recorded',
+      detail: `${attendanceClass.className} · ${attendanceClass.section}`,
+      occurredAt: session.completedAt ?? `${session.date}T12:00:00`,
+      path: `/attendance/take/${encodeURIComponent(session.classId)}?date=${session.date}`,
+      icon: ClipboardCheck,
+      tone: 'teal',
+    })
+  }
+
+  const accessibleInvoices = getFeeInvoices(fees, students, user)
+  const invoiceById = new Map(accessibleInvoices.map((invoice) => [invoice.id, invoice]))
+  for (const payment of fees.payments) {
+    const invoice = invoiceById.get(payment.invoiceId)
+    if (!invoice || payment.voidedAt) continue
+    activities.push({
+      id: `payment-${payment.id}`,
+      title: 'Fee payment recorded',
+      detail: `${invoice.student.firstName} ${invoice.student.lastName} · ${formatFeeCurrency(payment.amount)}`,
+      occurredAt: payment.date,
+      path: user.role === 'principal'
+        ? `/students/${encodeURIComponent(invoice.studentId)}`
+        : `/fees/${encodeURIComponent(invoice.studentId)}`,
+      icon: Wallet,
+      tone: 'purple',
+    })
+  }
+
+  for (const message of getAccessibleCommunication(communication, students, user)) {
+    const isSent = message.status === 'SENT'
+    const isApproved = message.status === 'APPROVED'
+    const label = isSent
+      ? 'Parent communication sent'
+      : isApproved
+        ? 'Communication approved'
+        : message.status === 'AWAITING_APPROVAL'
+          ? 'Communication submitted for review'
+          : message.status === 'REJECTED'
+            ? 'Communication returned for revision'
+            : 'Communication draft created'
+    activities.push({
+      id: `communication-${message.id}`,
+      title: label,
+      detail: `${message.student.firstName} ${message.student.lastName} · ${message.type}`,
+      occurredAt: isSent ? message.sentAt ?? message.updatedAt : isApproved ? message.approvedAt ?? message.updatedAt : message.createdAt,
+      path: '/communication',
+      icon: MessageSquareText,
+      tone: 'blue',
+    })
+  }
+
+  for (const alert of alerts) {
+    if (alert.status === 'RESOLVED') continue
+    const item = alertToAttention(alert, user)
+    activities.push({
+      id: `alert-${alert.id}`,
+      title: alert.title,
+      detail: alert.detail,
+      occurredAt: alert.createdAt,
+      path: item.path ?? '/alerts',
+      icon: BellRing,
+      tone: 'blue',
+    })
+  }
+
+  return activities
+    .filter((activity) => Number.isFinite(Date.parse(activity.occurredAt)))
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+    .slice(0, 5)
+}
+
+function RecentActivities({ activities, navigate }: {
+  activities: DashboardActivity[]
+  navigate: (path: string) => void
+}) {
+  const [now] = useState(() => Date.now())
+  if (!activities.length) {
+    return (
+      <div className="executive-activity-empty">
+        <span className="executive-empty-icon"><CalendarDays size={18} /></span>
+        <strong>No recent activity</strong>
+        <p>Completed attendance, payments and communication updates will appear here.</p>
+      </div>
+    )
+  }
+
+  return (
+    <ol className="executive-activity-list">
+      {activities.map((activity) => {
+        const Icon = activity.icon
+        return (
+          <li key={activity.id}>
+            <span className={`activity-icon activity-${activity.tone}`}><Icon size={15} /></span>
+            <button type="button" className="activity-copy" onClick={() => navigate(activity.path)}>
+              <strong>{activity.title}</strong>
+              <span>{activity.detail}</span>
+              <time dateTime={activity.occurredAt}>{formatRelativeActivityTime(activity.occurredAt, now)}</time>
+            </button>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+function formatRelativeActivityTime(value: string, now: number): string {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return 'Time unavailable'
+  const elapsedMinutes = Math.round((timestamp - now) / 60_000)
+  if (elapsedMinutes > 1) {
+    return new Intl.DateTimeFormat('en-PK', { day: 'numeric', month: 'short' }).format(timestamp)
+  }
+  const minutes = Math.abs(elapsedMinutes)
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return days < 7 ? `${days}d ago` : new Intl.DateTimeFormat('en-PK', { day: 'numeric', month: 'short' }).format(timestamp)
 }
 
 function FinanceDashboard({ user, config }: { user: SessionUser; config: DashboardConfig }) {
@@ -2958,83 +3548,71 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
   )
 }
 
-function PageHeader({ user, title }: { user: SessionUser; title: string }) {
+function PageHeader({ user, title, academicYear }: { user: SessionUser; title: string; academicYear?: string | null }) {
   const firstName = user.name.split(' ')[0]
+  const greetingName = academicYear !== undefined ? user.name : firstName
+  const [dateContext] = useState(() => {
+    const now = new Date()
+    return {
+      hour: now.getHours(),
+      formatted: new Intl.DateTimeFormat('en-PK', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }).format(now),
+    }
+  })
+  const greeting = dateContext.hour < 12 ? 'Good Morning' : dateContext.hour < 17 ? 'Good Afternoon' : 'Good Evening'
+  const academicYearValue = academicYear?.trim() ?? ''
+  const academicYearRange = academicYearValue.match(/^(\d{4})-(\d{4})$/)
+  const academicYearLabel = academicYearRange
+    ? `Academic Year ${academicYearRange[1]} – ${academicYearRange[2].slice(-2)}`
+    : academicYearValue
+      ? `Academic Year ${academicYearValue}`
+      : 'Academic year unavailable'
   const badgeLabel = title.toUpperCase().includes('FINANCE')
     ? 'FINANCE DASHBOARD'
     : title.toUpperCase().includes('TEACHER')
       ? 'TEACHER DASHBOARD'
       : 'EXECUTIVE DASHBOARD'
 
-  const [todayFormatted] = useState(() =>
-    new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(new Date())
-  )
-
   return (
     <div className="hero-panel">
       <div className="hero-left">
         <span className="hero-badge">{badgeLabel}</span>
-        <h1>Good Morning, {firstName} 👋</h1>
-        <p>Here&apos;s what needs your attention today.</p>
+        <h1>{greeting}, <span className="hero-greeting-name">{greetingName}</span> <span aria-hidden="true">👋</span></h1>
+        <p>Here&apos;s what&apos;s happening at {user.schoolName} today.</p>
       </div>
 
       <div className="hero-right">
         <div className="hero-meta">
-          <div className="meta-pill">
-            <Building2 size={14} />
-            <span>{user.schoolName}</span>
-          </div>
           <div className="meta-pill muted-pill">
             <CalendarDays size={14} />
-            <span>{todayFormatted}</span>
+            <span>{dateContext.formatted}</span>
           </div>
+          {academicYear !== undefined ? (
+            <div className="meta-pill academic-year-pill">
+              <BookOpenText size={14} />
+              <span>{academicYearLabel}</span>
+              <ChevronDown size={13} aria-hidden="true" />
+            </div>
+          ) : (
+            <div className="meta-pill">
+              <Building2 size={14} />
+              <span>{user.schoolName}</span>
+            </div>
+          )}
         </div>
         <div className="hero-illustration-wrap" aria-hidden="true">
-          <svg
-            className="school-illustration-svg"
-            viewBox="0 0 240 120"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <ellipse cx="40" cy="24" rx="22" ry="10" fill="#FFFFFF" fillOpacity="0.75" />
-            <ellipse cx="54" cy="20" rx="16" ry="9" fill="#FFFFFF" fillOpacity="0.85" />
-            <ellipse cx="204" cy="28" rx="20" ry="9" fill="#FFFFFF" fillOpacity="0.7" />
-            <circle cx="196" cy="24" r="14" fill="#FDE047" fillOpacity="0.75" />
-            <line x1="8" y1="108" x2="232" y2="108" stroke="#93C5FD" strokeWidth="2.5" strokeLinecap="round" />
-            <rect x="75" y="46" width="90" height="62" rx="4" fill="#FFFFFF" stroke="#60A5FA" strokeWidth="2" />
-            <path d="M72 46 L120 22 L168 46 Z" fill="#2F6BFF" />
-            <polygon points="120,29 113,42 127,42" fill="#FFFFFF" fillOpacity="0.9" />
-            <rect x="108" y="74" width="24" height="34" rx="2" fill="#2F6BFF" fillOpacity="0.1" stroke="#2F6BFF" strokeWidth="1.5" />
-            <rect x="115" y="86" width="10" height="22" rx="1.5" fill="#2F6BFF" />
-            <rect x="83" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
-            <rect x="101" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
-            <rect x="127" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
-            <rect x="145" y="54" width="12" height="15" rx="2" fill="#38BDF8" fillOpacity="0.4" stroke="#0284C7" strokeWidth="1" />
-            <rect x="36" y="62" width="39" height="46" rx="3" fill="#F8FAFC" stroke="#94A3B8" strokeWidth="1.5" />
-            <rect x="42" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
-            <rect x="58" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
-            <rect x="165" y="62" width="39" height="46" rx="3" fill="#F8FAFC" stroke="#94A3B8" strokeWidth="1.5" />
-            <rect x="172" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
-            <rect x="188" y="70" width="10" height="12" rx="1.5" fill="#38BDF8" fillOpacity="0.35" stroke="#0284C7" strokeWidth="1" />
-            <path d="M22 108 L22 88" stroke="#92400E" strokeWidth="3" strokeLinecap="round" />
-            <circle cx="22" cy="80" r="12" fill="#10B981" fillOpacity="0.85" />
-            <circle cx="20" cy="77" r="8" fill="#34D399" />
-            <path d="M218 108 L218 88" stroke="#92400E" strokeWidth="3" strokeLinecap="round" />
-            <circle cx="218" cy="80" r="12" fill="#10B981" fillOpacity="0.85" />
-            <circle cx="216" cy="77" r="8" fill="#34D399" />
-          </svg>
+          <img className="school-building-image" src={schoolBuildingIllustration} alt="" />
         </div>
       </div>
     </div>
   )
 }
 
-function DashboardHeader({ user, title }: { user: SessionUser; title: string }) {
-  return <PageHeader user={user} title={title} />
+function DashboardHeader({ user, title, academicYear }: { user: SessionUser; title: string; academicYear?: string | null }) {
+  return <PageHeader user={user} title={title} academicYear={academicYear} />
 }
 
 function DashboardKpiGrid({ stats }: { stats: StatItem[] }) {
@@ -3237,7 +3815,14 @@ function AttentionItemCard({ item, onNavigate }: { item: AttentionItem; onNaviga
 }
 
 function AttentionList({ items, onNavigate }: { items: AttentionItem[]; onNavigate?: (path: string) => void }) {
-  if (!items.length) return <p className="student-muted">No attendance items need attention.</p>
+  if (!items.length) {
+    return (
+      <div className="executive-no-attention">
+        <span className="executive-empty-icon"><CheckCircle2 size={16} /></span>
+        <span>No items need follow-up right now.</span>
+      </div>
+    )
+  }
   return (
     <ul className="list-stack">
       {items.map((item) => (
@@ -3355,198 +3940,6 @@ function SimpleTrendChart({ data, emptyMessage = 'Trend data will appear after a
   )
 }
 
-function AskEduPage({
-  user,
-  students,
-  fees,
-  communication,
-  alerts,
-  alertsLoading,
-  alertsError,
-}: {
-  user: SessionUser
-  students: Student[]
-  fees: FeeState
-  communication: CommunicationState
-  alerts: AlertItem[]
-  alertsLoading: boolean
-  alertsError: string
-}) {
-  const [query, setQuery] = useState('')
-  const [messages, setMessages] = useState<Array<{ role: 'assistant' | 'user'; text: string }>>([
-    {
-      role: 'assistant',
-      text: 'I can summarize attendance risk, fee pressure, communication workflow, and student focus areas for your authorized school scope.',
-    },
-  ])
-
-  const accessibleStudents = useMemo(() => getAccessibleStudents(students, user), [students, user])
-  const communicationSummary = useMemo(
-    () => getCommunicationSummary(communication, students, user),
-    [communication, students, user],
-  )
-  const feeInvoices = useMemo(() => getFeeInvoices(fees, students, user), [fees, students, user])
-  const feeMetrics = useMemo(() => getFeeMetrics(feeInvoices), [feeInvoices])
-  const suggestionCards = [
-    'Summarize attendance risk for my classes',
-    'Show me fee status and overdue totals',
-    'What needs approval right now?',
-    'Which students need attention today?',
-  ]
-
-  const submitPrompt = (prompt: string) => {
-    const normalized = prompt.trim()
-    if (!normalized) return
-
-    const response = generateAskEduResponse(normalized)
-    setMessages((current) => [...current, { role: 'user', text: normalized }, { role: 'assistant', text: response }])
-    setQuery('')
-  }
-
-  const generateAskEduResponse = (prompt: string): string => {
-    const lowered = prompt.toLowerCase()
-
-    if (lowered.includes('attendance') || lowered.includes('risk') || lowered.includes('class')) {
-      if (alertsLoading) return 'Live attendance alert data is loading. Please try again shortly.'
-      if (alertsError) return 'Live attendance alert data is unavailable. Open Alerts and retry the request.'
-      const attention = alerts.filter((alert) => alert.sourceType === 'ATTENDANCE' && alert.status !== 'RESOLVED')
-      if (!attention.length) {
-        return `Attendance is currently stable in your scope. There are no active attendance alerts in the current set of recorded sessions.`
-      }
-      const top = attention.slice(0, 2).map((item) => item.title).join(', ')
-      return `I found ${attention.length} attendance watch items in the current scope, including ${top}. These are most likely to need follow-up attention.`
-    }
-
-    if (lowered.includes('fee') || lowered.includes('overdue') || lowered.includes('payment')) {
-      if (!feeInvoices.length) {
-        return 'There are no fee records in your authorized scope right now.'
-      }
-      const overdueCount = feeInvoices.filter((invoice) => invoice.overdueDays > 0).length
-      return `Fee overview: PKR ${new Intl.NumberFormat('en-PK', { maximumFractionDigits: 0 }).format(feeMetrics.outstanding)} is outstanding across ${feeInvoices.length} invoices, with ${overdueCount} overdue items and ${communicationSummary.feeAwaitingApproval} fee reminders awaiting approval.`
-    }
-
-    if (lowered.includes('approval') || lowered.includes('communication')) {
-      return `Current communication workload: ${communicationSummary.awaitingApproval} message(s) awaiting approval, ${communicationSummary.drafts} drafts in progress, and ${communicationSummary.deliveryIssues} delivery issues reported.`
-    }
-
-    if (lowered.includes('student') || lowered.includes('focus') || lowered.includes('attention')) {
-      if (alertsLoading || alertsError) return 'Live alert data is currently unavailable. Please open Alerts to check its status and retry.'
-      const studentCount = accessibleStudents.length
-      return `Your authorized scope includes ${studentCount} students. There are ${alerts.filter((alert) => alert.status !== 'RESOLVED').length} active alerts and ${communicationSummary.awaitingApproval} approval items requiring review.`
-    }
-
-    if (alertsLoading || alertsError) return 'Live alert data is currently unavailable. Please open Alerts to check its status and retry.'
-    return `Current summary: ${accessibleStudents.length} students are in scope, ${alerts.filter((alert) => alert.status !== 'RESOLVED').length} alerts are active, and ${communicationSummary.awaitingApproval} parent communications are awaiting review. The most important next action is to check the highest-priority alert and any fee or attendance risk items first.`
-  }
-
-  return (
-    <section className="ask-edu-page">
-      <div className="panel-header flex-header">
-        <div>
-          <p className="eyebrow">School Intelligence</p>
-          <h1>Ask CAMVIA</h1>
-        </div>
-        <div className="status-pill">Live school brief</div>
-      </div>
-
-      <div className="help-banner">
-        <strong>Helpful tip:</strong> Ask questions using your authorized school data.
-      </div>
-
-      <div className="ask-edu-layout">
-        <div className="ask-edu-sidebar">
-          <h3>Suggested prompts</h3>
-          {suggestionCards.map((suggestion) => (
-            <button key={suggestion} type="button" className="ask-edu-suggestion" onClick={() => submitPrompt(suggestion)}>
-              {suggestion}
-            </button>
-          ))}
-        </div>
-
-        <div className="ask-edu-panel">
-          <div className="ask-edu-header">
-            <div>
-              <strong>{user.name}</strong>
-              <span>{user.role}</span>
-            </div>
-          </div>
-
-          <div className="ask-edu-messages">
-            {messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`ask-edu-message ${message.role}`}>
-                <p>{message.text}</p>
-              </div>
-            ))}
-          </div>
-
-          <form
-            className="ask-edu-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              submitPrompt(query)
-            }}
-          >
-            <input
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Ask about attendance, fees, approvals, or student focus areas..."
-            />
-            <button type="submit" className="primary-button small-button">Ask</button>
-          </form>
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function ReportsPage({ user, students, attendance, fees, communication }: {
-  user: SessionUser
-  students: Student[]
-  attendance: AttendanceState
-  fees: FeeState
-  communication: CommunicationState
-}) {
-  const accessibleStudents = useMemo(() => getAccessibleStudents(students, user), [students, user])
-  const attendanceAttention = useMemo(() => getAttendanceAttention(attendance, students), [attendance, students])
-  const feeInvoices = useMemo(() => getFeeInvoices(fees, students, user), [fees, students, user])
-  const feeMetrics = useMemo(() => getFeeMetrics(feeInvoices), [feeInvoices])
-  const communicationSummary = useMemo(() => getCommunicationSummary(communication, students, user), [communication, students, user])
-
-  return (
-    <section className="dashboard-page">
-      <div className="panel-header flex-header">
-        <div>
-          <p className="eyebrow">Operational overview</p>
-          <h1>Reports</h1>
-        </div>
-      </div>
-
-      <div className="stats-grid">
-        <StatCard stat={{ label: 'Students in scope', value: String(accessibleStudents.length), subLabel: 'Accessible records', tone: 'blue', icon: Users }} />
-        <StatCard stat={{ label: 'Attendance alerts', value: String(attendanceAttention.length), subLabel: 'Follow-ups needed', tone: 'amber', icon: ClipboardCheck }} />
-        <StatCard stat={{ label: 'Outstanding fees', value: formatFeeCurrency(feeMetrics.outstanding), subLabel: 'Current balance', tone: 'purple', icon: Wallet }} />
-        <StatCard stat={{ label: 'Pending approvals', value: String(communicationSummary.awaitingApproval), subLabel: 'Waiting review', tone: 'green', icon: ShieldCheck }} />
-      </div>
-
-      <div className="dashboard-grid">
-        <div className="panel-card">
-          <h3>School summary</h3>
-          <p className="student-muted">The latest pilot overview highlights student coverage, fee exposure, and communication review load.</p>
-        </div>
-        <div className="panel-card">
-          <h3>Top priorities</h3>
-          <ul className="list-stack">
-            <li><span>Attendance follow-up</span><strong>{attendanceAttention.length}</strong></li>
-            <li><span>Outstanding fees</span><strong>{formatFeeCurrency(feeMetrics.outstanding)}</strong></li>
-            <li><span>Communication approvals</span><strong>{communicationSummary.awaitingApproval}</strong></li>
-          </ul>
-        </div>
-      </div>
-    </section>
-  )
-}
-
 function MyClassesPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry }: {
   user: SessionUser
   students: Student[]
@@ -3609,522 +4002,6 @@ function MyClassesPage({ user, students, attendance, attendanceLoading, attendan
         )}
       </div>
     </section>
-  )
-}
-
-function AdministrationPage({
-  user,
-  snapshot,
-  loading,
-  error,
-  profiles,
-  profilesLoading,
-  profilesError,
-  onRetryProfiles,
-  onRetry,
-  onSaveSchool,
-  onSaveCampus,
-  onInviteUser,
-  onUpdateUser,
-  onDeactivateUser,
-}: {
-  user: SessionUser
-  snapshot: AdministrationSnapshot | null
-  loading: boolean
-  error: string
-  profiles: SchoolUser[]
-  profilesLoading: boolean
-  profilesError: string
-  onRetryProfiles: () => void
-  onRetry: () => void
-  onSaveSchool: (values: Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>) => Promise<void>
-  onSaveCampus: (campusId: string, values: Pick<CampusSettingsRecord, 'name' | 'code' | 'address' | 'status'>) => Promise<void>
-  onInviteUser: (input: SchoolUserInput) => Promise<void>
-  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
-  onDeactivateUser: (targetUserId: string) => Promise<void>
-}) {
-  const canEdit = user.role === 'admin'
-  const [schoolForm, setSchoolForm] = useState<Partial<Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>>>({})
-  const [campusId, setCampusId] = useState('')
-  const [campusForm, setCampusForm] = useState<Partial<Pick<CampusSettingsRecord, 'name' | 'code' | 'address' | 'status'>>>({})
-  const [schoolSaving, setSchoolSaving] = useState(false)
-  const [campusSaving, setCampusSaving] = useState(false)
-  const [schoolError, setSchoolError] = useState('')
-  const [campusError, setCampusError] = useState('')
-  const [schoolSaved, setSchoolSaved] = useState(false)
-  const [campusSaved, setCampusSaved] = useState(false)
-  const selectedCampusId = campusId || snapshot?.campuses[0]?.id || ''
-  const selectedCampus = snapshot?.campuses.find((campus) => campus.id === selectedCampusId) ?? null
-
-  const handleSchoolSave = async (event: FormEvent) => {
-    event.preventDefault()
-    setSchoolError('')
-    setSchoolSaved(false)
-    setSchoolSaving(true)
-    try {
-      await onSaveSchool({
-        name: (schoolForm.name ?? snapshot?.school.name ?? '').trim(),
-        short_name: (schoolForm.short_name ?? snapshot?.school.short_name ?? '').trim(),
-        email: (schoolForm.email ?? snapshot?.school.email ?? '').trim() || null,
-        phone: (schoolForm.phone ?? snapshot?.school.phone ?? '').trim() || null,
-        address: (schoolForm.address ?? snapshot?.school.address ?? '').trim() || null,
-        timezone: (schoolForm.timezone ?? snapshot?.school.timezone ?? '').trim() || null,
-      })
-      setSchoolSaved(true)
-    } catch (saveError) {
-      setSchoolError(saveError instanceof Error ? saveError.message : 'Unable to save school settings.')
-    } finally {
-      setSchoolSaving(false)
-    }
-  }
-
-  const handleCampusSave = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!selectedCampus) return
-    setCampusError('')
-    setCampusSaved(false)
-    setCampusSaving(true)
-    try {
-      await onSaveCampus(selectedCampus.id, {
-        name: (campusForm.name ?? selectedCampus.name).trim(),
-        code: (campusForm.code ?? selectedCampus.code).trim(),
-        address: (campusForm.address ?? selectedCampus.address ?? '').trim() || null,
-        status: campusForm.status ?? selectedCampus.status,
-      })
-      setCampusSaved(true)
-    } catch (saveError) {
-      setCampusError(saveError instanceof Error ? saveError.message : 'Unable to save campus settings.')
-    } finally {
-      setCampusSaving(false)
-    }
-  }
-
-  return (
-    <section className="users-page">
-      <div className="panel-header flex-header">
-        <div>
-          <p className="eyebrow">Administration</p>
-          <h1>Administration &amp; Settings</h1>
-          <p className="student-muted">{canEdit ? 'Changes are saved to this school in Supabase.' : 'Settings are read-only for your role.'}</p>
-        </div>
-      </div>
-
-      {loading ? <div className="empty-state-card" role="status">Loading live school settings…</div> : null}
-      {!loading && error ? (
-        <div className="empty-state-card error-card" role="alert">
-          <h2>School settings unavailable</h2>
-          <p>{error}</p>
-          <button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button>
-        </div>
-      ) : null}
-      {!loading && !error && snapshot ? (
-        <>
-          <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))' }}>
-            <div className="panel-card">
-              <h3>School profile</h3>
-              <form className="user-form" onSubmit={handleSchoolSave}>
-                <label><span>School name</span><input required maxLength={160} disabled={!canEdit || schoolSaving} value={schoolForm.name ?? snapshot.school.name} onChange={(event) => setSchoolForm((current) => ({ ...current, name: event.target.value }))} /></label>
-                <label><span>Short name</span><input required maxLength={80} disabled={!canEdit || schoolSaving} value={schoolForm.short_name ?? snapshot.school.short_name} onChange={(event) => setSchoolForm((current) => ({ ...current, short_name: event.target.value }))} /></label>
-                <label><span>Email</span><input type="email" maxLength={254} disabled={!canEdit || schoolSaving} value={schoolForm.email ?? snapshot.school.email ?? ''} onChange={(event) => setSchoolForm((current) => ({ ...current, email: event.target.value }))} /></label>
-                <label><span>Phone</span><input maxLength={40} disabled={!canEdit || schoolSaving} value={schoolForm.phone ?? snapshot.school.phone ?? ''} onChange={(event) => setSchoolForm((current) => ({ ...current, phone: event.target.value }))} /></label>
-                <label><span>Address</span><input maxLength={240} disabled={!canEdit || schoolSaving} value={schoolForm.address ?? snapshot.school.address ?? ''} onChange={(event) => setSchoolForm((current) => ({ ...current, address: event.target.value }))} /></label>
-                <label><span>Timezone</span><input maxLength={80} disabled={!canEdit || schoolSaving} value={schoolForm.timezone ?? snapshot.school.timezone ?? ''} onChange={(event) => setSchoolForm((current) => ({ ...current, timezone: event.target.value }))} /></label>
-                {canEdit ? <button type="submit" className="primary-button small-button" disabled={schoolSaving}>{schoolSaving ? 'Saving…' : 'Save school settings'}</button> : null}
-                {schoolError ? <p className="communication-feedback error" role="alert">{schoolError}</p> : null}
-                {schoolSaved ? <p className="communication-feedback success" role="status">School settings saved.</p> : null}
-                <p className="student-muted">Last updated {new Date(snapshot.school.updated_at).toLocaleString()}.</p>
-              </form>
-            </div>
-
-            <div className="panel-card">
-              <h3>Campus settings</h3>
-              {snapshot.campuses.length ? (
-                <>
-                  <label className="campus-selector-field"><span>Campus</span><select disabled={campusSaving} value={selectedCampusId} onChange={(event) => { setCampusId(event.target.value); setCampusForm({}); setCampusSaved(false); setCampusError('') }}>{snapshot.campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name} · {campus.code}</option>)}</select></label>
-                  {selectedCampus ? (
-                    <form className="user-form" onSubmit={handleCampusSave}>
-                      <label><span>Campus name</span><input required maxLength={160} disabled={!canEdit || campusSaving} value={campusForm.name ?? selectedCampus.name} onChange={(event) => setCampusForm((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label><span>Campus code</span><input required maxLength={40} disabled={!canEdit || campusSaving} value={campusForm.code ?? selectedCampus.code} onChange={(event) => setCampusForm((current) => ({ ...current, code: event.target.value }))} /></label>
-                      <label><span>Address</span><input maxLength={240} disabled={!canEdit || campusSaving} value={campusForm.address ?? selectedCampus.address ?? ''} onChange={(event) => setCampusForm((current) => ({ ...current, address: event.target.value }))} /></label>
-                      <label><span>Status</span><select disabled={!canEdit || campusSaving} value={campusForm.status ?? selectedCampus.status} onChange={(event) => setCampusForm((current) => ({ ...current, status: event.target.value as CampusSettingsRecord['status'] }))}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select></label>
-                      {canEdit ? <button type="submit" className="primary-button small-button" disabled={campusSaving}>{campusSaving ? 'Saving…' : 'Save campus'}</button> : null}
-                      {campusError ? <p className="communication-feedback error" role="alert">{campusError}</p> : null}
-                      {campusSaved ? <p className="communication-feedback success" role="status">Campus settings saved.</p> : null}
-                    </form>
-                  ) : null}
-                </>
-              ) : <p className="student-muted">No campus records are available in this school.</p>}
-            </div>
-          </div>
-
-          <div className="panel-card" style={{ marginTop: '24px' }}>
-            <h3>Integration metadata</h3>
-            <p className="student-muted">Status is configuration metadata only. No connection or provider health check is implied; message delivery is not configured here.</p>
-            {snapshot.integrations.length ? (
-              <div className="table-card">
-                <table>
-                  <thead><tr><th>Provider</th><th>Status</th><th>Non-secret identifier</th></tr></thead>
-                  <tbody>{snapshot.integrations.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.provider_key}</td>
-                      <td><span className="status-pill">{item.status.replaceAll('_', ' ')}</span></td>
-                      <td>{item.external_identifier ?? '—'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            ) : <p className="student-muted">No integration metadata is configured.</p>}
-          </div>
-        </>
-      ) : null}
-
-      <div className="panel-card" style={{ marginTop: '24px' }}>
-        <h3>Import history</h3>
-        <p className="student-muted">No live import-history records are available. CSV upload currently supports preview only; it does not import records or create an integration connection.</p>
-      </div>
-
-      {canEdit || user.role === 'principal' ? (
-        <ProfilesDirectoryPage
-          user={user}
-          profiles={profiles}
-          campuses={snapshot?.campuses ?? []}
-          loading={profilesLoading}
-          error={profilesError}
-          onRetry={onRetryProfiles}
-          onInviteUser={onInviteUser}
-          onUpdateUser={onUpdateUser}
-          onDeactivateUser={onDeactivateUser}
-        />
-      ) : null}
-    </section>
-  )
-}
-
-function ProfilesDirectoryPage({
-  user,
-  profiles,
-  campuses,
-  loading,
-  error,
-  onRetry,
-  onInviteUser,
-  onUpdateUser,
-  onDeactivateUser,
-}: {
-  user: SessionUser
-  profiles: SchoolUser[]
-  campuses: CampusSettingsRecord[]
-  loading: boolean
-  error: string
-  onRetry: () => void
-  onInviteUser: (input: SchoolUserInput) => Promise<void>
-  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
-  onDeactivateUser: (targetUserId: string) => Promise<void>
-}) {
-  const canManageUsers = user.role === 'admin'
-  return (
-    <section className="users-page">
-      <div className="panel-header flex-header">
-        <div>
-          <p className="eyebrow">Access management</p>
-          <h1>Users</h1>
-          <p className="student-muted">{canManageUsers ? 'Manage school accounts and their authorized class scopes.' : 'Profile roles, campus, and account status are read-only for your role.'}</p>
-        </div>
-      </div>
-      {loading ? <div className="empty-state-card" role="status">Loading profiles…</div> : null}
-      {!loading && error ? <div className="empty-state-card error-card" role="alert"><p>{error}</p><button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button></div> : null}
-      {!loading && !error && profiles.length === 0 && !canManageUsers ? <div className="empty-state-card">No profiles are visible in your authorized scope.</div> : null}
-      {!loading && !error ? (
-        <UserManagementTable
-          currentUserId={user.authUserId}
-          profiles={profiles}
-          campuses={campuses}
-          canManage={canManageUsers}
-          onInviteUser={onInviteUser}
-          onUpdateUser={onUpdateUser}
-          onDeactivateUser={onDeactivateUser}
-        />
-      ) : null}
-    </section>
-  )
-}
-
-type UserEditorState = {
-  fullName: string
-  email: string
-  role: Role
-  status: UserStatus
-  campusId: string
-  assignments: TeacherAssignmentScope[]
-}
-
-function UserManagementTable({
-  currentUserId,
-  profiles,
-  campuses,
-  canManage,
-  onInviteUser,
-  onUpdateUser,
-  onDeactivateUser,
-}: {
-  currentUserId: string
-  profiles: SchoolUser[]
-  campuses: CampusSettingsRecord[]
-  canManage: boolean
-  onInviteUser: (input: SchoolUserInput) => Promise<void>
-  onUpdateUser: (targetUserId: string, input: SchoolUserInput) => Promise<void>
-  onDeactivateUser: (targetUserId: string) => Promise<void>
-}) {
-  const [query, setQuery] = useState('')
-  const [roleFilter, setRoleFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
-  const [editing, setEditing] = useState<SchoolUser | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState<UserEditorState>({
-    fullName: '',
-    email: '',
-    role: 'teacher',
-    status: 'Active',
-    campusId: campuses[0]?.id ?? '',
-    assignments: [],
-  })
-  const [assignmentDraft, setAssignmentDraft] = useState({ campusId: campuses[0]?.id ?? '', className: '', section: '' })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  const filteredProfiles = useMemo(() => profiles.filter((profile) => {
-    const searchable = `${profile.name} ${profile.email}`.toLowerCase()
-    return searchable.includes(query.trim().toLowerCase())
-      && (!roleFilter || profile.role === roleFilter)
-      && (!statusFilter || profile.status === statusFilter)
-  }), [profiles, query, roleFilter, statusFilter])
-
-  const openAdd = () => {
-    setEditing(null)
-    setCreating(true)
-    setError('')
-    setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
-  }
-
-  const openEdit = (profile: SchoolUser) => {
-    setEditing(profile)
-    setCreating(false)
-    setError('')
-    setForm({
-      fullName: profile.name,
-      email: profile.email,
-      role: profile.role,
-      status: profile.status,
-      campusId: profile.campusId ?? '',
-      assignments: (profile.assignmentScopes ?? []).map((scope) => ({
-        campus_id: scope.campusId,
-        class_name: scope.className,
-        section: scope.section,
-      })),
-    })
-  }
-
-  const addAssignment = () => {
-    const next = {
-      campus_id: assignmentDraft.campusId,
-      class_name: assignmentDraft.className.trim(),
-      section: assignmentDraft.section.trim(),
-    }
-    if (!next.campus_id || !next.class_name || !next.section) {
-      setError('Select a campus and enter a class and section before adding the assignment.')
-      return
-    }
-    if (form.assignments.some((scope) => scope.campus_id === next.campus_id && scope.class_name === next.class_name && scope.section === next.section)) {
-      setError('That teacher assignment has already been added.')
-      return
-    }
-    setError('')
-    setForm((current) => ({ ...current, assignments: [...current.assignments, next] }))
-    setAssignmentDraft((current) => ({ ...current, className: '', section: '' }))
-  }
-
-  const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())
-  const assignmentScopeKey = (scope: TeacherAssignmentScope) => `${scope.campus_id}|${scope.class_name.trim()}|${scope.section.trim()}`
-  const originalAssignmentScopeKeys = editing ? (editing.assignmentScopes ?? []).map((scope) => assignmentScopeKey({ campus_id: scope.campusId, class_name: scope.className, section: scope.section })) : []
-  const currentAssignmentScopeKeys = form.assignments.map((scope) => assignmentScopeKey(scope))
-  const hasUserChanges = creating || !editing || (
-    form.fullName.trim() !== editing.name.trim()
-    || form.email.trim().toLowerCase() !== editing.email.trim().toLowerCase()
-    || form.role !== editing.role
-    || form.status !== editing.status
-    || (form.campusId ?? '') !== (editing.campusId ?? '')
-    || currentAssignmentScopeKeys.length !== originalAssignmentScopeKeys.length
-    || currentAssignmentScopeKeys.some((scopeKey) => !originalAssignmentScopeKeys.includes(scopeKey))
-  )
-  const saveDisabled = saving || !form.fullName.trim() || !emailIsValid || (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0) || (!creating && editing !== null && !hasUserChanges)
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setError('')
-    const trimmedFullName = form.fullName.trim()
-    const trimmedEmail = form.email.trim()
-
-    if (!trimmedFullName) {
-      setError('Full name is required.')
-      return
-    }
-    if (!trimmedEmail || !emailIsValid) {
-      setError('Enter a valid email address.')
-      return
-    }
-    if (form.role === 'teacher' && form.status === 'Active' && form.assignments.length === 0) {
-      setError('Add at least one campus, class, and section before activating a teacher.')
-      return
-    }
-    if (!creating && editing && !hasUserChanges) {
-      setError('No changes were made. Nothing to save.')
-      return
-    }
-    setSaving(true)
-    const input: SchoolUserInput = {
-      fullName: trimmedFullName,
-      email: trimmedEmail,
-      role: form.role,
-      status: form.status,
-      campusId: form.campusId || null,
-      assignments: form.role === 'teacher' ? form.assignments : [],
-    }
-    try {
-      if (creating) await onInviteUser(input)
-      else if (editing?.authUserId) await onUpdateUser(editing.authUserId, input)
-      else throw new Error('This profile is missing its authenticated user ID and cannot be edited.')
-      setCreating(false)
-      setEditing(null)
-      setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Unable to save user changes.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const deactivate = async (profile: SchoolUser) => {
-    if (!profile.authUserId || profile.authUserId === currentUserId) return
-    if (!window.confirm('Deactivate this user? They will lose access, and their historical records will be retained.')) return
-    setError('')
-    setSaving(true)
-    try {
-      await onDeactivateUser(profile.authUserId)
-    } catch (deactivateError) {
-      setError(deactivateError instanceof Error ? deactivateError.message : 'Unable to deactivate this user.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  if (!canManage) {
-    return (
-      <div className="table-card user-directory-table">
-        <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Campus</th><th>Status</th></tr></thead>
-          <tbody>{filteredProfiles.map((profile) => (
-            <tr key={profile.authUserId ?? profile.email}>
-              <td>{profile.name}</td><td>{profile.email}</td><td>{roleLabels[profile.role]}</td><td>{profile.campus}</td>
-              <td><span className={`status-pill ${profile.status === 'Active' ? 'success' : 'muted'}`}>{profile.status}</span></td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-    )
-  }
-
-  return (
-    <div className="user-management">
-      <>
-        <div className="user-directory-toolbar">
-          <label className="user-directory-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name or email" aria-label="Search users" /></label>
-          <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} aria-label="Filter users by role">
-            <option value="">All roles</option><option value="admin">Admin</option><option value="principal">Principal</option><option value="finance">Finance</option><option value="teacher">Teacher</option>
-          </select>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter users by status">
-            <option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option>
-          </select>
-          <span className="user-count">{filteredProfiles.length} of {profiles.length} users</span>
-          <button type="button" className="primary-button small-button" onClick={openAdd}>+ Add User</button>
-        </div>
-        {filteredProfiles.length ? (
-          <>
-          <div className="table-card user-directory-table">
-            <table>
-              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Campus</th><th>Actions</th></tr></thead>
-              <tbody>{filteredProfiles.map((profile) => {
-                const isSelf = profile.authUserId === currentUserId
-                return (
-                  <tr key={profile.authUserId ?? profile.email}>
-                    <td>{profile.name}{isSelf ? <small className="current-user-label">You</small> : null}</td>
-                    <td>{profile.email}</td>
-                    <td>{roleLabels[profile.role]}</td>
-                    <td><span className={`status-pill ${profile.status === 'Active' ? 'success' : 'muted'}`}>{profile.status}</span></td>
-                    <td>{profile.campus}</td>
-                    <td><div className="user-row-actions">
-                      <button type="button" className="secondary-button compact-button" disabled={!profile.authUserId || saving} onClick={() => openEdit(profile)}>Edit</button>
-                      <button type="button" className="user-deactivate-button" disabled={isSelf || profile.status === 'Inactive' || saving || !profile.authUserId} onClick={() => void deactivate(profile)}>Deactivate</button>
-                    </div></td>
-                  </tr>
-                )
-              })}</tbody>
-            </table>
-          </div>
-          </>
-        ) : <div className="empty-state-card">{profiles.length ? 'No users match these filters.' : 'No profiles are visible in your authorized scope.'}</div>}
-      </>
-
-      {error && !creating && !editing ? <p className="communication-feedback error" role="alert">{error}</p> : null}
-      {creating || editing ? (
-        <div className="user-modal-backdrop" role="presentation">
-          <section className="user-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
-            <div className="user-modal-heading">
-              <div><p className="eyebrow">Access management</p><h2 id="user-modal-title">{creating ? 'Add User' : 'Edit User'}</h2></div>
-              <button type="button" className="icon-button" aria-label="Close user form" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>×</button>
-            </div>
-            <form className="user-editor-form" onSubmit={(event) => void submit(event)}>
-              <label>Full name<input required maxLength={160} disabled={saving} value={form.fullName} onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))} /></label>
-              <label>Email<input required type="email" maxLength={254} disabled={saving} value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
-              <label>Role<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as Role, assignments: event.target.value === 'teacher' ? current.assignments : [] }))}>
-                <option value="admin">Admin</option><option value="principal">Principal</option><option value="finance">Finance</option><option value="teacher">Teacher</option>
-              </select></label>
-              <label>Status<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value as UserStatus }))}>
-                <option value="Active">Active</option><option value="Inactive">Inactive</option>
-              </select></label>
-              <label>Campus<select disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={form.campusId} onChange={(event) => setForm((current) => ({ ...current, campusId: event.target.value }))}>
-                <option value="">No campus assigned</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
-              </select></label>
-              {form.role === 'teacher' ? (
-                <div className="teacher-scope-editor">
-                  <h3>Teacher class assignments</h3>
-                  <p>Active teachers must have at least one campus, class, and section assigned.</p>
-                  {form.assignments.map((scope, index) => (
-                    <div className="teacher-scope-row" key={`${scope.campus_id}-${scope.class_name}-${scope.section}-${index}`}>
-                      <span>{campuses.find((campus) => campus.id === scope.campus_id)?.name ?? 'Campus'} · {scope.class_name} · {scope.section}</span>
-                      <button type="button" className="user-deactivate-button" disabled={saving || (!creating && editing?.authUserId === currentUserId)} onClick={() => setForm((current) => ({ ...current, assignments: current.assignments.filter((_, rowIndex) => rowIndex !== index) }))}>Remove</button>
-                    </div>
-                  ))}
-                  <div className="teacher-scope-inputs">
-                    <select aria-label="Assignment campus" disabled={saving || (!creating && editing?.authUserId === currentUserId) || campuses.length === 0} value={assignmentDraft.campusId} onChange={(event) => setAssignmentDraft((current) => ({ ...current, campusId: event.target.value }))}>
-                      <option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
-                    </select>
-                    <input aria-label="Assignment class" placeholder="Class" maxLength={100} disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={assignmentDraft.className} onChange={(event) => setAssignmentDraft((current) => ({ ...current, className: event.target.value }))} />
-                    <input aria-label="Assignment section" placeholder="Section" maxLength={40} disabled={saving || (!creating && editing?.authUserId === currentUserId)} value={assignmentDraft.section} onChange={(event) => setAssignmentDraft((current) => ({ ...current, section: event.target.value }))} />
-                    <button type="button" className="secondary-button compact-button" disabled={saving || (!creating && editing?.authUserId === currentUserId)} onClick={addAssignment}>Add scope</button>
-                  </div>
-                </div>
-              ) : null}
-              {error ? <p className="communication-feedback error" role="alert">{error}</p> : null}
-              {creating ? <p className="user-invite-note">The account is created through Supabase Auth and an invitation email is sent. The user sets their own password.</p> : null}
-              <div className="user-modal-actions">
-                <button type="button" className="secondary-button compact-button" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>Cancel</button>
-                <button type="submit" className="primary-button compact-button" disabled={saveDisabled}>{saving ? 'Saving…' : creating ? 'Send invitation' : 'Save changes'}</button>
-              </div>
-            </form>
-          </section>
-        </div>
-      ) : null}
-    </div>
   )
 }
 

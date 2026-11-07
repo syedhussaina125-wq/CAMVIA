@@ -198,7 +198,6 @@ export function GuardianModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="State reason for audit log..."
               disabled={submitting}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
             />
           </label>
 

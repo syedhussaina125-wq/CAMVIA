@@ -109,22 +109,36 @@ export function CommunicationPage(props: CommunicationPageProps) {
     return () => window.clearTimeout(timeout)
   }, [pendingPrefill, editing, setSearchParams])
 
+  const [page, setPage] = useState(1)
+  const pageSize = 50
+
+  const visibleMessages = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return messages.filter((message) => {
+      const inTab = tab === 'Drafts'
+        ? message.status === 'DRAFT' || message.status === 'REJECTED'
+        : tab === 'Awaiting Approval'
+          ? message.status === 'AWAITING_APPROVAL' || message.status === 'APPROVED'
+          : message.status === 'SENT'
+      const searchable = `${message.student.firstName} ${message.student.lastName} ${message.guardianName}`.toLowerCase()
+      return inTab &&
+        (!q || searchable.includes(q)) &&
+        (!statusFilter || message.status === statusFilter) &&
+        (!typeFilter || message.type === typeFilter) &&
+        (!channelFilter || message.channel === channelFilter)
+    })
+  }, [messages, tab, query, statusFilter, typeFilter, channelFilter])
+
+  const totalPages = Math.ceil(visibleMessages.length / pageSize) || 1
+  const currentPage = Math.min(page, totalPages)
+  const paginatedMessages = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return visibleMessages.slice(start, start + pageSize)
+  }, [visibleMessages, currentPage, pageSize])
+
   if (props.loading) return <CommunicationLoadingState />
   if (props.loadError) return <CommunicationErrorState error={props.loadError} onRetry={props.onRetry} />
 
-  const visibleMessages = messages.filter((message) => {
-    const inTab = tab === 'Drafts'
-      ? message.status === 'DRAFT' || message.status === 'REJECTED'
-      : tab === 'Awaiting Approval'
-        ? message.status === 'AWAITING_APPROVAL' || message.status === 'APPROVED'
-        : message.status === 'SENT'
-    const searchable = `${message.student.firstName} ${message.student.lastName} ${message.guardianName}`.toLowerCase()
-    return inTab &&
-      searchable.includes(query.trim().toLowerCase()) &&
-      (!statusFilter || message.status === statusFilter) &&
-      (!typeFilter || message.type === typeFilter) &&
-      (!channelFilter || message.channel === channelFilter)
-  })
   const draftsCount = messages.filter((message) => message.status === 'DRAFT' || message.status === 'REJECTED').length
   const approvalCount = messages.filter((message) => message.status === 'AWAITING_APPROVAL').length
   const sentToday = messages.filter((message) => message.status === 'SENT' && message.sentAt?.slice(0, 10) === localDateKey()).length
@@ -313,20 +327,47 @@ export function CommunicationPage(props: CommunicationPageProps) {
           /> : null
         })() : null}
 
-        {visibleMessages.length ? <CommunicationMessageList
-          messages={visibleMessages}
-          userNames={userNames}
-          user={props.user}
-          onSelect={(message) => {
-            setSelectedMessageId(message.id)
-            setEditing(null)
-            setError('')
-            setSuccess('')
-          }}
-          onEdit={editMessage}
-          onDelete={setDeletingMessage}
-          tab={tab}
-        /> : <CommunicationEmptyState tab={tab} />}
+        {visibleMessages.length ? (
+          <>
+            <CommunicationMessageList
+              messages={paginatedMessages}
+              userNames={userNames}
+              user={props.user}
+              onSelect={(message) => {
+                setSelectedMessageId(message.id)
+                setEditing(null)
+                setError('')
+                setSuccess('')
+              }}
+              onEdit={editMessage}
+              onDelete={setDeletingMessage}
+              tab={tab}
+            />
+            {totalPages > 1 && (
+              <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <span className="student-muted" style={{ fontSize: '0.875rem' }}>
+                  Page {page} of {totalPages} ({visibleMessages.length} messages)
+                </span>
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        ) : <CommunicationEmptyState tab={tab} />}
         </div>
       </section>
 

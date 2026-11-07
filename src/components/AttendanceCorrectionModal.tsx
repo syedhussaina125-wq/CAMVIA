@@ -78,24 +78,23 @@ export function AttendanceCorrectionModal({
         </div>
 
         <form onSubmit={handleSubmit} className="fee-form" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-          <div style={{ flex: 1, overflowY: 'auto', marginBottom: '16px', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '8px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', marginBottom: '16px', border: '1px solid #d7e4f8', borderRadius: '12px', padding: '10px' }}>
             <table style={{ width: '100%', fontSize: '13px', borderCollapse: 'collapse' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
-                  <th style={{ padding: '6px' }}>Student</th>
-                  <th style={{ padding: '6px' }}>Status</th>
+                <tr style={{ borderBottom: '1px solid #e2edfc', textAlign: 'left' }}>
+                  <th style={{ padding: '8px' }}>Student</th>
+                  <th style={{ padding: '8px' }}>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {records.map((r) => (
-                  <tr key={r.student_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '6px' }}><strong>{r.student_name}</strong></td>
-                    <td style={{ padding: '6px' }}>
+                  <tr key={r.student_id} style={{ borderBottom: '1px solid #f0f4fa' }}>
+                    <td style={{ padding: '8px' }}><strong>{r.student_name}</strong></td>
+                    <td style={{ padding: '8px' }}>
                       <select
                         value={r.status}
                         onChange={(e) => handleStatusChange(r.student_id, e.target.value as any)}
                         disabled={saving}
-                        style={{ padding: '4px', borderRadius: '4px' }}
                       >
                         <option value="PRESENT">Present</option>
                         <option value="ABSENT">Absent</option>
@@ -117,7 +116,6 @@ export function AttendanceCorrectionModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="State reason for correction (e.g., student arrived with excusal note)"
               disabled={saving}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
             />
           </label>
 

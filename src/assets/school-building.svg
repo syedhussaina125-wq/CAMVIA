@@ -1,0 +1,29 @@
+<svg width="440" height="270" viewBox="0 0 440 270" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="225" cy="248" rx="177" ry="12" fill="#1E2A78" fill-opacity=".08"/>
+  <path d="M75 92 214 35l151 57v133H75V92Z" fill="#FFFFFF" stroke="#1E2A78" stroke-opacity=".22" stroke-width="2"/>
+  <path d="m75 92 139-57 151 57-18 17-133-50L92 109 75 92Z" fill="#1E2A78"/>
+  <path d="M91 109h268v16H91v-16Z" fill="#3B82F6" fill-opacity=".18"/>
+  <path d="M104 125h243v100H104V125Z" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="2"/>
+  <path d="M104 125h243v13H104v-13Z" fill="#1E2A78"/>
+  <path d="M122 146h42v35h-42v-35Zm59 0h36v35h-36v-35Zm54 0h36v35h-36v-35Zm54 0h40v35h-40v-35Z" fill="#14B8A6" fill-opacity=".2" stroke="#3B82F6" stroke-width="2"/>
+  <path d="M119 190h47v35h-47v-35Zm181 0h47v35h-47v-35Z" fill="#14B8A6" fill-opacity=".16" stroke="#3B82F6" stroke-width="2"/>
+  <path d="M201 165h48v60h-48v-60Z" fill="#3B82F6"/>
+  <path d="M207 171h36v54h-36v-54Z" fill="#1E2A78" fill-opacity=".18"/>
+  <circle cx="238" cy="199" r="2" fill="#FFFFFF"/>
+  <path d="M191 165h68l-12-20h-45l-11 20Z" fill="#A78BFA" fill-opacity=".44"/>
+  <path d="M197 143h56v7h-56v-7Z" fill="#1E2A78"/>
+  <path d="M214 35V19h20v22" stroke="#1E2A78" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M216 21h16" stroke="#3B82F6" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="332" cy="45" r="22" fill="#A78BFA" fill-opacity=".18"/>
+  <circle cx="344" cy="36" r="8" fill="#A78BFA" fill-opacity=".32"/>
+  <path d="M42 226h356" stroke="#E5E7EB" stroke-width="3" stroke-linecap="round"/>
+  <path d="M61 226v-44" stroke="#1E2A78" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="61" cy="170" r="21" fill="#14B8A6" fill-opacity=".52"/>
+  <circle cx="48" cy="181" r="13" fill="#14B8A6" fill-opacity=".72"/>
+  <circle cx="73" cy="181" r="14" fill="#3B82F6" fill-opacity=".22"/>
+  <path d="M376 226v-42" stroke="#1E2A78" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="376" cy="169" r="22" fill="#14B8A6" fill-opacity=".48"/>
+  <circle cx="362" cy="181" r="13" fill="#3B82F6" fill-opacity=".2"/>
+  <circle cx="390" cy="181" r="14" fill="#14B8A6" fill-opacity=".72"/>
+  <path d="M86 236h268" stroke="#3B82F6" stroke-opacity=".16" stroke-width="2" stroke-linecap="round"/>
+</svg>

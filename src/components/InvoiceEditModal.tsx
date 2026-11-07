@@ -167,7 +167,6 @@ export function InvoiceEditModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="State reason for invoice change..."
               disabled={saving}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
             />
           </label>
 

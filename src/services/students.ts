@@ -106,48 +106,63 @@ function mapStudent(
   }
 }
 
+const schoolNameCache = new Map<string, string>()
+const campusNameCache = new Map<string, string>()
+
 async function mapRows(rows: StudentRow[]): Promise<Student[]> {
   if (rows.length === 0) return []
   const db = requireSupabase()
   const studentIds = rows.map((row) => row.id)
-  const schoolIds = [...new Set(rows.map((row) => row.school_id))]
-  const campusIds = [...new Set(rows.map((row) => row.campus_id))]
+  const uncachedSchoolIds = [...new Set(rows.map((row) => row.school_id))].filter((id) => !schoolNameCache.has(id))
+  const uncachedCampusIds = [...new Set(rows.map((row) => row.campus_id))].filter((id) => !campusNameCache.has(id))
 
-  const [linksResult, guardiansResult, schoolsResult, campusesResult] = await Promise.all([
+  const [linksResult, schoolsResult, campusesResult] = await Promise.all([
     db.from('student_guardians')
       .select('student_id, guardian_id, relationship, is_primary')
       .in('student_id', studentIds),
-    db.from('guardians')
-      .select('id, first_name, last_name, phone, email')
-      .is('deleted_at', null),
-    db.from('schools')
-      .select('id, name')
-      .in('id', schoolIds),
-    db.from('campuses')
-      .select('id, name')
-      .in('id', campusIds),
+    uncachedSchoolIds.length
+      ? db.from('schools').select('id, name').in('id', uncachedSchoolIds)
+      : Promise.resolve({ data: [], error: null }),
+    uncachedCampusIds.length
+      ? db.from('campuses').select('id, name').in('id', uncachedCampusIds)
+      : Promise.resolve({ data: [], error: null }),
   ])
 
-  for (const result of [linksResult, guardiansResult, schoolsResult, campusesResult]) {
-    if (result.error) throw result.error
+  if (linksResult.error) throw linksResult.error
+  if (schoolsResult.error) throw schoolsResult.error
+  if (campusesResult.error) throw campusesResult.error
+
+  for (const school of (schoolsResult.data ?? []) as SchoolRow[]) {
+    schoolNameCache.set(school.id, school.name)
+  }
+  for (const campus of (campusesResult.data ?? []) as CampusRow[]) {
+    campusNameCache.set(campus.id, campus.name)
+  }
+
+  const links = (linksResult.data ?? []) as StudentGuardianRow[]
+  const linkedGuardianIds = [...new Set(links.map((link) => link.guardian_id))]
+
+  let guardians: GuardianRow[] = []
+  if (linkedGuardianIds.length > 0) {
+    const guardiansResult = await db
+      .from('guardians')
+      .select('id, first_name, last_name, phone, email')
+      .in('id', linkedGuardianIds)
+      .is('deleted_at', null)
+    if (guardiansResult.error) throw guardiansResult.error
+    guardians = (guardiansResult.data ?? []) as GuardianRow[]
   }
 
   const guardianById = new Map<string, GuardianRow>(
-    (guardiansResult.data ?? []).map((guardian: GuardianRow) => [guardian.id, guardian]),
+    guardians.map((guardian) => [guardian.id, guardian]),
   )
   const primaryGuardianByStudent = new Map<string, { guardian: GuardianRow; relationship: string | null }>()
-  for (const link of (linksResult.data ?? []) as StudentGuardianRow[]) {
+  for (const link of links) {
     const guardian = guardianById.get(link.guardian_id)
     if (guardian && (link.is_primary || !primaryGuardianByStudent.has(link.student_id))) {
       primaryGuardianByStudent.set(link.student_id, { guardian, relationship: link.relationship })
     }
   }
-  const schoolNameById = new Map<string, string>(
-    (schoolsResult.data ?? []).map((school: SchoolRow) => [school.id, school.name]),
-  )
-  const campusNameById = new Map<string, string>(
-    (campusesResult.data ?? []).map((campus: CampusRow) => [campus.id, campus.name]),
-  )
 
   return rows.map((row) => {
     const primary = primaryGuardianByStudent.get(row.id)
@@ -155,8 +170,8 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
       row,
       primary?.guardian,
       primary?.relationship ?? null,
-      schoolNameById.get(row.school_id) ?? '',
-      campusNameById.get(row.campus_id) ?? '',
+      schoolNameCache.get(row.school_id) ?? '',
+      campusNameCache.get(row.campus_id) ?? '',
     )
   })
 }

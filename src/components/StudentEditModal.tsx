@@ -99,7 +99,7 @@ export function StudentEditModal({
             </p>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
             <label>
               First Name
               <input
@@ -122,7 +122,7 @@ export function StudentEditModal({
             </label>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px' }}>
             <label>
               Class
               <input
@@ -170,7 +170,7 @@ export function StudentEditModal({
           )}
 
           {isAdmin && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
               <label>
                 Date of Birth
                 <input
@@ -205,7 +205,6 @@ export function StudentEditModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="State reason for edit (e.g., corrected spelling per registrar verification)"
               disabled={saving}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
             />
           </label>
 

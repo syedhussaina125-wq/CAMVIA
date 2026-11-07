@@ -53,6 +53,33 @@ export function FeesPage(props: FeesPagesProps) {
     [props.feeState, props.students, props.user],
   )
 
+  const [page, setPage] = useState(1)
+  const pageSize = 50
+
+  const filteredInvoices = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return allInvoices.filter((invoice) => {
+      const student = invoice.student
+      const matchesQuery = !q || [
+        `${student.firstName} ${student.lastName}`,
+        student.studentId,
+        student.className,
+      ].join(' ').toLowerCase().includes(q)
+      return matchesQuery &&
+        (!month || invoice.month === month) &&
+        (!classFilter || student.className === classFilter) &&
+        (!sectionFilter || student.section === sectionFilter) &&
+        (!statusFilter || invoice.status === statusFilter)
+    })
+  }, [allInvoices, query, month, classFilter, sectionFilter, statusFilter])
+
+  const totalPages = Math.ceil(filteredInvoices.length / pageSize) || 1
+  const currentPage = Math.min(page, totalPages)
+  const paginatedInvoices = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filteredInvoices.slice(start, start + pageSize)
+  }, [filteredInvoices, currentPage, pageSize])
+
   if (props.feeLoading) return <FeesLoadingState />
   if (props.feeError) return <FeesErrorState error={props.feeError} onRetry={props.onRetry} />
 
@@ -61,19 +88,7 @@ export function FeesPage(props: FeesPagesProps) {
   const sections = [...new Set(allInvoices
     .filter((invoice) => !classFilter || invoice.student.className === classFilter)
     .map((invoice) => invoice.student.section))].sort()
-  const filteredInvoices = allInvoices.filter((invoice) => {
-    const student = invoice.student
-    const matchesQuery = [
-      `${student.firstName} ${student.lastName}`,
-      student.studentId,
-      student.className,
-    ].join(' ').toLowerCase().includes(query.trim().toLowerCase())
-    return matchesQuery &&
-      (!month || invoice.month === month) &&
-      (!classFilter || student.className === classFilter) &&
-      (!sectionFilter || student.section === sectionFilter) &&
-      (!statusFilter || invoice.status === statusFilter)
-  })
+
   const metrics = getFeeMetrics(filteredInvoices)
   const overdueInvoices = allInvoices
     .filter((invoice) => invoice.overdueDays > 0)
@@ -130,7 +145,34 @@ export function FeesPage(props: FeesPagesProps) {
             <div><h2>Fee accounts</h2><p>{filteredInvoices.length} records for {month ? formatMonth(month) : 'all months'}</p></div>
             <label className="fees-search"><Search size={16} /><input aria-label="Search fee records" placeholder="Search student, ID, or class" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           </div>
-          {filteredInvoices.length ? <FeeInvoiceTable invoices={filteredInvoices} onView={(id) => navigate(`/fees/${encodeURIComponent(id)}`)} /> : (
+          {filteredInvoices.length ? (
+            <>
+              <FeeInvoiceTable invoices={paginatedInvoices} onView={(id) => navigate(`/fees/${encodeURIComponent(id)}`)} />
+              {totalPages > 1 && (
+                <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <span className="student-muted" style={{ fontSize: '0.875rem' }}>
+                    Page {page} of {totalPages} ({filteredInvoices.length} records)
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
             <div className="fees-empty"><div className="fees-empty-icon"><Wallet size={20} /></div><strong>{allInvoices.length === 0 ? 'No fee records have been created yet.' : 'No fee records found for this period.'}</strong><p>{allInvoices.length === 0 ? 'Fee invoices and balances will appear here once generated.' : 'Try another month or adjust your filters.'}</p></div>
           )}
         </section>

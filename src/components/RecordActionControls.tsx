@@ -23,7 +23,7 @@ export function RecordActionMenu({ actions }: RecordActionMenuProps) {
       <button
         type="button"
         className="secondary-button icon-only-button"
-        style={{ padding: '4px 8px', minWidth: 'auto', borderRadius: '4px', border: '1px solid #cbd5e1' }}
+        style={{ padding: '6px 10px', minWidth: 'auto', borderRadius: '10px', border: '1px solid #d3e2ff' }}
         onClick={(e) => {
           e.stopPropagation()
           setIsOpen(!isOpen)
@@ -48,14 +48,14 @@ export function RecordActionMenu({ actions }: RecordActionMenuProps) {
               position: 'absolute',
               right: 0,
               top: '100%',
-              marginTop: '4px',
+              marginTop: '6px',
               backgroundColor: '#fff',
-              border: '1px solid #e2e8f0',
-              borderRadius: '6px',
-              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+              border: '1px solid #d7e4f8',
+              borderRadius: '12px',
+              boxShadow: '0 12px 32px rgba(8, 22, 67, 0.14)',
               zIndex: 101,
-              minWidth: '160px',
-              padding: '4px 0',
+              minWidth: '170px',
+              padding: '6px',
             }}
           >
             {actions.map((action, idx) => (
@@ -158,7 +158,6 @@ export function DestructiveActionModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="Provide a specific audit reason for this change..."
               disabled={submitting}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
             />
           </label>
 
@@ -171,7 +170,6 @@ export function DestructiveActionModal({
             <button
               type="submit"
               className={danger ? 'danger-button' : 'primary-button'}
-              style={danger ? { backgroundColor: '#dc2626', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' } : {}}
               disabled={submitting || !reason.trim()}
             >
               {submitting ? 'Processing…' : confirmLabel}

@@ -154,22 +154,35 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     return () => { active = false }
   }, [canCreateStudents, user.role, user.schoolId, user.organizationId, user.teacherAssignments])
 
-  const filteredStudents = accessibleStudents.filter((student) => {
-    const searchable = [
-      student.firstName,
-      student.lastName,
-      student.studentId,
-      student.className,
-      student.section,
-      student.rollNumber,
-    ].join(' ').toLowerCase()
-    return (
-      searchable.includes(query.trim().toLowerCase()) &&
-      (!classFilter || student.className === classFilter) &&
-      (!sectionFilter || student.section === sectionFilter) &&
-      (!statusFilter || student.status === statusFilter)
-    )
-  })
+  const [page, setPage] = useState(1)
+  const pageSize = 50
+
+  const filteredStudents = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return accessibleStudents.filter((student) => {
+      const searchable = [
+        student.firstName,
+        student.lastName,
+        student.studentId,
+        student.className,
+        student.section,
+        student.rollNumber,
+      ].join(' ').toLowerCase()
+      return (
+        (!q || searchable.includes(q)) &&
+        (!classFilter || student.className === classFilter) &&
+        (!sectionFilter || student.section === sectionFilter) &&
+        (!statusFilter || student.status === statusFilter)
+      )
+    })
+  }, [accessibleStudents, query, classFilter, sectionFilter, statusFilter])
+
+  const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1
+  const currentPage = Math.min(page, totalPages)
+  const paginatedStudents = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filteredStudents.slice(start, start + pageSize)
+  }, [filteredStudents, currentPage, pageSize])
 
   const handleAddSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -446,7 +459,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
                 <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th>Actions</th></tr>
               </thead>
               <tbody>
-                {filteredStudents.map((student) => {
+                {paginatedStudents.map((student) => {
                   const studentActions = getStudentActions(student)
                   return (
                     <tr key={student.id}>
@@ -464,7 +477,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
             </table>
           </div>
           <div className="student-mobile-list">
-            {filteredStudents.map((student) => {
+            {paginatedStudents.map((student) => {
               const studentActions = getStudentActions(student)
               return (
                 <article className="student-mobile-card" key={student.id} onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>
@@ -482,6 +495,29 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
               )
             })}
           </div>
+          {totalPages > 1 && (
+            <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <span className="student-muted" style={{ fontSize: '0.875rem' }}>
+                Page {page} of {totalPages} ({filteredStudents.length} students)
+              </span>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
+          )}
         </>
       )}
       <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleStudents.length} students</p>
