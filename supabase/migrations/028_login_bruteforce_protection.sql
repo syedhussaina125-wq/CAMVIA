@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration 027: Login Brute-Force Protection & Password Verification Hook
+-- Migration 028: Login Brute-Force Protection & Password Verification Hook
 --
 -- GOAL:
 -- Prevent brute-force password guessing by enforcing server-side temporary

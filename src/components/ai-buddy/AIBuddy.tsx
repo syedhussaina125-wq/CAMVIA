@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { getCommunicationSummary } from '../../communicationData'
 import { useAskCamviaChat } from './useAskCamviaChat'
+import { getAskCamviaSuggestions } from './promptSuggestions'
 import { BuddyFace, type BuddyEmotion } from './BuddyFace'
 import { listenForBuddyEvents, type BuddyEventType } from './events'
 
@@ -48,14 +49,6 @@ type VoiceWindow = Window & {
 }
 
 const STORAGE_KEY = 'camvia-buddy-preferences-v1'
-const SUGGESTED_PROMPTS = [
-  "Show today's attendance summary.",
-  'How many students are enrolled?',
-  'Show pending approvals.',
-  'Help me register a student.',
-  'Show fee collection summary.',
-  'Draft a message to parents.',
-]
 const eventEmotions: Record<BuddyEventType, { emotion: BuddyEmotion; label: string; priority: number; duration: number }> = {
   'attendance-saved': { emotion: 'happy', label: 'Attendance saved successfully.', priority: 2, duration: 2000 },
   'student-created': { emotion: 'success', label: 'Student added successfully.', priority: 4, duration: 2500 },
@@ -109,6 +102,10 @@ export function AIBuddy() {
   const summary = useMemo(
     () => user ? getCommunicationSummary(communication, students, user) : null,
     [communication, students, user],
+  )
+  const suggestedPrompts = useMemo(
+    () => user ? getAskCamviaSuggestions(user.role) : [],
+    [user],
   )
   const activityEmotion: BuddyEmotion | null = listening
     ? 'listening'
@@ -402,7 +399,7 @@ export function AIBuddy() {
                 School scope · {user.role === 'teacher' ? 'Assigned students and classes' : user.campusName}
               </div>
               <div className="buddy-suggestions" aria-label="Suggested questions">
-                {SUGGESTED_PROMPTS.map((prompt) => (
+                {suggestedPrompts.map((prompt) => (
                   <button type="button" key={prompt} disabled={generating} onClick={() => void submitPrompt(prompt)}>
                     {prompt}
                   </button>
@@ -416,9 +413,6 @@ export function AIBuddy() {
                     ) : null}
                     <div className={`buddy-message-bubble ${message.role}`}>
                       <p>{message.text}</p>
-                      {message.role === 'assistant' && message.source === 'context' ? (
-                        <small className="assistant-source-note">Contextual response · AI service unavailable</small>
-                      ) : null}
                       {message.role === 'assistant' && 'speechSynthesis' in window ? (
                         <button
                           type="button"

@@ -1,15 +1,11 @@
 import { ArrowRight, Bot, Sparkles } from 'lucide-react'
 import { useAskCamviaChat } from './components/ai-buddy/useAskCamviaChat'
+import { getAskCamviaSuggestions } from './components/ai-buddy/promptSuggestions'
 
 export function AskEduPage() {
   const { user, query, setQuery, generating, messages, submitPrompt } = useAskCamviaChat()
   if (!user) return null
-  const suggestionCards = [
-    'Summarize attendance risk for my classes',
-    'Show me fee status and overdue totals',
-    'What needs approval right now?',
-    'Which students need attention today?',
-  ]
+  const suggestionCards = getAskCamviaSuggestions(user.role)
 
   return (
     <section className="ask-edu-page">
@@ -18,7 +14,7 @@ export function AskEduPage() {
           <p className="eyebrow">School Intelligence</p>
           <h1>Ask CAMVIA</h1>
         </div>
-        <div className="status-pill updated-pill">Live school context</div>
+        <div className="status-pill updated-pill">Role-scoped live data</div>
       </div>
 
       <div className="ask-edu-container">
@@ -69,9 +65,6 @@ export function AskEduPage() {
                 )}
                 <div className={`ask-edu-bubble ${message.role}`}>
                   <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{message.text}</p>
-                  {message.role === 'assistant' && message.source === 'context' && (
-                    <small className="assistant-source-note">Contextual response · AI service unavailable</small>
-                  )}
                 </div>
               </div>
             ))}

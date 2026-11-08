@@ -5,7 +5,7 @@ import type { CommunicationState } from '../../communicationData'
 import type { FeeState } from '../../feeData'
 import type { SessionUser } from '../../mockData'
 import type { Student } from '../../studentData'
-import type { ChatMessage } from '../../services/gemini'
+import type { ChatMessage } from '../../services/askCamvia'
 
 export type AskCamviaChatValue = {
   user: SessionUser | null

@@ -8003,8 +8003,8 @@ table tbody tr:last-child td,
 .executive-shell .executive-dashboard .hero-illustration-wrap {
   position: absolute;
   top: 8px;
-  right: 226px;
-  width: 533px;
+  right: 0;
+  width: min(26vw, 520px);
   height: 165px;
   overflow: hidden;
   opacity: 0.97;
@@ -8480,8 +8480,8 @@ table tbody tr:last-child td,
   }
 
   .executive-shell .executive-dashboard .hero-illustration-wrap {
-    right: 190px;
-    width: min(34vw, 340px);
+    right: 0;
+    width: min(26vw, 520px);
     opacity: 0.62;
   }
 
@@ -8605,7 +8605,7 @@ table tbody tr:last-child td,
 
 @media (max-width: 560px) {
   .executive-shell .executive-dashboard .hero-panel h1 {
-    font-size: clamp(20px, 5.7vw, 24px);
+    font-size: clamp(20px, 5.7vw, 24px) !important;
     line-height: 1.3;
   }
 

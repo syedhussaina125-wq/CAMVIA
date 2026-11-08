@@ -656,7 +656,7 @@ function App() {
 
     const userRole = nextSession.role
     const needsAttendance = userRole === 'admin' || userRole === 'principal' || userRole === 'teacher'
-    const needsFees = userRole === 'admin' || userRole === 'finance'
+    const needsFees = userRole === 'admin' || userRole === 'principal' || userRole === 'finance'
     const needsComms = true
     const needsProfiles = userRole === 'admin' || userRole === 'principal'
     const needsAdmin = userRole === 'admin'
