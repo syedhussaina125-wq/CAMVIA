@@ -238,6 +238,14 @@ const roleLabels: Record<Role, string> = {
   teacher: 'Teacher',
 }
 
+type GlobalSearchResult = {
+  id: string
+  title: string
+  subtitle: string
+  category: 'Student' | 'Staff' | 'Page'
+  path: string
+}
+
 const routeTitles: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/finance/dashboard': 'Finance Dashboard',
@@ -1336,6 +1344,9 @@ function App() {
           element={
             <AppShell
               user={session}
+              students={students}
+              profiles={liveProfiles}
+              profilesLoading={profilesLoading}
               onLogout={handleLogout}
               tourOpen={tourOpen}
               activeTourRole={activeTourRole}
@@ -2260,6 +2271,9 @@ function LoginPage({ onLogin, loading, authError }: {
 
 function AppShell({
   user,
+  students,
+  profiles,
+  profilesLoading,
   onLogout,
   tourOpen,
   activeTourRole,
@@ -2268,6 +2282,9 @@ function AppShell({
   onRestartTour,
 }: {
   user: SessionUser | null
+  students: Student[]
+  profiles: SchoolUser[]
+  profilesLoading: boolean
   onLogout: () => void
   tourOpen: boolean
   activeTourRole: Role | null
@@ -2279,6 +2296,12 @@ function AppShell({
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [searchMobileOpen, setSearchMobileOpen] = useState(false)
+  const [selectedSearchResult, setSelectedSearchResult] = useState(0)
+  const searchContainerRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const pageTitle = location.pathname.startsWith('/students/')
     ? 'Student 360'
     : location.pathname.startsWith('/attendance/take/')
@@ -2295,6 +2318,22 @@ function AppShell({
     setPrevPath(location.pathname)
     setSidebarOpen(false)
   }
+
+  useEffect(() => {
+    if (!searchMobileOpen) return
+    searchInputRef.current?.focus()
+  }, [searchMobileOpen])
+
+  useEffect(() => {
+    const closeSearchOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !searchContainerRef.current?.contains(event.target)) {
+        setSearchFocused(false)
+        setSearchMobileOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', closeSearchOnOutsideClick)
+    return () => document.removeEventListener('pointerdown', closeSearchOnOutsideClick)
+  }, [])
 
   if (!user) {
     return null
@@ -2319,12 +2358,60 @@ function AppShell({
       }),
     ]
     : navByRole[user.role]
+  const query = searchQuery.trim().toLocaleLowerCase()
+  const matchingStudents: GlobalSearchResult[] = query ? students
+      .filter((student) => (
+        `${student.firstName} ${student.lastName} ${student.studentId} ${student.rollNumber} ${student.className} ${student.section} ${student.campus}`
+          .toLocaleLowerCase()
+          .includes(query)
+      ))
+      .slice(0, 6)
+      .map((student) => ({
+        id: `student-${student.id}`,
+        title: `${student.firstName} ${student.lastName}`,
+        subtitle: `${student.studentId} · ${student.className} ${student.section}`,
+        category: 'Student' as const,
+        path: `/students/${encodeURIComponent(student.id)}`,
+      }))
+    : []
+  const matchingStaff: GlobalSearchResult[] = query && user.role === 'admin' && !profilesLoading
+      ? profiles
+        .filter((profile) => `${profile.name} ${profile.email}`.toLocaleLowerCase().includes(query))
+        .slice(0, 4)
+        .map((profile) => ({
+          id: `staff-${profile.id}`,
+          title: profile.name,
+          subtitle: `${roleLabels[profile.role]} · ${profile.email}`,
+          category: 'Staff' as const,
+          path: `/users?search=${encodeURIComponent(query)}`,
+        }))
+      : []
+  const matchingPages: GlobalSearchResult[] = query ? nav
+      .filter((item) => item.label.toLocaleLowerCase().includes(query))
+      .slice(0, 4)
+      .map((item) => ({
+        id: `page-${item.path}`,
+        title: item.label,
+        subtitle: 'Open page',
+        category: 'Page' as const,
+        path: item.path,
+      }))
+    : []
+  const searchResults = [...matchingStudents, ...matchingStaff, ...matchingPages].slice(0, 8)
   const initials = user.name
     .split(' ')
     .map((namePart) => namePart[0])
     .slice(0, 2)
     .join('')
     .toUpperCase()
+
+  const openSearchResult = (result: GlobalSearchResult) => {
+    navigate(result.path)
+    setSearchQuery('')
+    setSearchFocused(false)
+    setSearchMobileOpen(false)
+    setSelectedSearchResult(0)
+  }
 
   return (
     <div className={`app-shell ${user.role === 'admin' || user.role === 'principal' ? 'executive-shell' : ''}`}>
@@ -2439,9 +2526,74 @@ function AppShell({
           </div>
 
           <div className="topbar-actions">
-            <div className="search-box">
-              <Search size={15} />
-              <input type="text" placeholder="Search students, staff, or records..." readOnly aria-label="Search" />
+            <div className="global-search" ref={searchContainerRef}>
+              <button
+                type="button"
+                className="icon-button mobile-search-toggle"
+                aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
+                aria-expanded={searchMobileOpen}
+                onClick={() => setSearchMobileOpen((open) => !open)}
+              >
+                {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
+              </button>
+              <div className={`search-box ${searchMobileOpen ? 'is-open' : ''}`}>
+                <Search size={15} aria-hidden="true" />
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  placeholder="Search students, staff, or pages..."
+                  aria-label="Search students, staff, or pages"
+                  aria-autocomplete="list"
+                  aria-controls="global-search-results"
+                  aria-expanded={Boolean(searchFocused && searchQuery.trim())}
+                  role="combobox"
+                  value={searchQuery}
+                  onFocus={() => setSearchFocused(true)}
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value)
+                    setSelectedSearchResult(0)
+                    setSearchFocused(true)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown' && searchResults.length > 0) {
+                      event.preventDefault()
+                      setSelectedSearchResult((index) => Math.min(index + 1, searchResults.length - 1))
+                    } else if (event.key === 'ArrowUp' && searchResults.length > 0) {
+                      event.preventDefault()
+                      setSelectedSearchResult((index) => Math.max(index - 1, 0))
+                    } else if (event.key === 'Enter' && searchResults[selectedSearchResult]) {
+                      event.preventDefault()
+                      openSearchResult(searchResults[selectedSearchResult])
+                    } else if (event.key === 'Escape') {
+                      setSearchFocused(false)
+                      setSearchMobileOpen(false)
+                    }
+                  }}
+                />
+                {searchFocused && searchQuery.trim() ? (
+                  <div className="global-search-results" id="global-search-results" role="listbox" aria-label="Search results">
+                    {searchResults.length > 0 ? searchResults.map((result, index) => (
+                      <button
+                        key={result.id}
+                        type="button"
+                        className={`global-search-result ${index === selectedSearchResult ? 'selected' : ''}`}
+                        role="option"
+                        aria-selected={index === selectedSearchResult}
+                        onMouseEnter={() => setSelectedSearchResult(index)}
+                        onClick={() => openSearchResult(result)}
+                      >
+                        <span className="global-search-result-copy">
+                          <strong>{result.title}</strong>
+                          <small>{result.subtitle}</small>
+                        </span>
+                        <span className="global-search-category">{result.category}</span>
+                      </button>
+                    )) : (
+                      <p className="global-search-empty">No matching students, staff, or pages found.</p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <button type="button" className="icon-button notification-btn" aria-label="Notifications">

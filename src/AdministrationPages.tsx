@@ -311,6 +311,7 @@ function UserManagementTable({
   const [statusFilter, setStatusFilter] = useState('')
   const [editing, setEditing] = useState<SchoolUser | null>(null)
   const [creating, setCreating] = useState(false)
+  const [reactivating, setReactivating] = useState(false)
   const [form, setForm] = useState<UserEditorState>({
     fullName: '',
     email: '',
@@ -333,6 +334,7 @@ function UserManagementTable({
   const openAdd = () => {
     setEditing(null)
     setCreating(true)
+    setReactivating(false)
     setError('')
     setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
   }
@@ -340,6 +342,7 @@ function UserManagementTable({
   const openEdit = (profile: SchoolUser) => {
     setEditing(profile)
     setCreating(false)
+    setReactivating(false)
     setError('')
     setForm({
       fullName: profile.name,
@@ -352,6 +355,28 @@ function UserManagementTable({
         class_name: scope.className,
         section: scope.section,
       })),
+    })
+  }
+
+  const openReactivate = (profile: SchoolUser) => {
+    if (!profile.authUserId) return
+    setEditing(profile)
+    setCreating(false)
+    setReactivating(true)
+    setError('')
+    setForm({
+      fullName: profile.name,
+      email: profile.email,
+      role: profile.role,
+      status: 'Active',
+      campusId: profile.campusId ?? '',
+      assignments: (profile.assignmentScopes ?? [])
+        .filter((scope) => scope.active)
+        .map((scope) => ({
+          campus_id: scope.campusId,
+          class_name: scope.className,
+          section: scope.section,
+        })),
     })
   }
 
@@ -426,6 +451,7 @@ function UserManagementTable({
       else throw new Error('This profile is missing its authenticated user ID and cannot be edited.')
       setCreating(false)
       setEditing(null)
+      setReactivating(false)
       setForm({ fullName: '', email: '', role: 'teacher', status: 'Active', campusId: campuses[0]?.id ?? '', assignments: [] })
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Unable to save user changes.')
@@ -505,7 +531,11 @@ function UserManagementTable({
                     <td>{profile.campus}</td>
                     <td><div className="user-row-actions">
                       <button type="button" className="secondary-button compact-button" disabled={!profile.authUserId || saving} onClick={() => openEdit(profile)}>Edit</button>
-                      <button type="button" className="danger-button compact-button user-deactivate-btn" disabled={isSelf || profile.status === 'Inactive' || saving || !profile.authUserId} onClick={() => void deactivate(profile)}>Deactivate</button>
+                      {profile.status === 'Inactive' ? (
+                        <button type="button" className="primary-button compact-button" disabled={saving || !profile.authUserId} onClick={() => openReactivate(profile)}>Reactivate</button>
+                      ) : (
+                        <button type="button" className="danger-button compact-button user-deactivate-btn" disabled={isSelf || saving || !profile.authUserId} onClick={() => void deactivate(profile)}>Deactivate</button>
+                      )}
                     </div></td>
                   </tr>
                 )
@@ -521,8 +551,8 @@ function UserManagementTable({
         <div className="user-modal-backdrop" role="presentation">
           <section className="user-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
             <div className="user-modal-heading">
-              <div><p className="eyebrow">Access management</p><h2 id="user-modal-title">{creating ? 'Add User' : 'Edit User'}</h2></div>
-              <button type="button" className="icon-button" aria-label="Close user form" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>×</button>
+              <div><p className="eyebrow">Access management</p><h2 id="user-modal-title">{creating ? 'Add User' : reactivating ? 'Reactivate User' : 'Edit User'}</h2></div>
+              <button type="button" className="icon-button" aria-label="Close user form" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setReactivating(false); setError('') }}>×</button>
             </div>
             <form className="user-editor-form" onSubmit={(event) => void submit(event)}>
               <label>Full name<input required maxLength={160} disabled={saving} value={form.fullName} onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))} /></label>
@@ -539,7 +569,7 @@ function UserManagementTable({
               {form.role === 'teacher' ? (
                 <div className="teacher-scope-editor">
                   <h3>Teacher class assignments</h3>
-                  <p>Active teachers must have at least one campus, class, and section assigned.</p>
+                  <p>{reactivating ? 'Previously inactive assignments are not restored automatically. Add the current campus, class, and section scopes this teacher should receive.' : 'Active teachers must have at least one campus, class, and section assigned.'}</p>
                   {form.assignments.map((scope, index) => (
                     <div className="teacher-scope-row" key={`${scope.campus_id}-${scope.class_name}-${scope.section}-${index}`}>
                       <span>{campuses.find((campus) => campus.id === scope.campus_id)?.name ?? 'Campus'} · {scope.class_name} · {scope.section}</span>
@@ -559,8 +589,8 @@ function UserManagementTable({
               {error ? <p className="communication-feedback error" role="alert">{error}</p> : null}
               {creating ? <p className="user-invite-note">The account is created through Supabase Auth and an invitation email is sent. The user sets their own password.</p> : null}
               <div className="user-modal-actions">
-                <button type="button" className="secondary-button compact-button" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setError('') }}>Cancel</button>
-                <button type="submit" className="primary-button compact-button" disabled={saveDisabled}>{saving ? 'Saving…' : creating ? 'Send invitation' : 'Save changes'}</button>
+                <button type="button" className="secondary-button compact-button" disabled={saving} onClick={() => { setCreating(false); setEditing(null); setReactivating(false); setError('') }}>Cancel</button>
+                <button type="submit" className="primary-button compact-button" disabled={saveDisabled}>{saving ? 'Saving…' : creating ? 'Send invitation' : reactivating ? 'Reactivate user' : 'Save changes'}</button>
               </div>
             </form>
           </section>
