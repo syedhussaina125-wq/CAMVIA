@@ -55,9 +55,14 @@ recorded as applied. Earlier project verification records `017` and `018` as
 applied, but the live ledger for later migrations has not been verified.
 Confirm the target project's migration history and backup before applying only
 outstanding forward migrations in order. Review migrations `029` and `030`
-together and apply them in sequence if outstanding. This workspace is not
-linked to the app's Supabase project, so the CLI cannot independently read the
-remote migration ledger or apply changes.
+together and apply them in sequence if outstanding. Migration `031` adds
+attendance Trash metadata and RPCs; it is not required for active attendance
+reads, which use only columns present in the base attendance schema. This
+workspace adds migration `032` to validate attendance dates in the configured
+school timezone and return invalid submissions separately from authorization
+failures. Review and apply `032` only if it is outstanding. This workspace is
+not linked to the app's Supabase project, so the CLI cannot
+independently read the remote migration ledger or apply changes.
 
 Deploy `supabase/functions/manage-school-user` and
 `supabase/functions/purge-expired-trash` to that same Supabase project after
@@ -96,8 +101,11 @@ dashboard settings.
    schema changes. Review all migration files newer than the project's last
    applied migration and apply only outstanding migrations in order. Migration
    `010` is historically superseded, `021` has no file, and migrations `029`
-   and `030` must be applied in sequence if outstanding. Do not infer the
-   deployed schema from filenames or this workspace's history.
+   and `030` must be applied in sequence if outstanding. Migration `031`
+   enables attendance Trash workflows but is not required to load active
+   attendance. Migration `032` aligns attendance date validation with the
+   school's configured timezone. Do not infer the deployed schema from
+   filenames or this workspace's history.
 3. Deploy the `manage-school-user` and `purge-expired-trash` Edge Functions
    after confirming their required server-only secrets are configured. Test
    user invitation delivery and the purge workflow in a controlled environment

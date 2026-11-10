@@ -3,6 +3,7 @@ import { ArrowLeft, CalendarDays, ClipboardCheck, FileText, Search, Users } from
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { AttendanceClass, AttendanceState, AttendanceStatus, AttendanceSubmission, AttendanceUser } from './attendanceData'
 import {
+  attendanceDateKey,
   canAccessAttendanceClass,
   getAttendanceAttention,
   formatAttendanceDate,
@@ -48,8 +49,9 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
   const navigate = useNavigate()
   const [trashError, setTrashError] = useState('')
   const [searchParams] = useSearchParams()
+  const today = attendanceDateKey(user.schoolTimezone)
   const classes = useMemo(() => getAttendanceClasses(students), [students])
-  const [date, setDate] = useState(searchParams.get('date') ?? localDateKey())
+  const [date, setDate] = useState(searchParams.get('date') ?? today)
   const [classFilter, setClassFilter] = useState(() =>
     user.role === 'teacher' && classes.length === 1 ? classes[0].className : '',
   )
@@ -300,9 +302,17 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   const navigate = useNavigate()
   const { classId = '' } = useParams()
   const [searchParams] = useSearchParams()
-  const requestedDate = searchParams.get('date') ?? localDateKey()
+  const today = attendanceDateKey(user.schoolTimezone)
+  const requestedDate = searchParams.get('date') ?? today
   const attendanceClass = useMemo(() => canAccessAttendanceClass(students, classId), [students, classId])
-  const [date, setDate] = useState(requestedDate)
+  const [date, setDate] = useState(() => {
+    const parsedDate = new Date(`${requestedDate}T00:00:00`)
+    return !Number.isNaN(parsedDate.getTime()) &&
+      localDateKey(parsedDate) === requestedDate &&
+      requestedDate <= today
+      ? requestedDate
+      : today
+  })
   const [showCorrectionModal, setShowCorrectionModal] = useState(false)
   const [draft, setDraft] = useState<{
     key: string
@@ -350,14 +360,16 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (date > attendanceDateKey(user.schoolTimezone)) {
+      setSaveError('Attendance cannot be recorded for a future date.')
+      return
+    }
     setSaving(true)
     setSaveError('')
     try {
       await onSave({ date, classId: attendanceClass.id, statuses, notes })
       navigate(`/attendance?date=${date}`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Attendance could not be saved.'
-      console.error('[Supabase] Attendance save failed:', message)
+    } catch {
       setSaveError('Attendance could not be saved. Check your connection and class access, then try again.')
     } finally {
       setSaving(false)
@@ -374,7 +386,7 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
             <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
             <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
           </div>
-          <label className="take-date-control"><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <label className="take-date-control"><span>Date</span><input type="date" max={today} value={date} onChange={(event) => setDate(event.target.value)} /></label>
         </header>
 
         <div className="take-attendance-toolbar">

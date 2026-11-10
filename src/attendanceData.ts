@@ -51,6 +51,7 @@ export type AttendanceUser = {
   campusName: string
   organizationId?: string | null
   schoolId?: string | null
+  schoolTimezone?: string | null
 }
 
 export type AttendanceClass = {
@@ -91,6 +92,34 @@ export function localDateKey(date = new Date()): string {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+export function attendanceDateKey(timeZone: string | null | undefined, date = new Date()): string {
+  const schoolTimeZone = timeZone?.trim() || 'UTC'
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: schoolTimeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const valueFor = (type: 'year' | 'month' | 'day') => parts.find((part) => part.type === type)?.value
+    const year = valueFor('year')
+    const month = valueFor('month')
+    const day = valueFor('day')
+    if (!year || !month || !day) throw new Error('The school date could not be formatted.')
+    return `${year}-${month}-${day}`
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+    if (import.meta.env.DEV) {
+      console.error('[CAMVIA Attendance] Invalid school timezone; using UTC.', {
+        operation: 'attendance.date',
+        timeZone: schoolTimeZone,
+        message: error.message,
+      })
+    }
+    return date.toISOString().slice(0, 10)
+  }
 }
 
 export function formatAttendanceDate(dateKey: string): string {

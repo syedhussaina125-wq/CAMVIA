@@ -623,6 +623,7 @@ function App() {
       organizationId: profile.organization_id,
       schoolId: profile.school_id,
       campusId: profile.campus_id,
+      schoolTimezone: profile.school_timezone,
       name: profile.full_name,
       email: profile.email,
       role: normalizeRole(profile.role),
@@ -994,7 +995,7 @@ function App() {
     try {
       const school = await saveSchoolSettings(session.organizationId, session.schoolId, values)
       setAdministration((current) => current ? { ...current, school } : current)
-      setSession((current) => current ? { ...current, schoolName: school.name } : current)
+      setSession((current) => current ? { ...current, schoolName: school.name, schoolTimezone: school.timezone } : current)
       setToast({ type: 'success', text: 'School settings saved.' })
     } catch (error) {
       dispatchBuddyEvent('operation-error')

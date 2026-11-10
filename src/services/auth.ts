@@ -13,6 +13,7 @@ export type AppProfile = {
   school_id: string | null
   campus_id: string | null
   school_name: string | null
+  school_timezone: string | null
   campus_name: string | null
 }
 
@@ -67,7 +68,7 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
       ? supabaseClient.from('user_roles').select('role').eq('user_id', userId).then((r: any) => r).catch((err: unknown) => ({ data: null, error: err }))
       : Promise.resolve({ data: null, error: null }),
     data.school_id
-      ? supabaseClient.from('schools').select('name').eq('id', data.school_id).maybeSingle().then((r: any) => r).catch((err: unknown) => ({ data: null, error: err }))
+      ? supabaseClient.from('schools').select('name, timezone').eq('id', data.school_id).maybeSingle().then((r: any) => r).catch((err: unknown) => ({ data: null, error: err }))
       : Promise.resolve({ data: null, error: null }),
     data.campus_id
       ? supabaseClient.from('campuses').select('name').eq('id', data.campus_id).maybeSingle().then((r: any) => r).catch((err: unknown) => ({ data: null, error: err }))
@@ -84,6 +85,7 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
   }
 
   const schoolName: string | null = schoolResult.data?.name ?? null
+  const schoolTimezone: string | null = schoolResult.data?.timezone ?? null
   const campusName: string | null = campusResult.data?.name ?? null
 
   return {
@@ -96,6 +98,7 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
     school_id: data.school_id,
     campus_id: data.campus_id,
     school_name: schoolName,
+    school_timezone: schoolTimezone,
     campus_name: campusName,
   }
 }
@@ -454,4 +457,3 @@ export function normalizeRole(role: RoleName | string): 'admin' | 'principal' | 
   if (normalized === 'FINANCE') return 'finance'
   return 'teacher'
 }
-

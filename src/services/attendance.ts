@@ -38,7 +38,17 @@ type RecordRow = {
   marked_by: string
   created_at: string
   updated_at: string
-  trashed_at: string | null
+}
+
+function throwAttendanceQueryError(operation: string, error: { code?: string; message: string }): never {
+  if (import.meta.env.DEV) {
+    console.error('[Supabase] Attendance query failed:', {
+      operation,
+      code: error.code,
+      message: error.message,
+    })
+  }
+  throw error
 }
 
 function requireSupabase() {
@@ -75,7 +85,6 @@ function toRecord(row: RecordRow): AttendanceRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     history: [],
-    trashedAt: row.trashed_at,
   }
 }
 
@@ -88,11 +97,13 @@ export async function fetchAttendanceState(): Promise<AttendanceState> {
       .select('id, organization_id, school_id, campus_id, class_name, section, attendance_date, created_by, updated_by, status, created_at, updated_at')
       .order('attendance_date', { ascending: false })
       .range(offset, offset + pageSize - 1)
-    if (error) throw error
+    if (error) throwAttendanceQueryError('attendance_sessions.select', error)
     const batch = (data ?? []) as SessionRow[]
     sessions.push(...batch)
     if (batch.length < pageSize) break
   }
+
+  if (sessions.length === 0) return { sessions: [], records: [] }
 
   const sessionIds = sessions.map((session) => session.id)
   const sessionBatches = Array.from({ length: Math.ceil(sessionIds.length / idBatchSize) }, (_, index) =>
@@ -103,11 +114,10 @@ export async function fetchAttendanceState(): Promise<AttendanceState> {
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await db
         .from('attendance_records')
-        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at, trashed_at')
+        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at')
         .in('attendance_session_id', sessionBatch)
-        .is('trashed_at', null)
         .range(offset, offset + pageSize - 1)
-      if (error) throw error
+      if (error) throwAttendanceQueryError('attendance_records.select', error)
       const batch = (data ?? []) as RecordRow[]
       records.push(...batch)
       if (batch.length < pageSize) break
@@ -168,7 +178,16 @@ export async function saveAttendance(
       note: (submission.notes[student.id] ?? '').trim(),
     })),
   })
-  if (error) throw error
+  if (error) {
+    if (import.meta.env.DEV) {
+      console.error('[Supabase] Attendance save failed:', {
+        operation: 'save_attendance_session',
+        code: error.code,
+        message: error.message,
+      })
+    }
+    throw error
+  }
 
   return fetchAttendanceState()
 }

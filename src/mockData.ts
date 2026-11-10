@@ -25,6 +25,7 @@ export type SessionUser = {
   organizationId: string | null
   schoolId: string | null
   campusId: string | null
+  schoolTimezone?: string | null
   name: string
   email: string
   role: Role
