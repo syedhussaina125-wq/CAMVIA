@@ -119,7 +119,7 @@ import {
   type CommunicationOperation,
   type CommunicationState,
 } from './communicationData'
-import { AIBuddy } from './components/ai-buddy/AIBuddy'
+const AIBuddy = lazy(() => import('./components/ai-buddy/AIBuddy').then((module) => ({ default: module.AIBuddy })))
 import { AskCamviaProvider } from './components/ai-buddy/AskCamviaContext'
 import { dispatchBuddyEvent } from './components/ai-buddy/events'
 import camviaLogo from './assets/camvia-dark-logo.png'
@@ -2518,7 +2518,9 @@ function AppShell({
           <Outlet />
         </main>
       </div>
-      <AIBuddy />
+      <Suspense fallback={null}>
+        <AIBuddy />
+      </Suspense>
     </div>
   )
 }

@@ -131,7 +131,7 @@ export function getFeeInvoices(
   state: FeeState,
   students: Student[],
   user: FeeAccessUser,
-  today = new Date().toISOString().slice(0, 10),
+  today = localDateKey(),
 ): FeeInvoiceView[] {
   if (!canAccessFeeData(user) || !Array.isArray(state?.invoices) || !Array.isArray(state?.payments)) return []
 
@@ -178,8 +178,11 @@ export function getFeeInvoices(
 }
 
 export function getFeeMetrics(invoices: FeeInvoiceView[]) {
+  const activeInvoices = invoices.filter((invoice) =>
+    !invoice.voidedAt && invoice.status !== 'Cancelled' && invoice.status !== 'Voided',
+  )
   return {
-    expected: roundMoney(invoices.reduce((sum, invoice) => sum + invoice.totalAmount, 0)),
+    expected: roundMoney(activeInvoices.reduce((sum, invoice) => sum + invoice.totalAmount, 0)),
     collected: roundMoney(invoices.reduce((sum, invoice) => sum + invoice.paidAmount, 0)),
     outstanding: roundMoney(invoices.reduce((sum, invoice) => sum + invoice.outstandingAmount, 0)),
     overdue: roundMoney(invoices.reduce(
@@ -212,7 +215,7 @@ export function getFeeCollectionTrend(
   state: FeeState,
   students: Student[],
   user: FeeAccessUser,
-  today = new Date().toISOString().slice(0, 10),
+  today = localDateKey(),
 ) {
   if (!Array.isArray(state?.payments) || state.payments.length === 0) return []
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user, today).map((invoice) => invoice.id))

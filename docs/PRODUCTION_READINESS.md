@@ -8,7 +8,7 @@ Phases 11–16 provide live Supabase authentication and role access, student and
 
 ## Supabase migration order
 
-The repository contains this migration history:
+The repository currently contains these migration files:
 
 1. `001_core_tenancy.sql`
 2. `002_profiles_roles.sql`
@@ -28,8 +28,19 @@ The repository contains this migration history:
 16. `016_live_alerts.sql`
 17. `017_live_administration.sql`
 18. `018_harden_guardian_school_scope.sql`
+19. `019_student_and_user_management.sql`
+20. `020_school_user_management.sql`
+21. `022_production_security_reconciliation.sql`
+22. `023_fee_invoice_creation.sql`
+23. `024_role_based_corrections_and_archives.sql`
+24. `025_trash_recycle_bin_system.sql`
+25. `026_soft_delete_and_workflow_hardening.sql`
+26. `027_communication_and_fee_alert_fixes.sql`
+27. `028_login_bruteforce_protection.sql`
+28. `029_normalize_teacher_student_scope.sql`
+29. `030_normalize_attendance_scope.sql`
 
-Do not replay this list against a live project. Migration `010_fix_student_school_scope.sql` was historically superseded and must not be applied blindly. Prior phase verification records migrations `017` and `018` as applied and confirms their live behavior. This workspace is not linked to Supabase, so the CLI cannot independently read the remote migration ledger; confirm the target project's history in the Supabase dashboard before making any database changes. Do not apply controlled test-data SQL to production. Take a verified backup before any future migration, and do not edit migrations already applied to a live project.
+There is no `021` migration file. Do not replay this list against a live project. Migration `010_fix_student_school_scope.sql` was historically superseded and must not be applied blindly. Prior phase verification records migrations `017` and `018` as applied; the live ledger for later migrations has not been verified. This workspace is not linked to Supabase, so the CLI cannot independently read the remote migration ledger; confirm the target project's history before applying only outstanding migrations, in order. Migrations `029` and `030` must be reviewed and applied in sequence if they are still outstanding. Do not apply controlled test-data SQL to production. Take a verified backup before any future migration, and do not edit migrations already applied to a live project.
 
 ## Environment variables
 

@@ -79,19 +79,6 @@ function normalizeEmail(value: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : null
 }
 
-let activeCors: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-}
-
-function response(status: number, body: Record<string, unknown>, customCors?: Record<string, string>) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...(customCors ?? activeCors), 'Content-Type': 'application/json' },
-  })
-}
-
 function cleanText(value: unknown, maxLength: number): string | null {
   if (typeof value !== 'string') return null
   const normalized = value.trim()
@@ -114,8 +101,13 @@ function parseAssignments(value: unknown): AssignmentScope[] | null {
 }
 
 Deno.serve(async (request: Request) => {
-  activeCors = getCorsHeaders(request)
-  if (request.method === 'OPTIONS') return new Response('ok', { headers: activeCors })
+  const corsHeaders = getCorsHeaders(request)
+  const response = (status: number, body: Record<string, unknown>) => new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+
+  if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (request.method !== 'POST') return response(405, { error: 'Method not allowed.' })
 
   const contentLength = Number(request.headers.get('content-length') ?? 0)

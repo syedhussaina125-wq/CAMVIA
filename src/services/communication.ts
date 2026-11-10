@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { mapConcurrent } from './mapConcurrent'
 import type {
   CommunicationAction,
   CommunicationDraftSubmission,
@@ -56,9 +57,11 @@ function displayId(uuid: string): number {
 async function fetchByIds<T>(table: string, columns: string, key: string, ids: string[]): Promise<T[]> {
   if (!ids.length) return []
   const db = requireSupabase()
-  const result: T[] = []
-  for (let start = 0; start < ids.length; start += idBatchSize) {
-    const batch = ids.slice(start, start + idBatchSize)
+  const idBatches = Array.from({ length: Math.ceil(ids.length / idBatchSize) }, (_, index) =>
+    ids.slice(index * idBatchSize, (index + 1) * idBatchSize),
+  )
+  const rowBatches = await mapConcurrent(idBatches, async (batch) => {
+    const result: T[] = []
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await db
         .from(table)
@@ -70,8 +73,9 @@ async function fetchByIds<T>(table: string, columns: string, key: string, ids: s
       result.push(...rows)
       if (rows.length < pageSize) break
     }
-  }
-  return result
+    return result
+  })
+  return rowBatches.flat()
 }
 
 export async function fetchCommunicationState(students: Student[]): Promise<CommunicationState> {
@@ -205,4 +209,3 @@ export async function deleteCommunicationDraft(
   if (error) throw error
   return fetchCommunicationState(students)
 }
-

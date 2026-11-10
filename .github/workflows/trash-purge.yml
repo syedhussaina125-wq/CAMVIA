@@ -12,12 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Invoke Purge Edge Function
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: |
-          if [ -z "${{ secrets.SUPABASE_URL }}" ] || [ -z "${{ secrets.SUPABASE_SECRET_KEY }}" ]; then
-            echo "Required secrets (SUPABASE_URL or SUPABASE_SECRET_KEY) are not configured. Skipping."
-            exit 0
+          set -euo pipefail
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SECRET_KEY" ]; then
+            echo "::error::Required secrets SUPABASE_URL and SUPABASE_SECRET_KEY must be configured."
+            exit 1
           fi
-          RESPONSE=$(curl -s -X POST "${{ secrets.SUPABASE_URL }}/functions/v1/purge-expired-trash" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SECRET_KEY }}" \
-            -H "Content-Type: application/json")
+          RESPONSE=$(curl --fail-with-body --show-error --silent \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 60 \
+            --request POST "$SUPABASE_URL/functions/v1/purge-expired-trash" \
+            --header "Authorization: Bearer $SUPABASE_SECRET_KEY" \
+            --header "Content-Type: application/json")
           echo "Purge outcome: $RESPONSE"

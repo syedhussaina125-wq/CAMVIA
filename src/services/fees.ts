@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { mapConcurrent } from './mapConcurrent'
 import type { Student } from '../studentData'
 import type { FeeInvoiceCreationInput, FeePaymentSubmission, FeeState, PaymentMethod } from '../feeData'
 
@@ -59,13 +60,13 @@ async function fetchAllRows<T>(
   select: string,
   invoiceIds?: string[],
 ): Promise<T[]> {
-  const rows: T[] = []
-  const batches = invoiceIds
+  const idBatches: Array<string[] | undefined> = invoiceIds
     ? Array.from({ length: Math.ceil(invoiceIds.length / idBatchSize) }, (_, index) =>
       invoiceIds.slice(index * idBatchSize, (index + 1) * idBatchSize))
     : [undefined]
 
-  for (const ids of batches) {
+  const rowBatches = await mapConcurrent(idBatches, async (ids) => {
+    const rows: T[] = []
     for (let offset = 0; ; offset += pageSize) {
       let request = db.from(table).select(select).order('created_at', { ascending: false })
       if (ids) request = request.in('invoice_id', ids)
@@ -75,8 +76,9 @@ async function fetchAllRows<T>(
       rows.push(...page)
       if (page.length < pageSize) break
     }
-  }
-  return rows
+    return rows
+  })
+  return rowBatches.flat()
 }
 
 export async function fetchFeeState(students: Student[]): Promise<FeeState> {
@@ -275,4 +277,3 @@ export async function voidFeePayment(
   if (error) throw error
   return fetchFeeState(students)
 }
-

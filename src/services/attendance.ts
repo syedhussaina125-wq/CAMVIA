@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { mapConcurrent } from './mapConcurrent'
 import {
   getAttendanceClassId,
   type AttendanceClass,
@@ -92,9 +93,11 @@ export async function fetchAttendanceState(): Promise<AttendanceState> {
   }
 
   const sessionIds = sessions.map((session) => session.id)
-  const records: RecordRow[] = []
-  for (let start = 0; start < sessionIds.length; start += idBatchSize) {
-    const sessionBatch = sessionIds.slice(start, start + idBatchSize)
+  const sessionBatches = Array.from({ length: Math.ceil(sessionIds.length / idBatchSize) }, (_, index) =>
+    sessionIds.slice(index * idBatchSize, (index + 1) * idBatchSize),
+  )
+  const recordBatches = await mapConcurrent(sessionBatches, async (sessionBatch) => {
+    const records: RecordRow[] = []
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await db
         .from('attendance_records')
@@ -106,7 +109,9 @@ export async function fetchAttendanceState(): Promise<AttendanceState> {
       records.push(...batch)
       if (batch.length < pageSize) break
     }
-  }
+    return records
+  })
+  const records = recordBatches.flat()
 
   const studentCounts = new Map<string, number>()
   for (const record of records) {
@@ -183,4 +188,3 @@ export async function correctAttendanceSession(payload: {
   if (error) throw error
   return fetchAttendanceState()
 }
-

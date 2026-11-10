@@ -1,7 +1,10 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { mapConcurrent } from './mapConcurrent'
 import type { NewStudent, Student } from '../studentData'
 
 const client = supabase as any
+const pageSize = 1000
+const relationBatchSize = 100
 
 type StudentRow = {
   id: string
@@ -144,13 +147,19 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
 
   let guardians: GuardianRow[] = []
   if (linkedGuardianIds.length > 0) {
-    const guardiansResult = await db
-      .from('guardians')
-      .select('id, first_name, last_name, phone, email')
-      .in('id', linkedGuardianIds)
-      .is('deleted_at', null)
-    if (guardiansResult.error) throw guardiansResult.error
-    guardians = (guardiansResult.data ?? []) as GuardianRow[]
+    const guardianIdBatches = Array.from({ length: Math.ceil(linkedGuardianIds.length / relationBatchSize) }, (_, index) =>
+      linkedGuardianIds.slice(index * relationBatchSize, (index + 1) * relationBatchSize),
+    )
+    const guardianResults = await mapConcurrent(guardianIdBatches, async (ids) => {
+      const { data, error } = await db
+        .from('guardians')
+        .select('id, first_name, last_name, phone, email')
+        .in('id', ids)
+        .is('deleted_at', null)
+      if (error) throw error
+      return (data ?? []) as GuardianRow[]
+    })
+    guardians = guardianResults.flat()
   }
 
   const guardianById = new Map<string, GuardianRow>(
@@ -178,15 +187,28 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
 
 export async function fetchStudents(): Promise<Student[]> {
   const db = requireSupabase()
-  const { data, error } = await db
-    .from('students')
-    .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
-    .is('deleted_at', null)
-    .order('last_name')
-    .order('first_name')
+  const rows: StudentRow[] = []
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await db
+      .from('students')
+      .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
+      .is('deleted_at', null)
+      .order('last_name')
+      .order('first_name')
+      .order('id')
+      .range(offset, offset + pageSize - 1)
 
-  if (error) throw error
-  return mapRows((data ?? []) as StudentRow[])
+    if (error) throw error
+    const page = (data ?? []) as StudentRow[]
+    rows.push(...page)
+    if (page.length < pageSize) break
+  }
+
+  const students: Student[] = []
+  for (let start = 0; start < rows.length; start += relationBatchSize) {
+    students.push(...await mapRows(rows.slice(start, start + relationBatchSize)))
+  }
+  return students
 }
 
 export async function fetchStudentById(studentUuid: string): Promise<Student | null> {
@@ -383,4 +405,3 @@ export async function unlinkStudentGuardian(payload: {
   })
   if (error) throw error
 }
-

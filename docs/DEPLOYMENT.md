@@ -48,26 +48,27 @@ do not paste their values into logs, deployment notes, or source control.
 
 ## Supabase migration and Auth checks
 
-The expected migration chain is `001` through `019`. Migration `010` was
-historically superseded; do not apply it blindly or replay migrations already
+The repository migration inventory and application guidance are maintained in
+[PRODUCTION_READINESS.md](./PRODUCTION_READINESS.md). Migration `010` was
+historically superseded and `021` has no file; do not replay migrations already
 recorded as applied. Earlier project verification records `017` and `018` as
-applied and live RLS tests pass. Migration `019_student_and_user_management.sql`
-adds an audited, tenant-derived student-create RPC, school-admin user update
-RPC, and an inactive-by-default Auth profile trigger. It has been authored but
-must be reviewed and applied to the correct Supabase project before enabling
-these features. This workspace is not linked to the app's Supabase project, so
-the CLI cannot independently read the remote migration ledger or apply it.
-Confirm the target project's migration history and backup before applying the
-forward migration once.
+applied, but the live ledger for later migrations has not been verified.
+Confirm the target project's migration history and backup before applying only
+outstanding forward migrations in order. Review migrations `029` and `030`
+together and apply them in sequence if outstanding. This workspace is not
+linked to the app's Supabase project, so the CLI cannot independently read the
+remote migration ledger or apply changes.
 
-Deploy `supabase/functions/manage-school-user` to that same Supabase project
-after migration `019`. The function verifies the caller's JWT and active Admin
-scope, uses the service-role key only inside the Edge Function to send Auth
-invitations, and uses the caller-scoped RPC for school-bounded profile changes.
-Never add `SUPABASE_SERVICE_ROLE_KEY` to Vercel or any `VITE_` variable. Verify
-Supabase Auth invitation email delivery and redirect settings before inviting
-real users; do not report an invitation as sent unless Supabase confirms it.
-User deletion is intentionally implemented as deactivation to retain history.
+Deploy `supabase/functions/manage-school-user` and
+`supabase/functions/purge-expired-trash` to that same Supabase project after
+reviewing their required server-only configuration and matching schema
+migrations. The user-management function verifies the caller's JWT and active
+Admin scope, uses the server-only secret key for Auth invitations, and uses
+caller-scoped RPCs for school-bounded profile changes. Never add server
+credentials to Vercel or any `VITE_` variable. Verify invitation delivery and
+the scheduled purge workflow in a controlled environment before relying on
+them in production. User deletion is intentionally implemented as deactivation
+to retain history.
 
 In Supabase Auth settings, before go-live:
 
@@ -90,13 +91,20 @@ dashboard settings.
 1. Confirm the Vercel project is the existing CAMVIA project and that its
    Production environment contains only the two required public variable names
    with the correct production values.
-2. Confirm the application URL points to the intended Supabase project.
-   Review and apply migration `019` there, deploy the `manage-school-user`
-   Edge Function, verify its server-only service-role configuration, and test
-   invitation email delivery before exposing the user-management controls.
-3. Confirm the production Supabase migration ledger, RLS checks, Auth settings,
-   and backup status.
-4. From the repository root, install and validate:
+2. Confirm the application URL points to the intended Supabase project. Check
+   that project's migration ledger and verified backup before applying any
+   schema changes. Review all migration files newer than the project's last
+   applied migration and apply only outstanding migrations in order. Migration
+   `010` is historically superseded, `021` has no file, and migrations `029`
+   and `030` must be applied in sequence if outstanding. Do not infer the
+   deployed schema from filenames or this workspace's history.
+3. Deploy the `manage-school-user` and `purge-expired-trash` Edge Functions
+   after confirming their required server-only secrets are configured. Test
+   user invitation delivery and the purge workflow in a controlled environment
+   before relying on them in production.
+4. Confirm the production Supabase migration ledger, RLS checks, Auth settings,
+   scheduled workflow secrets, and backup status.
+5. From the repository root, install and validate:
 
    ```powershell
    npm ci
@@ -104,7 +112,7 @@ dashboard settings.
    npm run lint
    ```
 
-5. Deploy only the existing CAMVIA Vercel project through its Git integration,
+6. Deploy only the existing CAMVIA Vercel project through its Git integration,
    or use the authenticated Vercel CLI after linking this directory to that
    project:
 
@@ -113,7 +121,7 @@ dashboard settings.
    vercel --prod
    ```
 
-6. Set Supabase **Site URL** and **Redirect URLs** to the resulting production
+7. Set Supabase **Site URL** and **Redirect URLs** to the resulting production
    domain, then run the smoke tests below.
 
 Do not run a deployment from an unlinked directory if it would create or target
