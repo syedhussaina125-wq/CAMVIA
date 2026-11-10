@@ -6284,6 +6284,7 @@ table tbody tr:last-child td,
 
 .attendance-overview {
   min-width: 0;
+  max-width: 100%;
 }
 
 .attendance-chart-summary {
@@ -6320,8 +6321,10 @@ table tbody tr:last-child td,
 .attendance-chart {
   display: block;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: auto;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .attendance-chart line {

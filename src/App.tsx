@@ -3359,8 +3359,8 @@ function AttendanceOverview({ data, currentRate, error }: {
 
   const width = 620
   const height = 220
-  const left = 38
-  const right = 10
+  const left = 48
+  const right = 40
   const top = 14
   const bottom = 36
   const plotWidth = width - left - right
