@@ -69,6 +69,7 @@ const AskEduPage = lazy(() => import('./AskEduPage').then((module) => ({ default
 const ReportsPage = lazy(() => import('./ReportsPage').then((module) => ({ default: module.ReportsPage })))
 const AdministrationPage = lazy(() => import('./AdministrationPages').then((module) => ({ default: module.AdministrationPage })))
 const ProfilesDirectoryPage = lazy(() => import('./AdministrationPages').then((module) => ({ default: module.ProfilesDirectoryPage })))
+const StatementsPage = lazy(() => import('./StatementsPage').then((module) => ({ default: module.StatementsPage })))
 import { type AlertItem } from './alertsData'
 import {
   type NewStudent,
@@ -168,6 +169,8 @@ type QuickAction = {
 type TrendPoint = {
   day: string
   value: number
+  date?: string
+  total?: number
 }
 
 type DashboardActivity = {
@@ -252,7 +255,9 @@ const routeTitles: Record<string, string> = {
   '/teacher/dashboard': 'Teacher Dashboard',
   '/students': 'Students',
   '/attendance': 'Attendance',
+  '/statements/attendance': 'Attendance Statement',
   '/fees': 'Fees & Collections',
+  '/statements/account': 'Account Statement',
   '/alerts': 'Alerts',
   '/approvals': 'Approval Center',
   '/communication': 'Parent Communication',
@@ -307,10 +312,10 @@ const navByRole: Record<Role, NavItem[]> = {
 }
 
 const allowedRoutes: Record<Role, string[]> = {
-  admin: ['/dashboard', '/students', '/attendance', '/fees', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports', '/users', '/trash'],
-  principal: ['/dashboard', '/students', '/attendance', '/alerts', '/approvals', '/communication', '/ask-edu', '/reports'],
-  finance: ['/finance/dashboard', '/students', '/fees', '/alerts', '/communication', '/ask-edu'],
-  teacher: ['/teacher/dashboard', '/my-classes', '/students', '/attendance', '/communication', '/alerts'],
+  admin: ['/dashboard', '/students', '/attendance', '/statements/attendance', '/fees', '/statements/account', '/alerts', '/approvals', '/communication', '/ask-edu', '/administration', '/reports', '/users', '/trash'],
+  principal: ['/dashboard', '/students', '/attendance', '/statements/attendance', '/statements/account', '/alerts', '/approvals', '/communication', '/ask-edu', '/reports'],
+  finance: ['/finance/dashboard', '/students', '/fees', '/statements/account', '/alerts', '/communication', '/ask-edu'],
+  teacher: ['/teacher/dashboard', '/my-classes', '/students', '/attendance', '/statements/attendance', '/communication', '/alerts'],
 }
 
 const dashboardFixtures: Record<Role, DashboardConfig> = {
@@ -1298,7 +1303,16 @@ function App() {
     }
   }
 
-  const visibleAlerts = session && alertSnapshot.ownerId === session.authUserId ? alertSnapshot.items : []
+  const activeStudentIds = new Set(students.filter((student) => student.status === 'Active').map((student) => student.id))
+  const activeAttendanceClassKeys = new Set(getAttendanceClasses(students).map((attendanceClass) =>
+    `${attendanceClass.campusId}::${attendanceClass.className}::${attendanceClass.section}`,
+  ))
+  const visibleAlerts = session && alertSnapshot.ownerId === session.authUserId
+    ? alertSnapshot.items.filter((alert) => {
+      if (alert.studentId) return activeStudentIds.has(alert.studentId)
+      return alert.sourceType !== 'ATTENDANCE' || activeAttendanceClassKeys.has(alert.sourceId)
+    })
+    : []
   const visibleAlertsLoading = !session || alertSnapshot.ownerId !== session.authUserId || alertsLoading
   const visibleAlertsError = alertSnapshot.ownerId === session?.authUserId ? alertsError : ''
   const handleRefreshAlerts = async () => {
@@ -1390,10 +1404,18 @@ function App() {
               element={session ? <AttendanceRoute user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
             />
             <Route
+              path="/statements/attendance"
+              element={session ? <StatementsPage user={session} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => session ? refreshStudents(session) : undefined} kind="attendance" /> : null}
+            />
+            <Route
               path="/attendance/take/:classId"
               element={session ? <TakeAttendancePage user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
             />
             <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
+            <Route
+              path="/statements/account"
+              element={session ? <StatementsPage user={session} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => session ? refreshStudents(session) : undefined} kind="account" /> : null}
+            />
             <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
             <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onRefresh={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} onDeleteDraft={handleDeleteCommunicationDraft} /> : null} />
             <Route path="/alerts" element={session ? <AlertsPage user={session} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} /> : null} />
@@ -2326,7 +2348,11 @@ function AppShell({
 
   useEffect(() => {
     const closeSearchOnOutsideClick = (event: PointerEvent) => {
-      if (event.target instanceof Node && !searchContainerRef.current?.contains(event.target)) {
+      if (
+        event.target instanceof Node &&
+        !searchContainerRef.current?.contains(event.target) &&
+        !(event.target instanceof Element && event.target.closest('.mobile-campus-search'))
+      ) {
         setSearchFocused(false)
         setSearchMobileOpen(false)
       }
@@ -2526,7 +2552,7 @@ function AppShell({
           </div>
 
           <div className="topbar-actions">
-            <div className="global-search" ref={searchContainerRef}>
+            <div className={`global-search ${searchMobileOpen ? 'mobile-search-open' : ''}`} ref={searchContainerRef}>
               <button
                 type="button"
                 className="icon-button mobile-search-toggle"
@@ -2653,6 +2679,15 @@ function AppShell({
             <span className="campus-pill-school">{user.schoolName}</span>
             <ChevronDown size={13} className="selector-chevron" />
           </div>
+          <button
+            type="button"
+            className="icon-button mobile-campus-search"
+            aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
+            aria-expanded={searchMobileOpen}
+            onClick={() => setSearchMobileOpen((open) => !open)}
+          >
+            {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
+          </button>
         </div>
 
         {activeTourRole && tourOpen ? (
@@ -2670,9 +2705,11 @@ function AppShell({
           <Outlet />
         </main>
       </div>
-      <Suspense fallback={null}>
-        <AIBuddy />
-      </Suspense>
+      {!location.pathname.startsWith('/statements/') ? (
+        <Suspense fallback={null}>
+          <AIBuddy />
+        </Suspense>
+      ) : null}
     </div>
   )
 }
@@ -2807,14 +2844,16 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
 
 function buildDashboardConfig(user: SessionUser, students: Student[], attendance: AttendanceState, fees: FeeState, communication: CommunicationState, liveAlerts: AlertItem[], attendanceUnavailable = false, feesUnavailable = false, alertsUnavailable = false): DashboardConfig {
   const fixture = dashboardFixtures[user.role]
+  const activeStudentIds = new Set(students.filter((student) => student.status === 'Active').map((student) => student.id))
+  const visibleAlerts = liveAlerts.filter((alert) => !alert.studentId || activeStudentIds.has(alert.studentId))
   const communicationSummary = getCommunicationSummary(communication, students, user)
   const feeInvoices = getFeeInvoices(fees, students, user)
   const feeMetrics = getFeeMetrics(feeInvoices)
   const currentMonthInvoices = feeInvoices.filter((invoice) => invoice.month === localMonthKey())
   const currentMonthMetrics = getFeeMetrics(currentMonthInvoices)
   const currentMonthCollections = getFeePaymentsCollected(fees, students, user)
-  const pendingFeeApprovals = liveAlerts.filter((alert) => alert.sourceType === 'COMMUNICATION' && alert.status === 'IN_REVIEW')
-  const feeAttention: AttentionItem[] = (alertsUnavailable ? [] : liveAlerts
+  const pendingFeeApprovals = visibleAlerts.filter((alert) => alert.sourceType === 'COMMUNICATION' && alert.status === 'IN_REVIEW')
+  const feeAttention: AttentionItem[] = (alertsUnavailable ? [] : visibleAlerts
     .filter((alert) => alert.sourceType === 'FEE' && alert.status !== 'RESOLVED')
     .slice(0, 3)).map((alert) => alertToAttention(alert, user))
 
@@ -2857,14 +2896,14 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   const todayCounts = getAttendanceForScope(attendance, classes, today).counts
   const attendanceAttention = getAttendanceAttention(attendance, students)
   const rate = todayCounts.rate === null ? '—' : `${todayCounts.rate}%`
-  const activeAlertCount = alertsUnavailable ? '—' : String(liveAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
+  const activeAlertCount = alertsUnavailable ? '—' : String(visibleAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
   const authorizedStudentCount = classes.reduce((total, item) => total + item.students.length, 0)
   const stats = fixture.stats.map((stat) => {
     if (stat.label === 'Students') {
       return {
         ...stat,
-        value: String(students.length),
-        subLabel: user.role === 'teacher' ? 'Students authorized by Supabase RLS' : 'Live Supabase student records',
+        value: String(authorizedStudentCount),
+        subLabel: user.role === 'teacher' ? 'Active students authorized by Supabase' : 'Active student records',
       }
     }
     if (stat.label === 'Collected This Month') {
@@ -2901,7 +2940,7 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     }
     return stat
   })
-  const attendanceItems: AttentionItem[] = alertsUnavailable ? [] : liveAlerts
+  const attendanceItems: AttentionItem[] = alertsUnavailable ? [] : visibleAlerts
     .filter((alert) => alert.sourceType === 'ATTENDANCE' && alert.status !== 'RESOLVED')
     .map((alert) => alertToAttention(alert, user))
   const attention = [...attendanceItems, ...feeAttention].slice(0, 5)
@@ -3251,7 +3290,10 @@ function SchoolDashboard({
   academicYear: string | null
 }) {
   const navigate = useNavigate()
-  const activities = getDashboardActivities(user, students, attendance, fees, communication, alerts)
+  const activeStudents = students.filter((student) => student.status === 'Active')
+  const activeStudentIds = new Set(activeStudents.map((student) => student.id))
+  const visibleAlerts = alerts.filter((alert) => !alert.studentId || activeStudentIds.has(alert.studentId))
+  const activities = getDashboardActivities(user, activeStudents, attendance, fees, communication, visibleAlerts)
   const attendanceStat = config.stats.find((stat) => stat.label === 'Attendance')
 
   return (
@@ -3281,9 +3323,9 @@ function SchoolDashboard({
         <DashboardSection
           title="Student Distribution"
           icon={<Users size={18} className="panel-title-icon text-blue" />}
-          badgeText={`${students.length} students`}
+          badgeText={`${activeStudents.length} students`}
         >
-          <StudentDistribution students={students} />
+          <StudentDistribution students={activeStudents} />
         </DashboardSection>
       </div>
 
@@ -3347,31 +3389,42 @@ function AttendanceOverview({ data, currentRate, error }: {
   currentRate: string
   error: boolean
 }) {
+  const [activePoint, setActivePoint] = useState<number | null>(null)
+
   if (error || !data.length) {
     return (
       <div className="executive-chart-empty" role={error ? 'alert' : undefined}>
         <span className="executive-empty-icon"><ClipboardCheck size={18} /></span>
-        <strong>{error ? 'Attendance data is unavailable' : 'No attendance recorded yet'}</strong>
+        <strong>{error ? 'Attendance data is unavailable' : 'No attendance data recorded yet.'}</strong>
         <p>{error ? 'Retry attendance to refresh this overview.' : 'Recorded attendance sessions will appear here.'}</p>
       </div>
     )
   }
 
   const width = 620
-  const height = 220
+  const height = 228
   const left = 48
-  const right = 40
-  const top = 14
-  const bottom = 36
+  const right = 24
+  const top = 18
+  const bottom = 46
   const plotWidth = width - left - right
   const plotHeight = height - top - bottom
+  const edgeInset = data.length <= 3 ? plotWidth * 0.28 : plotWidth * 0.04
+  const xStart = left + edgeInset
+  const xEnd = width - right - edgeInset
   const points = data.map((point, index) => ({
     ...point,
-    x: left + (index * plotWidth) / Math.max(data.length - 1, 1),
+    x: data.length === 1
+      ? left + plotWidth / 2
+      : xStart + (index * (xEnd - xStart)) / (data.length - 1),
     y: top + ((100 - point.value) / 100) * plotHeight,
   }))
   const line = points.map((point) => `${point.x},${point.y}`).join(' ')
-  const area = `${left},${top + plotHeight} ${line} ${left + plotWidth},${top + plotHeight}`
+  const area = `${xStart},${top + plotHeight} ${line} ${xEnd},${top + plotHeight}`
+  const selectedPoint = activePoint === null ? null : points[activePoint]
+  const selectedDate = selectedPoint?.date
+    ? new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium' }).format(new Date(`${selectedPoint.date}T00:00:00`))
+    : selectedPoint?.day
 
   return (
     <div className="attendance-overview">
@@ -3380,9 +3433,15 @@ function AttendanceOverview({ data, currentRate, error }: {
           <span>Today&apos;s attendance</span>
           <strong>{currentRate}</strong>
         </div>
-        <span className="chart-period-label">Recorded sessions</span>
       </div>
-      <svg className="attendance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance percentage over the last seven recorded days">
+      {selectedPoint ? (
+        <div className="attendance-chart-tooltip" role="status">
+          <strong>{selectedDate}</strong>
+          <span>{selectedPoint.value}% attendance</span>
+          {selectedPoint.total !== undefined ? <span>{selectedPoint.total} recorded students</span> : null}
+        </div>
+      ) : null}
+      <svg className="attendance-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Attendance percentage over the last seven recorded days">
         {[0, 50, 100].map((tick) => {
           const y = top + ((100 - tick) / 100) * plotHeight
           return (
@@ -3392,16 +3451,28 @@ function AttendanceOverview({ data, currentRate, error }: {
             </g>
           )
         })}
-        <polygon className="attendance-chart-area" points={area} />
-        <polyline className="attendance-chart-line" points={line} />
-        {points.map((point) => (
-          <g key={`${point.day}-${point.x}`}>
-            <circle className="attendance-chart-point" cx={point.x} cy={point.y} r="4" />
-            <title>{`${point.day}: ${point.value}%`}</title>
-            <text className="attendance-chart-day" x={point.x} y={height - 10} textAnchor="middle">{point.day}</text>
+        {points.length > 1 ? <polygon className="attendance-chart-area" points={area} /> : null}
+        {points.length > 1 ? <polyline className="attendance-chart-line" points={line} /> : null}
+        {points.map((point, index) => (
+          <g
+            key={`${point.day}-${point.date ?? point.x}`}
+            className="attendance-chart-point-group"
+            onMouseEnter={() => setActivePoint(index)}
+            onMouseLeave={() => setActivePoint(null)}
+            onFocus={() => setActivePoint(index)}
+            onBlur={() => setActivePoint(null)}
+            onTouchStart={() => setActivePoint(index)}
+            tabIndex={0}
+            role="button"
+            aria-label={`${point.date ?? point.day}: ${point.value}% attendance${point.total === undefined ? '' : `, ${point.total} students recorded`}`}
+          >
+            <circle className="attendance-chart-point-hit-area" cx={point.x} cy={point.y} r="12" />
+            <circle className="attendance-chart-point" cx={point.x} cy={point.y} r={activePoint === index ? '5.5' : '4'} />
+            <text className="attendance-chart-day" x={point.x} y={height - 12} textAnchor="middle">{point.day}</text>
           </g>
         ))}
       </svg>
+      {points.length === 1 ? <p className="attendance-chart-note">Only 1 recorded day available.</p> : null}
     </div>
   )
 }
@@ -3496,7 +3567,7 @@ function getDashboardActivities(
 
   for (const session of attendance.sessions) {
     const attendanceClass = classesById.get(session.classId)
-    if (!attendanceClass || session.status !== 'COMPLETED') continue
+    if (!attendanceClass || session.status !== 'COMPLETED' || session.studentCount === 0) continue
     activities.push({
       id: `attendance-${session.id}`,
       title: 'Attendance recorded',
@@ -3748,7 +3819,6 @@ function PageHeader({ user, title, academicYear }: { user: SessionUser; title: s
             <div className="meta-pill academic-year-pill">
               <BookOpenText size={14} />
               <span>{academicYearLabel}</span>
-              <ChevronDown size={13} aria-hidden="true" />
             </div>
           ) : (
             <div className="meta-pill">

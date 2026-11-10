@@ -367,7 +367,7 @@ export function CommunicationPage(props: CommunicationPageProps) {
               </div>
             )}
           </>
-        ) : <CommunicationEmptyState tab={tab} />}
+        ) : <CommunicationEmptyState tab={tab} hasAnyMessages={messages.length > 0} />}
         </div>
       </section>
 
@@ -631,8 +631,14 @@ function CommunicationMetric({ label, value, tone }: { label: string; value: num
   return <article className={`communication-metric ${tone}`}><span>{label}</span><strong>{value}</strong></article>
 }
 
-function CommunicationEmptyState({ tab }: { tab: CommunicationTab }) {
-  const text = tab === 'Drafts' ? 'No message drafts yet.' : tab === 'Awaiting Approval' ? 'No messages are awaiting approval.' : 'No messages have been sent yet.'
+function CommunicationEmptyState({ tab, hasAnyMessages }: { tab: CommunicationTab; hasAnyMessages: boolean }) {
+  const text = !hasAnyMessages
+    ? 'No communication yet.'
+    : tab === 'Drafts'
+      ? 'No message drafts yet.'
+      : tab === 'Awaiting Approval'
+        ? 'No messages are awaiting approval.'
+        : 'No messages have been sent yet.'
   return <div className="communication-empty"><div className="communication-empty-icon"><MessageSquareText size={20} /></div><strong>{text}</strong></div>
 }
 

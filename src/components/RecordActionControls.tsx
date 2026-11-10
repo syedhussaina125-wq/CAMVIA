@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { MoreVertical, ShieldAlert } from 'lucide-react'
 import { formatRpcErrorMessage } from '../utils/errorMapping'
 
@@ -15,12 +16,32 @@ type RecordActionMenuProps = {
 
 export function RecordActionMenu({ actions }: RecordActionMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!isOpen || !buttonRef.current || !menuRef.current) return
+
+    const buttonRect = buttonRef.current.getBoundingClientRect()
+    const menuRect = menuRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - buttonRect.bottom
+    const top = spaceBelow >= menuRect.height + 12
+      ? buttonRect.bottom + 6
+      : Math.max(8, buttonRect.top - menuRect.height - 6)
+
+    setMenuPosition({
+      top,
+      right: Math.max(8, window.innerWidth - buttonRect.right),
+    })
+  }, [isOpen, actions.length])
 
   if (actions.length === 0) return null
 
   return (
-    <div className="record-action-menu-container" style={{ position: 'relative', display: 'inline-block' }}>
+    <div className="record-action-menu-container">
       <button
+        ref={buttonRef}
         type="button"
         className="secondary-button icon-only-button"
         style={{ padding: '6px 10px', minWidth: 'auto', borderRadius: '10px', border: '1px solid #d3e2ff' }}
@@ -29,64 +50,71 @@ export function RecordActionMenu({ actions }: RecordActionMenuProps) {
           setIsOpen(!isOpen)
         }}
         aria-label="Actions"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
       >
         <MoreVertical size={16} />
       </button>
 
       {isOpen && (
-        <>
-          <div
-            style={{ position: 'fixed', inset: 0, zIndex: 100 }}
-            onClick={(e) => {
-              e.stopPropagation()
-              setIsOpen(false)
-            }}
-          />
-          <div
-            className="action-dropdown"
-            style={{
-              position: 'absolute',
-              right: 0,
-              top: '100%',
-              marginTop: '6px',
-              backgroundColor: '#fff',
-              border: '1px solid #d7e4f8',
-              borderRadius: '12px',
-              boxShadow: '0 12px 32px rgba(8, 22, 67, 0.14)',
-              zIndex: 101,
-              minWidth: '170px',
-              padding: '6px',
-            }}
-          >
-            {actions.map((action, idx) => (
-              <button
-                key={idx}
-                type="button"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  width: '100%',
-                  padding: '8px 12px',
-                  fontSize: '13px',
-                  textAlign: 'left',
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: action.danger ? '#dc2626' : '#1e293b',
-                }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsOpen(false)
-                  action.onClick()
-                }}
-              >
-                {action.icon && <action.icon size={14} />}
-                {action.label}
-              </button>
-            ))}
-          </div>
-        </>
+        createPortal(
+          <>
+            <div
+              style={{ position: 'fixed', inset: 0, zIndex: 100 }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setIsOpen(false)
+              }}
+            />
+            <div
+              ref={menuRef}
+              className="action-dropdown"
+              style={{
+                position: 'fixed',
+                right: menuPosition.right,
+                top: menuPosition.top,
+                backgroundColor: '#fff',
+                border: '1px solid #d7e4f8',
+                borderRadius: '12px',
+                boxShadow: '0 12px 32px rgba(8, 22, 67, 0.14)',
+                zIndex: 101,
+                minWidth: '170px',
+                padding: '6px',
+              }}
+              role="menu"
+            >
+              {actions.map((action, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  role="menuitem"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    width: '100%',
+                    padding: '8px 12px',
+                    fontSize: '13px',
+                    textAlign: 'left',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: action.danger ? '#dc2626' : '#1e293b',
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setIsOpen(false)
+                    action.onClick()
+                  }}
+                >
+                  {action.icon && <action.icon size={14} />}
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          </>,
+          document.body,
+        )
       )}
     </div>
   )

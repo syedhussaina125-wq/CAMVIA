@@ -6,10 +6,11 @@ import {
   restoreTrashedCommunication,
   restoreTrashedGuardian,
   restoreTrashedStudent,
+  restoreTrashedAttendanceSession,
 } from './services/trash'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 
-type TrashTab = 'ALL' | 'STUDENTS' | 'GUARDIANS' | 'COMMUNICATIONS'
+type TrashTab = 'ALL' | 'STUDENTS' | 'GUARDIANS' | 'ATTENDANCE' | 'FEES' | 'COMMUNICATIONS'
 
 type TrashPageProps = {
   onRefreshAll?: () => void
@@ -19,6 +20,7 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
   const [tab, setTab] = useState<TrashTab>('ALL')
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<TrashedItem[]>([])
+  const [legacyOnly, setLegacyOnly] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
@@ -31,11 +33,12 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
     void fetchTrashedRecords('ALL')
       .then((data) => {
         if (!active) return
-        setItems(data)
+        setItems(data.items)
+        setLegacyOnly(data.legacyOnly)
       })
       .catch((err: unknown) => {
         if (!active) return
-        setError(err instanceof Error ? err.message : 'Failed to load trashed records.')
+        setError(formatRpcErrorMessage(err) || 'Failed to load trashed records.')
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -50,9 +53,10 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
     setError('')
     try {
       const data = await fetchTrashedRecords('ALL')
-      setItems(data)
+      setItems(data.items)
+      setLegacyOnly(data.legacyOnly)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load trashed records.')
+      setError(formatRpcErrorMessage(err) || 'Failed to load trashed records.')
     } finally {
       setLoading(false)
     }
@@ -62,8 +66,10 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
     return items.filter((item) => {
       const matchesTab =
         tab === 'ALL' ||
-        (tab === 'STUDENTS' && item.record_type === 'STUDENT') ||
-        (tab === 'GUARDIANS' && item.record_type === 'GUARDIAN') ||
+        (tab === 'STUDENTS' && ['STUDENT', 'STUDENT_ARCHIVED'].includes(item.record_type)) ||
+        (tab === 'GUARDIANS' && ['GUARDIAN', 'GUARDIAN_ARCHIVED'].includes(item.record_type)) ||
+        (tab === 'ATTENDANCE' && item.record_type === 'ATTENDANCE_SESSION') ||
+        (tab === 'FEES' && ['CANCELLED_INVOICE', 'CANCELLED_PAYMENT'].includes(item.record_type)) ||
         (tab === 'COMMUNICATIONS' && item.record_type === 'COMMUNICATION_DRAFT')
 
       const searchable = `${item.name} ${item.identifier} ${item.detail} ${item.deleted_by_name} ${item.delete_reason}`.toLowerCase()
@@ -76,10 +82,12 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
   const counts = useMemo(() => {
     return {
       total: items.length,
-      students: items.filter((i) => i.record_type === 'STUDENT').length,
-      guardians: items.filter((i) => i.record_type === 'GUARDIAN').length,
+      students: items.filter((i) => ['STUDENT', 'STUDENT_ARCHIVED'].includes(i.record_type)).length,
+      guardians: items.filter((i) => ['GUARDIAN', 'GUARDIAN_ARCHIVED'].includes(i.record_type)).length,
+      attendance: items.filter((i) => i.record_type === 'ATTENDANCE_SESSION').length,
+      fees: items.filter((i) => ['CANCELLED_INVOICE', 'CANCELLED_PAYMENT'].includes(i.record_type)).length,
       comms: items.filter((i) => i.record_type === 'COMMUNICATION_DRAFT').length,
-      expiringSoon: items.filter((i) => i.days_remaining <= 7).length,
+      expiringSoon: items.filter((i) => i.days_remaining !== null && i.days_remaining <= 7).length,
     }
   }, [items])
 
@@ -95,6 +103,10 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
         await restoreTrashedGuardian(restoringItem.id)
       } else if (restoringItem.record_type === 'COMMUNICATION_DRAFT') {
         await restoreTrashedCommunication(restoringItem.id)
+      } else if (restoringItem.record_type === 'ATTENDANCE_SESSION') {
+        await restoreTrashedAttendanceSession(restoringItem.id)
+      } else {
+        return
       }
       setActionSuccess(`${restoringItem.name} has been restored successfully.`)
       setRestoringItem(null)
@@ -114,7 +126,14 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
       case 'GUARDIAN':
         return 'fee-status-badge fee-status-partially-paid'
       case 'COMMUNICATION_DRAFT':
+      case 'CANCELLED_INVOICE':
+      case 'CANCELLED_PAYMENT':
         return 'fee-status-badge fee-status-cancelled'
+      case 'ATTENDANCE_SESSION':
+        return 'fee-status-badge fee-status-pending'
+      case 'STUDENT_ARCHIVED':
+      case 'GUARDIAN_ARCHIVED':
+        return 'fee-status-badge fee-status-partially-paid'
       default:
         return 'fee-status-badge'
     }
@@ -125,6 +144,17 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
     if (days === 1) return '1 day remaining'
     return `${days} days remaining`
   }
+
+  const recordTypeLabel = (type: TrashedRecordType) => ({
+    STUDENT: 'Student',
+    GUARDIAN: 'Guardian',
+    COMMUNICATION_DRAFT: 'Communication Draft',
+    STUDENT_ARCHIVED: 'Archived Student',
+    GUARDIAN_ARCHIVED: 'Archived Guardian',
+    ATTENDANCE_SESSION: 'Attendance',
+    CANCELLED_INVOICE: 'Cancelled Invoice',
+    CANCELLED_PAYMENT: 'Cancelled Payment',
+  })[type]
 
   const daysBadgeColor = (days: number) => {
     if (days <= 3) return { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5' }
@@ -139,7 +169,7 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
           <p className="eyebrow">Recovery &amp; Retention</p>
           <h1>Trash</h1>
           <p className="students-intro">
-            Records moved to Trash are preserved for 30 days and can be restored. After 30 days, they cannot be recovered.
+            Removed records can be restored within 30 days. Cancelled fees and archived records remain here for history.
           </p>
         </div>
         <button
@@ -153,8 +183,13 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
       </div>
 
       <div className="help-banner">
-        <strong>Strict 30-Day Recovery Guarantee:</strong> Records remain safely recoverable for 30 days. Permanent deletion is locked until the recovery period ends.
+        <strong>30-Day Recovery:</strong> Eligible records remain recoverable for 30 days. Cancelled fee records are retained for audit history and cannot be restored.
       </div>
+      {legacyOnly ? (
+        <p className="communication-feedback error" role="status">
+          Showing existing Trash records. Apply the latest database migration to include archived records, attendance, and cancelled fees.
+        </p>
+      ) : null}
 
       <div className="attendance-summary-grid" style={{ marginBottom: '20px' }}>
         <article className="attendance-metric blue"><span>Total in Trash</span><strong>{counts.total}</strong></article>
@@ -190,6 +225,20 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
               onClick={() => setTab('GUARDIANS')}
             >
               Guardians ({counts.guardians})
+            </button>
+            <button
+              type="button"
+              className={tab === 'ATTENDANCE' ? 'primary-button small-button' : 'secondary-button small-button'}
+              onClick={() => setTab('ATTENDANCE')}
+            >
+              Attendance ({counts.attendance})
+            </button>
+            <button
+              type="button"
+              className={tab === 'FEES' ? 'primary-button small-button' : 'secondary-button small-button'}
+              onClick={() => setTab('FEES')}
+            >
+              Fees ({counts.fees})
             </button>
             <button
               type="button"
@@ -233,21 +282,21 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
                   <th>Type</th>
                   <th>Record Name</th>
                   <th>Identifier</th>
-                  <th>Deleted By</th>
-                  <th>Deleted Date</th>
-                  <th>Purge After</th>
+                  <th>Changed By</th>
+                  <th>Date</th>
+                  <th>Retention Ends</th>
                   <th>Recovery Window</th>
                   <th>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item) => {
-                  const badgeStyle = daysBadgeColor(item.days_remaining)
+                  const badgeStyle = daysBadgeColor(item.days_remaining ?? 30)
                   return (
                     <tr key={`${item.record_type}-${item.id}`}>
                       <td>
                         <span className={badgeClassFor(item.record_type)}>
-                          {item.record_type === 'COMMUNICATION_DRAFT' ? 'Draft' : item.record_type}
+                          {recordTypeLabel(item.record_type)}
                         </span>
                       </td>
                       <td>
@@ -261,12 +310,14 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
                           </div>
                         )}
                       </td>
-                      <td><code>{item.identifier}</code></td>
+                      <td>{item.identifier}</td>
                       <td>{item.deleted_by_name}</td>
                       <td>{new Date(item.deleted_at).toLocaleDateString()}</td>
-                      <td>{new Date(item.purge_after).toLocaleDateString()}</td>
+                      <td>{item.purge_after ? new Date(item.purge_after).toLocaleDateString() : '—'}</td>
                       <td>
-                        <span
+                        {item.days_remaining === null ? (
+                          <span>Kept for history</span>
+                        ) : <span
                           style={{
                             display: 'inline-block',
                             padding: '2px 8px',
@@ -279,17 +330,21 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
                           }}
                         >
                           {formatDaysRemaining(item.days_remaining)}
-                        </span>
+                        </span>}
                       </td>
                       <td>
-                        <button
-                          type="button"
-                          className="secondary-button compact-button"
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                          onClick={() => setRestoringItem(item)}
-                        >
-                          <RotateCcw size={13} /> Restore
-                        </button>
+                        {item.restorable === false ? (
+                          <span className="student-muted">History only</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="secondary-button compact-button"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            onClick={() => setRestoringItem(item)}
+                          >
+                            <RotateCcw size={13} /> Restore
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )

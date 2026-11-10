@@ -74,7 +74,10 @@ export function isStudentAssignedToTeacher(student: Student, access: StudentAcce
 
 export function getAccessibleStudents(students: Student[], access: StudentAccess): Student[] {
   const nonTrashed = students.filter(
-    (student) => !(student as any).deleted_at && !(student as any).deletedAt,
+    (student) =>
+      student.status !== 'Archived' &&
+      !(student as any).deleted_at &&
+      !(student as any).deletedAt,
   )
   if (access.role !== 'teacher') {
     return nonTrashed
@@ -95,7 +98,11 @@ export function canAccessStudent(student: Student, access: StudentAccess): boole
   return isStudentAssignedToTeacher(student, access)
 }
 
-export function canViewStudentTab(role: Role, tab: 'Overview' | 'Attendance' | 'Fees' | 'Communication'): boolean {
+export function canViewStudentTab(role: Role, tab: 'Overview' | 'Attendance' | 'Fees' | 'Communication' | 'Statements'): boolean {
+  if (tab === 'Statements') {
+    return true
+  }
+
   if (role === 'finance') {
     return tab === 'Overview' || tab === 'Fees'
   }

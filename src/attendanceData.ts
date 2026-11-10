@@ -35,6 +35,7 @@ export type AttendanceRecord = {
   createdAt: string
   updatedAt: string
   history: AttendanceChange[]
+  trashedAt?: string | null
 }
 
 export type AttendanceState = {
@@ -145,9 +146,13 @@ export function canAccessAttendanceClass(
 }
 
 export function getAttendanceCounts(records: AttendanceRecord[]): AttendanceCounts {
-  const present = records.filter((record) => record.status === 'PRESENT').length
-  const absent = records.filter((record) => record.status === 'ABSENT').length
-  const late = records.filter((record) => record.status === 'LATE').length
+  return getAttendanceCountsFromStatuses(records.map((record) => record.status))
+}
+
+export function getAttendanceCountsFromStatuses(statuses: AttendanceStatus[]): AttendanceCounts {
+  const present = statuses.filter((status) => status === 'PRESENT').length
+  const absent = statuses.filter((status) => status === 'ABSENT').length
+  const late = statuses.filter((status) => status === 'LATE').length
   const total = present + absent + late
   return {
     present,
@@ -159,7 +164,7 @@ export function getAttendanceCounts(records: AttendanceRecord[]): AttendanceCoun
 }
 
 export function getSessionRecords(state: AttendanceState, sessionId: string): AttendanceRecord[] {
-  return state.records.filter((record) => record.sessionId === sessionId)
+  return state.records.filter((record) => record.sessionId === sessionId && !record.trashedAt)
 }
 
 export function getSessionForClass(
@@ -178,7 +183,11 @@ export function getSessionForClass(
 export function getStudentAttendance(
   student: Student,
   state: AttendanceState,
-): { counts: AttendanceCounts; recent: { date: string; status: AttendanceStatus }[]; trend: number[] } {
+): {
+  counts: AttendanceCounts
+  recent: { date: string; status: AttendanceStatus }[]
+  trend: { date: string; value: number }[]
+} {
   const sessionsById = new Map(state.sessions.map((session) => [session.id, session]))
   if (!student.campusId || !student.schoolId) {
     return { counts: getAttendanceCounts([]), recent: [], trend: [] }
@@ -186,6 +195,7 @@ export function getStudentAttendance(
   const studentClassId = getAttendanceClassId(student.className, student.section, student.campusId)
   const studentRecords = state.records
     .filter((record) => {
+      if (record.trashedAt) return false
       const session = sessionsById.get(record.sessionId)
       if (!session) return false
       return record.studentId === student.id &&
@@ -206,10 +216,9 @@ export function getStudentAttendance(
   const dates = [...new Set(studentRecords.map((record) => sessionsById.get(record.sessionId)?.date ?? ''))]
     .filter(Boolean)
     .sort()
-    .slice(-7)
   const trend = dates.map((date) => {
     const recordsForDate = studentRecords.filter((record) => sessionsById.get(record.sessionId)?.date === date)
-    return getAttendanceCounts(recordsForDate).rate ?? 0
+    return { date, value: getAttendanceCounts(recordsForDate).rate ?? 0 }
   })
 
   return { counts, recent, trend }
@@ -231,7 +240,9 @@ export function getAttendanceForScope(
     new Set(classes.find((attendanceClass) => attendanceClass.id === session.classId)?.students.map((student) => student.id) ?? []),
   ]))
   const records = state.records.filter((record) =>
-    sessionIds.has(record.sessionId) && studentIdsBySession.get(record.sessionId)?.has(record.studentId),
+    !record.trashedAt &&
+    sessionIds.has(record.sessionId) &&
+    studentIdsBySession.get(record.sessionId)?.has(record.studentId),
   )
   return { counts: getAttendanceCounts(records), records, sessions }
 }
@@ -242,17 +253,20 @@ export function getAttendanceAttention(
 ): AttendanceAttention[] {
   const classes = getAttendanceClasses(students)
   const scopedStudentIds = new Set(classes.flatMap((attendanceClass) => attendanceClass.students.map((student) => student.id)))
+  const sessionsWithRecords = new Set(state.records.filter((record) => !record.trashedAt).map((record) => record.sessionId))
   const sessions = state.sessions
     .filter((session) =>
       classes.some((attendanceClass) =>
         session.classId === attendanceClass.id &&
         session.schoolId === attendanceClass.schoolId &&
-        session.campusId === attendanceClass.campusId,
+        session.campusId === attendanceClass.campusId &&
+        sessionsWithRecords.has(session.id),
       ),
     )
     .sort((left, right) => right.date.localeCompare(left.date))
   const recordsByStudent = new Map<string, AttendanceRecord[]>()
   for (const record of state.records) {
+    if (record.trashedAt) continue
     if (!scopedStudentIds.has(record.studentId)) continue
     const session = state.sessions.find((item) => item.id === record.sessionId)
     if (!session || !sessions.some((item) => item.id === session.id)) continue
@@ -329,18 +343,24 @@ export function getAttendanceAttention(
 export function getAttendanceTrend(
   state: AttendanceState,
   students: Student[],
-): { day: string; value: number }[] {
+): { day: string; date: string; value: number; total: number }[] {
   const classes = getAttendanceClasses(students)
   const classIds = new Set(classes.map((attendanceClass) => attendanceClass.id))
+  const sessionsWithRecords = new Set(state.records.filter((record) => !record.trashedAt).map((record) => record.sessionId))
   const dates = [...new Set(state.sessions
     .filter((session) =>
-      classIds.has(session.classId),
+      classIds.has(session.classId) && sessionsWithRecords.has(session.id),
     )
     .map((session) => session.date),
   )].sort().slice(-7)
   return dates.map((date) => {
     const daily = getAttendanceForScope(state, classes, date).counts
-    return { day: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(`${date}T00:00:00`)), value: daily.rate ?? 0 }
+    return {
+      day: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(`${date}T00:00:00`)),
+      date,
+      value: daily.rate ?? 0,
+      total: daily.total,
+    }
   })
 }
 
@@ -353,11 +373,13 @@ export type AttendanceSubmission = {
 
 export function getLastRecordedAttendanceDate(state: AttendanceState, students: Student[]): string | null {
   const classes = getAttendanceClasses(students)
+  const sessionsWithRecords = new Set(state.records.filter((record) => !record.trashedAt).map((record) => record.sessionId))
   return state.sessions
     .filter((session) => classes.some((attendanceClass) =>
       session.classId === attendanceClass.id &&
       session.schoolId === attendanceClass.schoolId &&
-      session.campusId === attendanceClass.campusId,
+      session.campusId === attendanceClass.campusId &&
+      sessionsWithRecords.has(session.id),
     ))
     .map((session) => session.date)
     .sort()

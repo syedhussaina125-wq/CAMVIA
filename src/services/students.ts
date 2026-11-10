@@ -156,6 +156,7 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
         .select('id, first_name, last_name, phone, email')
         .in('id', ids)
         .is('deleted_at', null)
+        .is('archived_at', null)
       if (error) throw error
       return (data ?? []) as GuardianRow[]
     })
@@ -193,6 +194,8 @@ export async function fetchStudents(): Promise<Student[]> {
       .from('students')
       .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
       .is('deleted_at', null)
+      .is('archived_at', null)
+      .neq('status', 'ARCHIVED')
       .order('last_name')
       .order('first_name')
       .order('id')
@@ -222,6 +225,8 @@ export async function fetchStudentById(studentUuid: string): Promise<Student | n
     .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
     .eq('id', studentUuid)
     .is('deleted_at', null)
+    .is('archived_at', null)
+    .neq('status', 'ARCHIVED')
     .maybeSingle()
 
   if (error) throw error

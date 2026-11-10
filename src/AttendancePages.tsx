@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { ArrowLeft, CalendarDays, ClipboardCheck, Search, Users } from 'lucide-react'
+import { ArrowLeft, CalendarDays, ClipboardCheck, FileText, Search, Users } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { AttendanceClass, AttendanceState, AttendanceStatus, AttendanceSubmission, AttendanceUser } from './attendanceData'
 import {
@@ -16,6 +16,7 @@ import type { Student } from './studentData'
 import { RecordActionMenu, type ActionItem } from './components/RecordActionControls'
 import { AttendanceCorrectionModal, type AttendanceCorrectionRecord } from './components/AttendanceCorrectionModal'
 import { correctAttendanceSession } from './services/attendance'
+import { trashAttendanceSession } from './services/trash'
 
 type AttendancePageProps = {
   user: AttendanceUser
@@ -45,6 +46,7 @@ const statusOptions: { status: AttendanceStatus; label: string }[] = [
 
 export function AttendancePage({ user, students, attendance, loading, error, onRetry, onPrepareMessage, onCorrectAttendance, onRefresh }: AttendancePageProps) {
   const navigate = useNavigate()
+  const [trashError, setTrashError] = useState('')
   const [searchParams] = useSearchParams()
   const classes = useMemo(() => getAttendanceClasses(students), [students])
   const [date, setDate] = useState(searchParams.get('date') ?? localDateKey())
@@ -61,6 +63,21 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
     date: string
     records: AttendanceCorrectionRecord[]
   } | null>(null)
+
+  const handleTrashAttendance = async (sessionId: string, className: string, section: string) => {
+    const reason = window.prompt(`Why are you moving ${className}-${section} attendance to Trash?`)?.trim()
+    if (!reason) return
+    if (!window.confirm(`Move the ${formatAttendanceDate(date)} attendance for ${className}-${section} to Trash?`)) return
+    setTrashError('')
+    try {
+      await trashAttendanceSession(sessionId, reason)
+      onRefresh?.()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Attendance could not be moved to Trash.'
+      console.error('[Supabase] Attendance trash failed:', message)
+      setTrashError('Attendance could not be moved to Trash. Check your access and try again.')
+    }
+  }
 
   if (loading) return <AttendanceLoadingState />
   if (error) return <AttendanceErrorState detail={error} onRetry={onRetry} />
@@ -92,11 +109,15 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
           <h1>Attendance</h1>
           <p>Track today&apos;s attendance and identify students who need attention.</p>
         </div>
+        <button type="button" className="secondary-button small-button" onClick={() => navigate('/statements/attendance')}>
+          <FileText size={16} /> Attendance Statement
+        </button>
       </header>
 
       <div className="help-banner">
         <strong>Helpful tip:</strong> Mark All Present, then update exceptions.
       </div>
+      {trashError ? <p className="communication-feedback error" role="alert">{trashError}</p> : null}
 
       <div className="attendance-controls">
         <label><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
@@ -106,9 +127,9 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
 
       {counts.total === 0 ? (
         <div className="attendance-empty-notice" role="status">
-          No attendance has been recorded for {formatAttendanceDate(date)}
-          {classFilter ? ` in ${classFilter}` : ' across all classes'}
-          {sectionFilter ? `, section ${sectionFilter}` : ''}.
+          {attendance.sessions.length === 0
+            ? 'No attendance records yet.'
+            : `No attendance has been recorded for ${formatAttendanceDate(date)}${classFilter ? ` in ${classFilter}` : ' across all classes'}${sectionFilter ? `, section ${sectionFilter}` : ''}.`}
         </div>
       ) : null}
 
@@ -133,9 +154,16 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                   const session = getSessionForClass(attendance, date, attendanceClass)
                   const sessionRecords = session ? getSessionRecords(attendance, session.id) : []
                   const summary = getAttendanceCounts(sessionRecords)
-                  const status = !session ? 'Not Marked' : sessionRecords.length < attendanceClass.students.length ? 'In Progress' : 'Completed'
+                  const isTrashed = Boolean(session && session.studentCount === 0)
+                  const status = isTrashed
+                    ? 'In Trash'
+                    : !session
+                      ? 'Not Marked'
+                      : sessionRecords.length < attendanceClass.students.length
+                        ? 'In Progress'
+                        : 'Completed'
                   const classActions: ActionItem[] = []
-                  if (user.role !== 'finance' && session) {
+                  if (user.role !== 'finance' && session && sessionRecords.length > 0) {
                     classActions.push({
                       label: 'Correct Attendance',
                       onClick: () => {
@@ -157,28 +185,39 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                       },
                     })
                   }
+                  if (user.role === 'admin' && session && sessionRecords.length > 0) {
+                    classActions.push({
+                      label: 'Move Attendance to Trash',
+                      danger: true,
+                      onClick: () => { void handleTrashAttendance(session.id, attendanceClass.className, attendanceClass.section) },
+                    })
+                  }
                   return (
                     <tr key={attendanceClass.id}>
                       <td><strong>{attendanceClass.className}</strong></td>
                       <td>{attendanceClass.section}</td>
                       <td>{attendanceClass.students.length}</td>
-                      <td>{session ? summary.present : '—'}</td>
-                      <td>{session ? summary.absent : '—'}</td>
-                      <td>{session ? summary.late : '—'}</td>
-                      <td>{summary.rate === null ? '—' : `${summary.rate}%`}</td>
+                      <td>{session && !isTrashed ? summary.present : '—'}</td>
+                      <td>{session && !isTrashed ? summary.absent : '—'}</td>
+                      <td>{session && !isTrashed ? summary.late : '—'}</td>
+                      <td>{isTrashed || summary.rate === null ? '—' : `${summary.rate}%`}</td>
                       <td><span className={`attendance-status ${status.toLowerCase().replace(' ', '-')}`}>{status}</span></td>
                       <td>
                         {user.role === 'finance' ? (
                           'View only'
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <button
-                              type="button"
-                              className="student-link"
-                              onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
-                            >
-                              {session ? 'View / Edit' : 'Take Attendance'}
-                            </button>
+                            {isTrashed
+                              ? user.role === 'admin'
+                                ? <button type="button" className="student-link" onClick={() => navigate('/trash')}>View Trash</button>
+                                : <span className="student-muted">In Trash</span>
+                              : <button
+                                type="button"
+                                className="student-link"
+                                onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
+                              >
+                                {session ? 'View / Edit' : 'Take Attendance'}
+                              </button>}
                             {classActions.length > 0 && <RecordActionMenu actions={classActions} />}
                           </div>
                         )}
@@ -201,8 +240,14 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                 date={date}
                 attendance={attendance}
                 canEdit={user.role !== 'finance'}
-                onOpen={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
-                onCorrect={session && user.role !== 'finance' ? () => {
+                onOpen={() => navigate(session?.studentCount === 0
+                  ? '/trash'
+                  : `/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${date}`)}
+                canViewTrash={user.role === 'admin'}
+                onTrash={session && sessionRecords.length > 0 && user.role === 'admin'
+                  ? () => { void handleTrashAttendance(session.id, attendanceClass.className, attendanceClass.section) }
+                  : undefined}
+                onCorrect={session && sessionRecords.length > 0 && user.role !== 'finance' ? () => {
                   setCorrectingSession({
                     sessionId: session.id,
                     className: attendanceClass.className,
@@ -285,6 +330,9 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   if (error) return <AttendanceErrorState detail={error} onRetry={onRetry} />
   if (!attendanceClass || user.role === 'finance') {
     return <AttendanceEmptyState title="Class not found" detail="This class is not included in your authorized attendance scope." onBack={() => navigate('/attendance')} />
+  }
+  if (existingSession?.studentCount === 0) {
+    return <AttendanceEmptyState title="Attendance is in Trash" detail="Restore this attendance session from Trash before opening or editing it." onBack={() => navigate(user.role === 'admin' ? '/trash' : '/attendance')} />
   }
 
   const filteredStudents = attendanceClass.students.filter((student) =>
@@ -421,24 +469,36 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   )
 }
 
-function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, onOpen, onCorrect }: {
+function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, canViewTrash, onOpen, onCorrect, onTrash }: {
   attendanceClass: AttendanceClass
   date: string
   attendance: AttendanceState
   canEdit: boolean
+  canViewTrash: boolean
   onOpen: () => void
   onCorrect?: () => void
+  onTrash?: () => void
 }) {
   const session = getSessionForClass(attendance, date, attendanceClass)
   const records = session ? getSessionRecords(attendance, session.id) : []
   const counts = getAttendanceCounts(records)
-  const status = !session ? 'Not Marked' : records.length < attendanceClass.students.length ? 'In Progress' : 'Completed'
+  const isTrashed = Boolean(session && session.studentCount === 0)
+  const status = isTrashed
+    ? 'In Trash'
+    : !session
+      ? 'Not Marked'
+      : records.length < attendanceClass.students.length
+        ? 'In Progress'
+        : 'Completed'
   const actions: ActionItem[] = []
-  if (canEdit && session && onCorrect) {
+  if (canEdit && session && records.length > 0 && onCorrect) {
     actions.push({
       label: 'Correct Attendance',
       onClick: onCorrect,
     })
+  }
+  if (onTrash) {
+    actions.push({ label: 'Move Attendance to Trash', danger: true, onClick: onTrash })
   }
   return (
     <article className="attendance-class-card">
@@ -451,12 +511,18 @@ function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, onOpe
       </div>
       <div className="attendance-class-card-grid">
         <span>Students <strong>{attendanceClass.students.length}</strong></span>
-        <span>Present <strong>{session ? counts.present : '—'}</strong></span>
-        <span>Absent <strong>{session ? counts.absent : '—'}</strong></span>
-        <span>Late <strong>{session ? counts.late : '—'}</strong></span>
-        <span>Rate <strong>{counts.rate === null ? '—' : `${counts.rate}%`}</strong></span>
+        <span>Present <strong>{session && !isTrashed ? counts.present : '—'}</strong></span>
+        <span>Absent <strong>{session && !isTrashed ? counts.absent : '—'}</strong></span>
+        <span>Late <strong>{session && !isTrashed ? counts.late : '—'}</strong></span>
+        <span>Rate <strong>{isTrashed || counts.rate === null ? '—' : `${counts.rate}%`}</strong></span>
       </div>
-      {canEdit ? <button type="button" className="student-link" onClick={onOpen}>{session ? 'View / Edit' : 'Take Attendance'}</button> : <span className="student-muted">View only</span>}
+      {isTrashed
+        ? canViewTrash
+          ? <button type="button" className="student-link" onClick={onOpen}>View Trash</button>
+          : <span className="student-muted">In Trash</span>
+        : canEdit
+          ? <button type="button" className="student-link" onClick={onOpen}>{session ? 'View / Edit' : 'Take Attendance'}</button>
+          : <span className="student-muted">View only</span>}
     </article>
   )
 }

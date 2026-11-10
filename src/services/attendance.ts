@@ -38,6 +38,7 @@ type RecordRow = {
   marked_by: string
   created_at: string
   updated_at: string
+  trashed_at: string | null
 }
 
 function requireSupabase() {
@@ -74,6 +75,7 @@ function toRecord(row: RecordRow): AttendanceRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     history: [],
+    trashedAt: row.trashed_at,
   }
 }
 
@@ -101,8 +103,9 @@ export async function fetchAttendanceState(): Promise<AttendanceState> {
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await db
         .from('attendance_records')
-        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at')
+        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at, trashed_at')
         .in('attendance_session_id', sessionBatch)
+        .is('trashed_at', null)
         .range(offset, offset + pageSize - 1)
       if (error) throw error
       const batch = (data ?? []) as RecordRow[]

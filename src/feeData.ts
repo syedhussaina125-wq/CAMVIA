@@ -192,6 +192,34 @@ export function getFeeMetrics(invoices: FeeInvoiceView[]) {
   }
 }
 
+export function getFeeStatementMetrics(
+  state: FeeState,
+  student: Student,
+  user: FeeAccessUser,
+  fromMonth: string,
+  toMonth: string,
+) {
+  const invoices = getFeeInvoices(state, [student], user)
+    .filter((invoice) => invoice.month >= fromMonth && invoice.month <= toMonth)
+  const metrics = getFeeMetrics(invoices)
+  const invoiceIds = new Set(invoices.map((invoice) => invoice.id))
+  const cancelledPayments = state.payments
+    .filter((payment) => payment.voidedAt && invoiceIds.has(payment.invoiceId))
+    .reduce((total, payment) => total + payment.amount, 0)
+  const cancelledInvoices = invoices
+    .filter((invoice) => invoice.voidedAt)
+    .reduce((total, invoice) => total + invoice.totalAmount, 0)
+
+  return {
+    invoices,
+    totalInvoiced: metrics.expected,
+    totalPaid: metrics.collected,
+    outstanding: metrics.outstanding,
+    cancelledInvoices: roundMoney(cancelledInvoices),
+    cancelledPayments: roundMoney(cancelledPayments),
+  }
+}
+
 export function getFeeAgingBuckets(invoices: FeeInvoiceView[]) {
   const buckets = {
     '1–30 days': { count: 0, amount: 0 },

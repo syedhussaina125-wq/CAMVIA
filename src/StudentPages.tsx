@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import { ArrowLeft, CalendarDays, FileUp, Search, UserRound, Users } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { ArrowLeft, CalendarDays, FileText, FileUp, Search, UserRound, Users } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Role, SchoolUser } from './mockData'
 import type { AlertItem } from './alertsData'
@@ -73,7 +73,7 @@ type DetailPageProps = {
   onRefresh?: () => void
 }
 
-type StudentTab = 'Overview' | 'Attendance' | 'Fees' | 'Communication'
+type StudentTab = 'Overview' | 'Attendance' | 'Fees' | 'Communication' | 'Statements'
 const currentDateKey = localDateKey()
 
 const emptyStudentForm: NewStudent = {
@@ -445,12 +445,11 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <option>Active</option>
           <option>Inactive</option>
           <option>Graduated</option>
-          <option>Archived</option>
         </select>
       </div>
 
       {filteredStudents.length === 0 ? (
-        <StudentListState title={accessibleStudents.length ? 'No students match these filters.' : 'No students to show yet.'} detail={accessibleStudents.length ? 'Try another name or clear one of the filters.' : 'Students assigned to your access will appear here.'} />
+        <StudentListState title={accessibleStudents.length ? 'No students match these filters.' : 'No students yet'} detail={accessibleStudents.length ? 'Try another name or clear one of the filters.' : 'Students will appear here once they are added to your school.'} />
       ) : (
         <>
           <div className="student-table-card">
@@ -597,12 +596,12 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
 
   const feeInvoices = useMemo(
     () => authorizedStudent
-      ? getFeeInvoices(fees, students, user).filter((invoice) => invoice.studentId === authorizedStudent.id)
+      ? getFeeInvoices(fees, students, user).filter((invoice) => invoice.studentId === authorizedStudent.id && !invoice.voidedAt)
       : [],
     [authorizedStudent, fees, students, user],
   )
   const feePayments = fees.payments.filter((payment) =>
-    feeInvoices.some((invoice) => invoice.id === payment.invoiceId),
+    !payment.voidedAt && feeInvoices.some((invoice) => invoice.id === payment.invoiceId),
   )
   const communicationMessages = authorizedStudent
     ? getAccessibleCommunication(communication, students, user).filter((message) => message.studentId === authorizedStudent.id)
@@ -642,8 +641,17 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     )
   }
 
-  const tabs: StudentTab[] = ['Overview', 'Attendance', 'Fees', 'Communication'].filter(
-    (tab): tab is StudentTab => canViewStudentTab(user.role, tab as StudentTab),
+  const canViewStatementTab = user.role !== 'teacher' || (user.teacherAssignments ?? []).some((assignment) =>
+    assignment.active &&
+    assignment.school_id === authorizedStudent.schoolId &&
+    assignment.campus_id === authorizedStudent.campusId &&
+    assignment.class_name.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.className.trim().replace(/\s+/g, ' ').toLowerCase() &&
+    assignment.section.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.section.trim().replace(/\s+/g, ' ').toLowerCase(),
+  )
+  const allTabs: StudentTab[] = ['Overview', 'Attendance', 'Fees', 'Communication', 'Statements']
+  const tabs = allTabs.filter(
+    (tab) => canViewStudentTab(user.role, tab) &&
+      (tab !== 'Statements' || canViewStatementTab),
   )
   const selectedTab = tabs.includes(activeTab) ? activeTab : tabs[0] ?? 'Overview'
 
@@ -860,6 +868,35 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
       {selectedTab === 'Attendance' ? <StudentAttendance student={authorizedStudent} attendance={attendance} loading={attendanceLoading} error={attendanceError} /> : null}
       {selectedTab === 'Fees' && canViewStudentTab(user.role, 'Fees') ? <StudentFees invoices={feeInvoices} payments={feePayments} loading={feesLoading} error={feesError} onRetry={onRetryFees} /> : null}
       {selectedTab === 'Communication' ? <StudentCommunication student={authorizedStudent} messages={communicationMessages} user={user} invoices={feeInvoices} users={users} /> : null}
+      {selectedTab === 'Statements' ? (
+        <section className="student-statements-panel">
+          <div>
+            <p className="eyebrow">Student records</p>
+            <h2>Statements</h2>
+            <p>View or download a dated statement for this student.</p>
+          </div>
+          <div className="student-statements-actions">
+            {['admin', 'principal', 'finance'].includes(user.role) ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => navigate(`/statements/account?studentId=${encodeURIComponent(authorizedStudent.id)}`)}
+              >
+                <FileText size={17} /> Account Statement
+              </button>
+            ) : null}
+            {['admin', 'principal', 'teacher'].includes(user.role) ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => navigate(`/statements/attendance?studentId=${encodeURIComponent(authorizedStudent.id)}`)}
+              >
+                <FileText size={17} /> Attendance Statement
+              </button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
     </section>
   )
 }
@@ -1024,7 +1061,7 @@ function StudentAttendance({ student, attendance, loading, error }: {
         <SummaryMetric label="Absent days" value={String(summary.counts.absent)} />
         <SummaryMetric label="Late days" value={String(summary.counts.late)} />
       </div>
-      <section className="student-info-card">
+      <section className="student-info-card student-attendance-trend-card">
         <h2>Attendance trend</h2>
         <AttendanceTrend data={summary.trend} />
       </section>
@@ -1126,23 +1163,96 @@ function ActivityTimeline({ items }: { items: Student['activity'] }) {
   )
 }
 
-function AttendanceTrend({ data }: { data: number[] }) {
-  if (!data.length) return <p className="student-muted">Attendance trend will appear when records are available.</p>
-  const points = data.map((value, index) => `${24 + index * (252 / Math.max(data.length - 1, 1))},${110 - value}`).join(' ')
+function AttendanceTrend({ data }: { data: { date: string; value: number }[] }) {
+  const [period, setPeriod] = useState<'week' | 'month'>('week')
+  const [today] = useState(localDateKey)
+  const chartRef = useRef<SVGSVGElement>(null)
+  const [chartSize, setChartSize] = useState({ width: 0, height: 0 })
+  const [year, month, day] = today.split('-').map(Number)
+  const startDate = period === 'week'
+    ? localDateKey(new Date(year, month - 1, day - 6))
+    : `${year}-${String(month).padStart(2, '0')}-01`
+  const visibleData = data.filter((point) => point.date >= startDate && point.date <= today)
+  const chartWidth = chartSize.width
+  const chartHeight = chartSize.height
+  const viewBoxWidth = Math.max(chartWidth, 1)
+  const viewBoxHeight = Math.max(chartHeight, 1)
+  const left = 48
+  const right = 30
+  const top = 20
+  const bottom = 40
+  const plotWidth = chartWidth - left - right
+  const plotHeight = chartHeight - top - bottom
+  const points = visibleData.map((point, index) => ({
+    ...point,
+    x: visibleData.length === 1 ? left + plotWidth / 2 : left + (index * plotWidth) / (visibleData.length - 1),
+    y: top + ((100 - point.value) / 100) * plotHeight,
+  }))
+  const line = points.map((point) => `${point.x},${point.y}`).join(' ')
+  const periodLabel = period === 'week'
+    ? 'Last 7 days'
+    : `${new Intl.DateTimeFormat('en', { month: 'long' }).format(new Date(year, month - 1, 1))} ${year}`
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width)
+      const height = Math.round(entry.contentRect.height)
+      if (width > 0 && height > 0) {
+        setChartSize((current) => current.width === width && current.height === height
+          ? current
+          : { width, height })
+      }
+    })
+    observer.observe(chart)
+    return () => observer.disconnect()
+  }, [])
+
   return (
     <div className="student-trend-chart">
-      <svg viewBox="0 0 300 130" role="img" aria-label="Student attendance trend">
-        <line x1="24" y1="110" x2="276" y2="110" />
-        <polyline points={points} />
-        {data.map((value, index) => {
-          const x = 24 + index * (252 / Math.max(data.length - 1, 1))
-          const y = 110 - value
-          return <circle key={`${index}-${value}`} cx={x} cy={y} r="4" />
-        })}
-      </svg>
-      <div className="student-trend-labels"><span>Earlier</span><span>Recent</span></div>
+      <div className="student-trend-controls">
+        <span>{periodLabel}</span>
+        <div className="student-trend-filters" role="group" aria-label="Attendance graph date range">
+          <button type="button" className={period === 'week' ? 'active' : ''} aria-pressed={period === 'week'} onClick={() => setPeriod('week')}>Weekly</button>
+          <button type="button" className={period === 'month' ? 'active' : ''} aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>Monthly</button>
+        </div>
+      </div>
+      {visibleData.length ? (
+        <svg ref={chartRef} viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`} role="img" aria-label={`Student attendance trend for ${periodLabel}`}>
+          {[0, 50, 100].map((tick) => {
+            const y = top + ((100 - tick) / 100) * plotHeight
+            return (
+              <g key={tick}>
+                <line x1={left} y1={y} x2={chartWidth - right} y2={y} />
+                <text className="student-trend-y-label" x={left - 8} y={y + 3} textAnchor="end">{tick}%</text>
+              </g>
+            )
+          })}
+          {points.length > 1 ? <polyline points={line} /> : null}
+          {points.map((point, index) => (
+            <g key={point.date}>
+              <circle cx={point.x} cy={point.y} r="4" />
+              <title>{`${formatDate(point.date)}: ${point.value}% attendance`}</title>
+              {period === 'week' || index % 5 === 0 || index === points.length - 1 ? (
+                <text className="student-trend-date-label" x={point.x} y={chartHeight - 12} textAnchor="middle">
+                  {period === 'week' ? formatTrendDate(point.date) : point.date.slice(-2)}
+                </text>
+              ) : null}
+            </g>
+          ))}
+        </svg>
+      ) : (
+        <p className="student-muted">No attendance records for {period === 'week' ? 'the last 7 days' : 'this month'}.</p>
+      )}
     </div>
   )
+}
+
+function formatTrendDate(date: string): string {
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${monthNames[Number(date.slice(5, 7)) - 1]} ${Number(date.slice(8, 10))}`
 }
 
 function InfoField({ label, value }: { label: string; value: string }) {

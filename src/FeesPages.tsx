@@ -49,7 +49,7 @@ export function FeesPage(props: FeesPagesProps) {
   const [showCreateModal, setShowCreateModal] = useState(false)
 
   const allInvoices = useMemo(
-    () => getFeeInvoices(props.feeState, props.students, props.user),
+    () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => !invoice.voidedAt),
     [props.feeState, props.students, props.user],
   )
 
@@ -104,15 +104,24 @@ export function FeesPage(props: FeesPagesProps) {
           <h1>Fees &amp; Collections</h1>
           <p>Track collections, outstanding balances, and follow-up priorities.</p>
         </div>
-        {canMutateFeeData(props.user) && props.onCreateInvoice ? (
+        <div className="fees-heading-actions">
           <button
             type="button"
-            className="primary-button small-button"
-            onClick={() => setShowCreateModal(true)}
+            className="secondary-button small-button"
+            onClick={() => navigate('/statements/account')}
           >
-            <Plus size={16} /> Create Invoice
+            <FileText size={16} /> Account Statement
           </button>
-        ) : null}
+          {canMutateFeeData(props.user) && props.onCreateInvoice ? (
+            <button
+              type="button"
+              className="primary-button small-button"
+              onClick={() => setShowCreateModal(true)}
+            >
+              <Plus size={16} /> Create Invoice
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="help-banner">
@@ -129,7 +138,7 @@ export function FeesPage(props: FeesPagesProps) {
           setSectionFilter('')
         }}><option value="">All classes</option>{classes.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>Section<select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)}><option value="">All sections</option>{sections.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue', 'Cancelled'].map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['Paid', 'Partially Paid', 'Pending', 'Overdue'].map((item) => <option key={item}>{item}</option>)}</select></label>
       </div>
 
       <div className="fees-summary-grid">
@@ -173,7 +182,7 @@ export function FeesPage(props: FeesPagesProps) {
               )}
             </>
           ) : (
-            <div className="fees-empty"><div className="fees-empty-icon"><Wallet size={20} /></div><strong>{allInvoices.length === 0 ? 'No fee records have been created yet.' : 'No fee records found for this period.'}</strong><p>{allInvoices.length === 0 ? 'Fee invoices and balances will appear here once generated.' : 'Try another month or adjust your filters.'}</p></div>
+            <div className="fees-empty"><div className="fees-empty-icon"><Wallet size={20} /></div><strong>{allInvoices.length === 0 ? 'No invoices or payments yet.' : 'No fee records found for this period.'}</strong><p>{allInvoices.length === 0 ? 'Fee invoices and payments will appear here once recorded.' : 'Try another month or adjust your filters.'}</p></div>
           )}
         </section>
 
@@ -228,7 +237,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   const [actionError, setActionError] = useState('')
 
   const invoices = useMemo(
-    () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => invoice.studentId === studentId),
+    () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => invoice.studentId === studentId && !invoice.voidedAt),
     [props.feeState, props.students, props.user, studentId],
   )
 
@@ -242,7 +251,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   const metrics = getFeeMetrics(invoices)
   const invoice = invoices.find((item) => item.id === activeInvoiceId) ?? invoices.find((item) => item.outstandingAmount > 0) ?? invoices[0]
   const payments = props.feeState.payments
-    .filter((payment) => invoices.some((item) => item.id === payment.invoiceId))
+    .filter((payment) => !payment.voidedAt && invoices.some((item) => item.id === payment.invoiceId))
     .sort((left, right) => right.date.localeCompare(left.date))
   const principalReadOnly = props.user.role === 'principal'
 
