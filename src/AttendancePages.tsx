@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ArrowLeft, CalendarDays, ClipboardCheck, FileText, Search, Users } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { AttendanceClass, AttendanceState, AttendanceStatus, AttendanceSubmission, AttendanceUser } from './attendanceData'
@@ -16,6 +16,7 @@ import {
 import type { Student } from './studentData'
 import { RecordActionMenu, type ActionItem } from './components/RecordActionControls'
 import { AttendanceCorrectionModal, type AttendanceCorrectionRecord } from './components/AttendanceCorrectionModal'
+import { AttendanceNavigationGuardContext } from './components/AttendanceNavigationGuard'
 import { correctAttendanceSession } from './services/attendance'
 import { trashAttendanceSession } from './services/trash'
 
@@ -44,6 +45,25 @@ const statusOptions: { status: AttendanceStatus; label: string }[] = [
   { status: 'ABSENT', label: 'Absent' },
   { status: 'LATE', label: 'Late' },
 ]
+
+type AttendanceDraftStatus = AttendanceStatus | 'UNMARKED'
+
+type PendingDiscard = { kind: 'date'; date: string } | { kind: 'navigate'; to: string; onDiscard?: () => void }
+
+function isAttendanceStatus(status: AttendanceDraftStatus): status is AttendanceStatus {
+  return status !== 'UNMARKED'
+}
+
+function getAttendanceDraftKey(attendanceClass: AttendanceClass | null, date: string): string {
+  if (!attendanceClass) return `unavailable|${date}`
+  return [
+    attendanceClass.schoolId,
+    attendanceClass.campusId,
+    attendanceClass.className,
+    attendanceClass.section,
+    date,
+  ].join('|')
+}
 
 export function AttendancePage({ user, students, attendance, loading, error, onRetry, onPrepareMessage, onCorrectAttendance, onRefresh }: AttendancePageProps) {
   const navigate = useNavigate()
@@ -161,11 +181,11 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                     ? 'In Trash'
                     : !session
                       ? 'Not Marked'
-                      : sessionRecords.length < attendanceClass.students.length
-                        ? 'In Progress'
-                        : 'Completed'
+                      : session.status === 'COMPLETED'
+                        ? 'Completed'
+                        : 'In Progress'
                   const classActions: ActionItem[] = []
-                  if (user.role !== 'finance' && session && sessionRecords.length > 0) {
+                  if (user.role !== 'finance' && session?.status === 'COMPLETED' && sessionRecords.length === attendanceClass.students.length) {
                     classActions.push({
                       label: 'Correct Attendance',
                       onClick: () => {
@@ -249,7 +269,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                 onTrash={session && sessionRecords.length > 0 && user.role === 'admin'
                   ? () => { void handleTrashAttendance(session.id, attendanceClass.className, attendanceClass.section) }
                   : undefined}
-                onCorrect={session && sessionRecords.length > 0 && user.role !== 'finance' ? () => {
+                onCorrect={session?.status === 'COMPLETED' && sessionRecords.length === attendanceClass.students.length && user.role !== 'finance' ? () => {
                   setCorrectingSession({
                     sessionId: session.id,
                     className: attendanceClass.className,
@@ -316,25 +336,54 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   const [showCorrectionModal, setShowCorrectionModal] = useState(false)
   const [draft, setDraft] = useState<{
     key: string
-    statuses: Record<string, AttendanceStatus>
+    statuses: Record<string, AttendanceDraftStatus>
     notes: Record<string, string>
   }>({ key: '', statuses: {}, notes: {} })
   const [query, setQuery] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null)
+  const attendanceNavigationGuard = useContext(AttendanceNavigationGuardContext)
   const existingSession = attendanceClass ? getSessionForClass(attendance, date, attendanceClass) : undefined
   const existingRecords = existingSession ? getSessionRecords(attendance, existingSession.id) : []
-  const draftKey = `${classId}|${date}`
-  const defaultStatuses = Object.fromEntries(attendanceClass?.students.map((student) => {
-    const record = existingRecords.find((item) => item.studentId === student.id)
-    return [student.id, record?.status ?? 'PRESENT']
-  }) ?? []) as Record<string, AttendanceStatus>
+  const draftKey = getAttendanceDraftKey(attendanceClass, date)
+  const recordsByStudentId = new Map(existingRecords.map((record) => [record.studentId, record]))
+  const defaultStatuses = Object.fromEntries(attendanceClass?.students.map((student) => [
+    student.id,
+    recordsByStudentId.get(student.id)?.status ?? 'UNMARKED',
+  ]) ?? []) as Record<string, AttendanceDraftStatus>
   const defaultNotes = Object.fromEntries(attendanceClass?.students.map((student) => {
-    const record = existingRecords.find((item) => item.studentId === student.id)
+    const record = recordsByStudentId.get(student.id)
     return [student.id, record?.note ?? '']
   }) ?? [])
   const statuses = draft.key === draftKey ? { ...defaultStatuses, ...draft.statuses } : defaultStatuses
   const notes = draft.key === draftKey ? { ...defaultNotes, ...draft.notes } : defaultNotes
+  const dirtyStudentIds = attendanceClass?.students
+    .filter((student) => statuses[student.id] !== defaultStatuses[student.id] ||
+      (notes[student.id] ?? '') !== (defaultNotes[student.id] ?? ''))
+    .map((student) => student.id) ?? []
+  const unmarkedCount = attendanceClass?.students.filter((student) => statuses[student.id] === 'UNMARKED').length ?? 0
+
+  useEffect(() => {
+    if (dirtyStudentIds.length === 0) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [dirtyStudentIds.length])
+
+  const shouldBlockNavigation = useCallback((destination: string, onDiscard?: () => void) => {
+    if (dirtyStudentIds.length === 0) return false
+    setPendingDiscard({ kind: 'navigate', to: destination, onDiscard })
+    return true
+  }, [dirtyStudentIds.length])
+
+  useEffect(() => attendanceNavigationGuard.registerGuard(shouldBlockNavigation), [
+    attendanceNavigationGuard,
+    shouldBlockNavigation,
+  ])
 
   if (loading) return <AttendanceLoadingState />
   if (error) return <AttendanceErrorState detail={error} onRetry={onRetry} />
@@ -350,27 +399,84 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   )
   const visibleRecords = attendanceClass.students.map((student) => ({
     ...student,
-    status: statuses[student.id] ?? 'PRESENT',
+    status: statuses[student.id] ?? 'UNMARKED',
   }))
   const totals = {
     present: visibleRecords.filter((student) => student.status === 'PRESENT').length,
     absent: visibleRecords.filter((student) => student.status === 'ABSENT').length,
     late: visibleRecords.filter((student) => student.status === 'LATE').length,
   }
+  const requestDateChange = (nextDate: string) => {
+    if (!nextDate || nextDate === date) return
+    if (dirtyStudentIds.length > 0) {
+      setPendingDiscard({ kind: 'date', date: nextDate })
+      return
+    }
+    setDate(nextDate)
+    setDraft({ key: getAttendanceDraftKey(attendanceClass, nextDate), statuses: {}, notes: {} })
+    setSaveError('')
+  }
+  const requestNavigation = (to: string) => {
+    if (shouldBlockNavigation(to)) return
+    navigate(to)
+  }
+  const discardAndContinue = () => {
+    if (!pendingDiscard) return
+    const destination = pendingDiscard
+    setPendingDiscard(null)
+    setDraft({ key: '', statuses: {}, notes: {} })
+    if (destination.kind === 'date') {
+      setDate(destination.date)
+      setDraft({ key: getAttendanceDraftKey(attendanceClass, destination.date), statuses: {}, notes: {} })
+      setSaveError('')
+      return
+    }
+    if (destination.onDiscard) {
+      destination.onDiscard()
+    } else {
+      navigate(destination.to)
+    }
+  }
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (dirtyStudentIds.length === 0) return
+    if (existingSession?.status === 'COMPLETED') {
+      if (unmarkedCount > 0) {
+        setSaveError('A saved attendance correction requires a status for every student.')
+        return
+      }
+      setShowCorrectionModal(true)
+      return
+    }
     if (date > attendanceDateKey(user.schoolTimezone)) {
       setSaveError('Attendance cannot be recorded for a future date.')
+      return
+    }
+    const changedStatuses: Record<string, AttendanceStatus> = {}
+    for (const studentId of dirtyStudentIds) {
+      const status = statuses[studentId]
+      if (!status || !isAttendanceStatus(status)) continue
+      changedStatuses[studentId] = status
+    }
+    if (Object.keys(changedStatuses).length !== dirtyStudentIds.length) {
+      setSaveError('Select Present, Absent, or Late for each changed student before saving.')
       return
     }
     setSaving(true)
     setSaveError('')
     try {
-      await onSave({ date, classId: attendanceClass.id, statuses, notes })
+      await onSave({
+        date,
+        classId: attendanceClass.id,
+        changedStudentIds: dirtyStudentIds,
+        statuses: changedStatuses,
+        notes: Object.fromEntries(dirtyStudentIds.map((studentId) => [studentId, notes[studentId] ?? ''])),
+      })
       navigate(`/attendance?date=${date}`)
-    } catch {
-      setSaveError('Attendance could not be saved. Check your connection and class access, then try again.')
+    } catch (error) {
+      console.error('[CAMVIA Attendance] Attendance save failed:', error)
+      setSaveError('Some attendance changes could not be saved. Your unsaved selections are still here; check your connection and try again.')
     } finally {
       setSaving(false)
     }
@@ -379,14 +485,14 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   return (
     <>
       <form className="take-attendance-page" onSubmit={submit}>
-        <button type="button" className="back-link" onClick={() => navigate('/attendance')}><ArrowLeft size={16} /> Attendance</button>
+        <button type="button" className="back-link" onClick={() => requestNavigation('/attendance')}><ArrowLeft size={16} /> Attendance</button>
         <header className="take-attendance-heading">
           <div>
             <p className="eyebrow">{existingSession ? 'Edit attendance' : 'Take attendance'}</p>
             <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
             <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
           </div>
-          <label className="take-date-control"><span>Date</span><input type="date" max={today} value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <label className="take-date-control"><span>Date</span><input type="date" max={today} value={date} onChange={(event) => requestDateChange(event.target.value)} /></label>
         </header>
 
         <div className="take-attendance-toolbar">
@@ -394,7 +500,7 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
           <button type="button" className="secondary-button small-button" onClick={() => setDraft({
             key: draftKey,
             statuses: Object.fromEntries(attendanceClass.students.map((student) => [student.id, 'PRESENT'])),
-            notes: draft.key === draftKey ? draft.notes : {},
+            notes: { ...notes },
           })}>
             <ClipboardCheck size={16} /> Mark All Present
           </button>
@@ -402,24 +508,32 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
 
         <div className="attendance-student-list">
           {filteredStudents.map((student) => (
-            <article className="attendance-student-row" key={student.id}>
+            <article className={`attendance-student-row${dirtyStudentIds.includes(student.id) ? ' changed' : ''}`} key={student.id}>
               <div className="attendance-student-person">
                 <div className="student-avatar"><Users size={17} /></div>
-                <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId} · Roll {student.rollNumber}</span></div>
+                <div>
+                  <strong>{student.firstName} {student.lastName}</strong>
+                  <span>{student.studentId} · Roll {student.rollNumber}</span>
+                  {statuses[student.id] === 'UNMARKED'
+                    ? <span className="attendance-row-state">Unmarked</span>
+                    : dirtyStudentIds.includes(student.id)
+                      ? <span className="attendance-row-state">Unsaved change</span>
+                      : null}
+                </div>
               </div>
               <div className="attendance-segmented" role="group" aria-label={`Attendance for ${student.firstName} ${student.lastName}`}>
                 {statusOptions.map((option) => (
-                  <button type="button" key={option.status} aria-pressed={(statuses[student.id] ?? 'PRESENT') === option.status} className={`${(statuses[student.id] ?? 'PRESENT') === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => setDraft((current) => ({
+                  <button type="button" key={option.status} aria-pressed={statuses[student.id] === option.status} className={`${statuses[student.id] === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => setDraft((current) => ({
                     key: draftKey,
                     statuses: { ...(current.key === draftKey ? current.statuses : {}), [student.id]: option.status },
                     notes: current.key === draftKey ? current.notes : {},
                   }))}>{option.label}</button>
                 ))}
               </div>
-              {statuses[student.id] !== 'PRESENT' ? (
+              {statuses[student.id] === 'ABSENT' || statuses[student.id] === 'LATE' ? (
                 <input className="attendance-note" value={notes[student.id] ?? ''} onChange={(event) => setDraft((current) => ({
                   key: draftKey,
-                  statuses: current.key === draftKey ? current.statuses : {},
+                  statuses: current.key === draftKey ? current.statuses : { ...defaultStatuses },
                   notes: { ...(current.key === draftKey ? current.notes : {}), [student.id]: event.target.value },
                 }))} placeholder="Optional note" aria-label={`Optional note for ${student.firstName} ${student.lastName}`} />
               ) : null}
@@ -433,38 +547,56 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
             <span><i className="total-dot present-dot" /> Present: <strong>{totals.present}</strong></span>
             <span><i className="total-dot absent-dot" /> Absent: <strong>{totals.absent}</strong></span>
             <span><i className="total-dot late-dot" /> Late: <strong>{totals.late}</strong></span>
+            <span>Unmarked: <strong>{unmarkedCount}</strong></span>
+            {dirtyStudentIds.length > 0 ? <span className="attendance-unsaved-count">{dirtyStudentIds.length} unsaved changes</span> : null}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {existingSession && (
+            {existingSession?.status === 'COMPLETED' && (
               <button
                 type="button"
                 className="secondary-button"
-                disabled={saving}
+                disabled={saving || unmarkedCount > 0}
                 onClick={() => setShowCorrectionModal(true)}
               >
                 Audited Correction
               </button>
             )}
-            <button type="submit" className="primary-button attendance-save-button" disabled={saving}>
-              {saving ? 'Saving…' : existingSession ? 'Save Changes' : 'Save Attendance'}
+            <button type="submit" className="primary-button attendance-save-button" disabled={saving || dirtyStudentIds.length === 0}>
+              {saving ? 'Saving…' : existingSession?.status === 'COMPLETED' ? 'Continue to Audited Correction' : existingSession ? 'Save Changes' : 'Save Attendance'}
             </button>
           </div>
         </footer>
       </form>
 
-      {showCorrectionModal && existingSession && (
+      {pendingDiscard && (
+        <div className="attendance-discard-backdrop" role="presentation">
+          <section className="attendance-discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="attendance-discard-title">
+            <h2 id="attendance-discard-title">Discard unsaved attendance?</h2>
+            <p>You have unsaved attendance changes. Continue without saving?</p>
+            <div>
+              <button type="button" className="secondary-button" onClick={() => setPendingDiscard(null)}>Cancel</button>
+              <button type="button" className="primary-button" onClick={discardAndContinue}>Discard Changes</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showCorrectionModal && existingSession?.status === 'COMPLETED' && (
         <AttendanceCorrectionModal
           isOpen={showCorrectionModal}
           sessionId={existingSession.id}
           className={attendanceClass.className}
           section={attendanceClass.section}
           date={date}
-          records={attendanceClass.students.map((student) => ({
-            student_id: student.id,
-            student_name: `${student.firstName} ${student.lastName}`,
-            status: (statuses[student.id] ?? 'PRESENT') as 'PRESENT' | 'ABSENT' | 'LATE',
-            note: notes[student.id] ?? '',
-          }))}
+          records={attendanceClass.students.map((student) => {
+            const status = statuses[student.id] ?? 'UNMARKED'
+            return {
+              student_id: student.id,
+              student_name: `${student.firstName} ${student.lastName}`,
+              status: isAttendanceStatus(status) ? status : 'PRESENT',
+              note: notes[student.id] ?? '',
+            }
+          })}
           onClose={() => setShowCorrectionModal(false)}
           onSave={async (payload) => {
             if (onCorrectAttendance) {
@@ -499,11 +631,11 @@ function AttendanceClassCard({ attendanceClass, date, attendance, canEdit, canVi
     ? 'In Trash'
     : !session
       ? 'Not Marked'
-      : records.length < attendanceClass.students.length
-        ? 'In Progress'
-        : 'Completed'
+      : session.status === 'COMPLETED'
+        ? 'Completed'
+        : 'In Progress'
   const actions: ActionItem[] = []
-  if (canEdit && session && records.length > 0 && onCorrect) {
+  if (canEdit && session?.status === 'COMPLETED' && records.length === attendanceClass.students.length && onCorrect) {
     actions.push({
       label: 'Correct Attendance',
       onClick: onCorrect,

@@ -33,6 +33,11 @@ export function AttendanceCorrectionModal({
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const initialRecordsByStudentId = new Map(initialRecords.map((record) => [record.student_id, record]))
+  const changedRecords = records.filter((record) => {
+    const initialRecord = initialRecordsByStudentId.get(record.student_id)
+    return initialRecord?.status !== record.status || (initialRecord?.note ?? '') !== (record.note ?? '')
+  })
 
   if (!isOpen) return null
 
@@ -48,12 +53,16 @@ export function AttendanceCorrectionModal({
       setError('A mandatory correction reason is required.')
       return
     }
+    if (changedRecords.length === 0) {
+      setError('Change at least one student attendance status before submitting.')
+      return
+    }
     setError('')
     setSaving(true)
     try {
       await onSave({
         sessionId,
-        records,
+        records: changedRecords,
         reason: reason.trim(),
       })
       onClose()
@@ -107,6 +116,10 @@ export function AttendanceCorrectionModal({
             </table>
           </div>
 
+          <p role="status" aria-live="polite">
+            {changedRecords.length} student {changedRecords.length === 1 ? 'record' : 'records'} will be corrected.
+          </p>
+
           <label>
             Correction reason (required)
             <textarea
@@ -125,7 +138,7 @@ export function AttendanceCorrectionModal({
             <button type="button" className="secondary-button" onClick={onClose} disabled={saving}>
               Cancel
             </button>
-            <button type="submit" className="primary-button" disabled={saving || !reason.trim()}>
+            <button type="submit" className="primary-button" disabled={saving || !reason.trim() || changedRecords.length === 0}>
               {saving ? 'Submitting…' : 'Submit Correction'}
             </button>
           </div>
@@ -134,4 +147,3 @@ export function AttendanceCorrectionModal({
     </div>
   )
 }
-

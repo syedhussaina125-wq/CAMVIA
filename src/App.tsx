@@ -57,6 +57,7 @@ import {
   type SchoolUser,
   type SessionUser,
 } from './mockData'
+import { AttendanceNavigationGuardContext, type AttendanceNavigationGuard } from './components/AttendanceNavigationGuard'
 const StudentDetailPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentDetailPage })))
 const StudentsPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentsPage })))
 const AttendancePage = lazy(() => import('./AttendancePages').then((module) => ({ default: module.AttendancePage })))
@@ -95,6 +96,7 @@ import { fetchAttendanceState, saveAttendance as saveLiveAttendance, correctAtte
 import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication, deleteCommunicationDraft } from './services/communication'
 import { fetchLiveAlerts } from './services/alerts'
+import { formatRpcErrorMessage } from './utils/errorMapping'
 import {
   fetchAdministrationSnapshot,
   saveCampusSettings,
@@ -1104,8 +1106,23 @@ function App() {
       setToast({ type: 'success', text: 'Student added successfully.' })
     } catch (error) {
       dispatchBuddyEvent('operation-error')
-      console.error('[Supabase] Student creation failed:', error instanceof Error ? error.message : 'Unknown error')
-      throw new Error(error instanceof Error ? error.message : 'Unable to add this student.')
+      const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : undefined
+      const status = typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number'
+        ? error.status
+        : undefined
+      const errorFields = typeof error === 'object' && error !== null
+        ? error as Record<string, unknown>
+        : {}
+      console.error('[Supabase] Student creation failed:', {
+        code,
+        status,
+        message: errorFields.message ?? (error instanceof Error ? error.message : error),
+        details: errorFields.details,
+        hint: errorFields.hint,
+      })
+      throw new Error(formatRpcErrorMessage(error))
     }
   }
 
@@ -2317,6 +2334,19 @@ function AppShell({
 }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const attendanceNavigationGuardRef = useRef<AttendanceNavigationGuard | null>(null)
+  const attendanceNavigationGuard = useMemo(() => ({
+    registerGuard: (guard: AttendanceNavigationGuard | null) => {
+      attendanceNavigationGuardRef.current = guard
+      return () => {
+        if (attendanceNavigationGuardRef.current === guard) {
+          attendanceNavigationGuardRef.current = null
+        }
+      }
+    },
+    shouldBlock: (destination: string, onDiscard?: () => void) =>
+      attendanceNavigationGuardRef.current?.(destination, onDiscard) ?? false,
+  }), [])
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -2433,6 +2463,7 @@ function AppShell({
     .toUpperCase()
 
   const openSearchResult = (result: GlobalSearchResult) => {
+    if (attendanceNavigationGuard.shouldBlock(result.path)) return
     navigate(result.path)
     setSearchQuery('')
     setSearchFocused(false)
@@ -2441,6 +2472,7 @@ function AppShell({
   }
 
   return (
+    <AttendanceNavigationGuardContext.Provider value={attendanceNavigationGuard}>
     <div className={`app-shell ${user.role === 'admin' || user.role === 'principal' ? 'executive-shell' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
@@ -2474,6 +2506,7 @@ function AppShell({
                 type="button"
                 className={`nav-item ${isActive ? 'active' : ''}`}
                 onClick={() => {
+                  if (attendanceNavigationGuard.shouldBlock(item.path)) return
                   navigate(item.path)
                   setSidebarOpen(false)
                 }}
@@ -2505,7 +2538,9 @@ function AppShell({
             type="button"
             className="nav-item profile-item"
             onClick={() => {
-              navigate(defaultDashboardForRole(user.role))
+              const destination = defaultDashboardForRole(user.role)
+              if (attendanceNavigationGuard.shouldBlock(destination)) return
+              navigate(destination)
               setSidebarOpen(false)
             }}
           >
@@ -2518,6 +2553,7 @@ function AppShell({
             className="nav-item danger-item"
             onClick={() => {
               setSidebarOpen(false)
+              if (attendanceNavigationGuard.shouldBlock('/login', onLogout)) return
               onLogout()
             }}
           >
@@ -2712,6 +2748,7 @@ function AppShell({
         </Suspense>
       ) : null}
     </div>
+    </AttendanceNavigationGuardContext.Provider>
   )
 }
 

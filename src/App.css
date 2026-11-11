@@ -4048,6 +4048,11 @@ table tbody tr:last-child td,
   background: #fff;
 }
 
+.attendance-student-row.changed {
+  border-color: #9ab8f5;
+  background: #fbfdff;
+}
+
 .attendance-student-person {
   display: flex;
   align-items: center;
@@ -4070,6 +4075,12 @@ table tbody tr:last-child td,
 .attendance-student-person span {
   color: #71829a;
   font-size: 0.76rem;
+}
+
+.attendance-student-person .attendance-row-state {
+  color: #315fa8;
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .attendance-segmented {
@@ -4157,6 +4168,11 @@ table tbody tr:last-child td,
   color: #203d60;
 }
 
+.attendance-unsaved-count {
+  color: #315fa8;
+  font-weight: 700;
+}
+
 .total-dot {
   width: 8px;
   height: 8px;
@@ -4180,6 +4196,44 @@ table tbody tr:last-child td,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.attendance-discard-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 32, 57, 0.48);
+}
+
+.attendance-discard-dialog {
+  width: min(100%, 420px);
+  padding: 22px;
+  border: 1px solid #e4ebf6;
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 20px 55px rgba(13, 30, 55, 0.25);
+}
+
+.attendance-discard-dialog h2 {
+  margin: 0 0 8px;
+  color: #1c395e;
+  font-size: 1.1rem;
+}
+
+.attendance-discard-dialog p {
+  margin: 0;
+  color: #60738f;
+  line-height: 1.5;
+}
+
+.attendance-discard-dialog > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 20px;
 }
 
 .attendance-empty-state {
@@ -4330,6 +4384,7 @@ table tbody tr:last-child td,
 
   .attendance-totals {
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 5px;
     font-size: 0.76rem;
   }

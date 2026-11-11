@@ -30,6 +30,7 @@ import { trashStudent } from './services/trash'
 import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
 import { StudentEditModal } from './components/StudentEditModal'
 import { GuardianModal } from './components/GuardianModal'
+import { formatRpcErrorMessage } from './utils/errorMapping'
 
 type StudentPageUser = {
   id: number
@@ -131,6 +132,9 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       .map((student) => student.section),
   )].sort()
   const canCreateStudents = user.role === 'admin' || user.role === 'teacher'
+  const activeTeacherScopes = teacherScopes.filter((scope) =>
+    scope.active && scope.school_id === user.schoolId,
+  )
 
   useEffect(() => {
     if (!canCreateStudents) return
@@ -147,7 +151,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       setCampusId((current) => options.campuses.some((campus) => campus.id === current) ? current : options.campuses[0]?.id ?? '')
     }).catch((optionsError: unknown) => {
       if (!active) return
-      setCreationOptionsError(optionsError instanceof Error ? optionsError.message : 'Student creation options could not be loaded.')
+      setCreationOptionsError(formatRpcErrorMessage(optionsError))
     }).finally(() => {
       if (active) setCreationOptionsLoading(false)
     })
@@ -187,6 +191,22 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const handleAddSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setStudentSaveError('')
+    const normalizedStudentId = form.studentId.trim()
+    if (user.schoolId && students.some((existingStudent) =>
+      existingStudent.studentId === normalizedStudentId &&
+      existingStudent.schoolId === user.schoolId,
+    )) {
+      setStudentSaveError('This Student ID is already in use at your school. Enter a different Student ID and try again.')
+      return
+    }
+    if (user.role === 'teacher' && !activeTeacherScopes.some((scope) =>
+      scope.campus_id === campusId &&
+      scope.class_name === form.className.trim() &&
+      scope.section === form.section.trim(),
+    )) {
+      setStudentSaveError('This class, section, or campus is not in your active teacher assignments. Ask an Admin to verify your assignment.')
+      return
+    }
     setStudentSaving(true)
     const submissionPayload: NewStudent = user.role === 'teacher'
       ? {
@@ -199,7 +219,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       setForm(emptyStudentForm)
       setShowAddForm(false)
     } catch (saveError) {
-      setStudentSaveError(saveError instanceof Error ? saveError.message : 'Unable to create this student.')
+      setStudentSaveError(formatRpcErrorMessage(saveError))
     } finally {
       setStudentSaving(false)
     }
@@ -358,6 +378,12 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           <h2>Add Student</h2>
           {creationOptionsError ? <p className="communication-feedback error" role="alert">{creationOptionsError}</p> : null}
           {studentSaveError ? <p className="communication-feedback error" role="alert">{studentSaveError}</p> : null}
+          {user.role === 'teacher' && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length === 0
+            ? <p className="communication-feedback error" role="alert">No active class assignments were found for your account. Ask an Admin to assign a campus, class, and section before creating a student.</p>
+            : null}
+          {user.role === 'teacher' && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length > 0 && campuses.length === 0
+            ? <p className="communication-feedback error" role="alert">No active campus is available for your class assignments. Ask an Admin to review the assigned campus.</p>
+            : null}
           <label>Campus<select required disabled={creationOptionsLoading || studentSaving || campuses.length === 0} value={campusId} onChange={(event) => { setCampusId(event.target.value); if (user.role === 'teacher') setForm((current) => ({ ...current, className: '', section: '' })) }}><option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}</select></label>
           <label>First name<input required value={form.firstName} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
           <label>Last name<input required value={form.lastName} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} /></label>

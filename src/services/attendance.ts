@@ -155,11 +155,13 @@ export async function saveAttendance(
   }
 
   const rosterIds = new Set(attendanceClass.students.map((student) => student.id))
-  const submittedIds = Object.keys(submission.statuses)
+  const submittedIds = submission.changedStudentIds
   if (submission.classId !== attendanceClass.id ||
-    submittedIds.length !== rosterIds.size ||
-    submittedIds.some((studentId) => !rosterIds.has(studentId))) {
-    throw new Error('Attendance must include exactly every student in the selected class.')
+    submittedIds.length === 0 ||
+    new Set(submittedIds).size !== submittedIds.length ||
+    submittedIds.some((studentId) => !rosterIds.has(studentId)) ||
+    submittedIds.some((studentId) => !Object.prototype.hasOwnProperty.call(submission.statuses, studentId))) {
+    throw new Error('Attendance changes must include one or more students in the selected class.')
   }
   if (submittedIds.some((studentId) => !['PRESENT', 'ABSENT', 'LATE'].includes(submission.statuses[studentId]))) {
     throw new Error('One or more attendance statuses are invalid.')
@@ -172,10 +174,10 @@ export async function saveAttendance(
     target_class_name: attendanceClass.className,
     target_section: attendanceClass.section,
     target_attendance_date: submission.date,
-    target_records: attendanceClass.students.map((student) => ({
-      student_id: student.id,
-      status: submission.statuses[student.id],
-      note: (submission.notes[student.id] ?? '').trim(),
+    target_records: submittedIds.map((studentId) => ({
+      student_id: studentId,
+      status: submission.statuses[studentId],
+      note: (submission.notes[studentId] ?? '').trim(),
     })),
   })
   if (error) {

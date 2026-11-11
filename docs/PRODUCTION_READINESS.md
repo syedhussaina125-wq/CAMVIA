@@ -41,10 +41,13 @@ The repository currently contains these migration files:
 29. `030_normalize_attendance_scope.sql`
 30. `031_unified_trash.sql`
 31. `032_attendance_school_timezone.sql`
+32. `033_individual_attendance_drafts.sql`
 
 There is no `021` migration file. Do not replay this list against a live project. Migration `010_fix_student_school_scope.sql` was historically superseded and must not be applied blindly. Prior phase verification records migrations `017` and `018` as applied; the live ledger for later migrations has not been verified. This workspace is not linked to Supabase, so the CLI cannot independently read the remote migration ledger; confirm the target project's history before applying only outstanding migrations, in order. Migrations `029` and `030` must be reviewed and applied in sequence if they are still outstanding. Do not apply controlled test-data SQL to production. Take a verified backup before any future migration, and do not edit migrations already applied to a live project.
 
 Migration `032` makes attendance's no-future-date rule follow the configured school timezone, and reports invalid date/submission values separately from unauthorized attendance scope. Apply it only when confirmed outstanding.
+
+Migration `033` allows attendance to be saved by changed student IDs while a session is in progress, completes a session once all active students have records, and prevents normal saves from modifying finalized sessions. Finalized attendance remains editable only through the audited correction RPC. Review and apply it only if outstanding in the target project's migration ledger.
 
 ## Environment variables
 

@@ -64,6 +64,10 @@ failures. Review and apply `032` only if it is outstanding. This workspace is
 not linked to the app's Supabase project, so the CLI cannot
 independently read the remote migration ledger or apply changes.
 
+Migration `033` supports per-student attendance drafts and blocks ordinary
+saves from altering finalized sessions; finalized updates must use the audited
+correction RPC. Verify it is outstanding and review it before applying.
+
 Deploy `supabase/functions/manage-school-user` and
 `supabase/functions/purge-expired-trash` to that same Supabase project after
 reviewing their required server-only configuration and matching schema

@@ -396,6 +396,7 @@ export function getAttendanceTrend(
 export type AttendanceSubmission = {
   date: string
   classId: string
+  changedStudentIds: string[]
   statuses: Record<string, AttendanceStatus>
   notes: Record<string, string>
 }
