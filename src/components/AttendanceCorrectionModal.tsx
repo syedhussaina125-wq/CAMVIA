@@ -15,6 +15,7 @@ type AttendanceCorrectionModalProps = {
   section: string
   date: string
   records: AttendanceCorrectionRecord[]
+  originalRecords?: AttendanceCorrectionRecord[]
   onClose: () => void
   onSave: (payload: { sessionId: string; records: AttendanceCorrectionRecord[]; reason: string }) => Promise<void>
 }
@@ -26,6 +27,7 @@ export function AttendanceCorrectionModal({
   section,
   date,
   records: initialRecords,
+  originalRecords,
   onClose,
   onSave,
 }: AttendanceCorrectionModalProps) {
@@ -33,7 +35,7 @@ export function AttendanceCorrectionModal({
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const initialRecordsByStudentId = new Map(initialRecords.map((record) => [record.student_id, record]))
+  const initialRecordsByStudentId = new Map((originalRecords ?? initialRecords).map((record) => [record.student_id, record]))
   const changedRecords = records.filter((record) => {
     const initialRecord = initialRecordsByStudentId.get(record.student_id)
     return initialRecord?.status !== record.status || (initialRecord?.note ?? '') !== (record.note ?? '')

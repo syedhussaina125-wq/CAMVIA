@@ -8,8 +8,6 @@ import {
   getFeeAgingBuckets,
   getFeeInvoices,
   getFeeMetrics,
-  localDateKey,
-  localMonthKey,
   type FeeAccessUser,
   type FeeInvoiceCreationInput,
   type FeeInvoiceView,
@@ -20,8 +18,10 @@ import {
 } from './feeData'
 import { RecordActionMenu, DestructiveActionModal } from './components/RecordActionControls'
 import { InvoiceEditModal } from './components/InvoiceEditModal'
+import { WhatsAppComposer } from './components/WhatsAppComposer'
 import { updateFeeInvoice, voidFeeInvoice, voidFeePayment } from './services/fees'
 import { formatRpcErrorMessage } from './utils/errorMapping'
+import { addCalendarDays, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
 
 type FeesPagesProps = {
   user: FeeAccessUser & { name: string }
@@ -33,16 +33,19 @@ type FeesPagesProps = {
   onRecordPayment: (payment: FeePaymentSubmission) => Promise<boolean>
   onCreateInvoice?: (invoice: FeeInvoiceCreationInput) => Promise<boolean>
   onRetry: () => void
-  onRefresh?: () => void
+  onRefresh?: () => void | Promise<unknown>
 }
 
 const paymentMethods: PaymentMethod[] = ['Cash', 'Bank Transfer', 'Card', 'Online']
-const currentDate = localDateKey()
+
+function schoolDateAfterDays(timeZone: string | null | undefined, days: number): string {
+  return addCalendarDays(schoolDateKey(timeZone), days)
+}
 
 export function FeesPage(props: FeesPagesProps) {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const [month, setMonth] = useState(localMonthKey())
+  const [month, setMonth] = useState(() => schoolMonthKey(props.user.schoolTimezone))
   const [classFilter, setClassFilter] = useState('')
   const [sectionFilter, setSectionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -156,7 +159,7 @@ export function FeesPage(props: FeesPagesProps) {
           </div>
           {filteredInvoices.length ? (
             <>
-              <FeeInvoiceTable invoices={paginatedInvoices} onView={(id) => navigate(`/fees/${encodeURIComponent(id)}`)} />
+              <FeeInvoiceTable invoices={paginatedInvoices} user={props.user} onView={(id) => navigate(`/fees/${encodeURIComponent(id)}`)} />
               {totalPages > 1 && (
                 <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
                   <button
@@ -219,6 +222,7 @@ export function FeesPage(props: FeesPagesProps) {
           isOpen={showCreateModal}
           onClose={() => setShowCreateModal(false)}
           students={props.students}
+          timeZone={props.user.schoolTimezone}
           onCreate={props.onCreateInvoice}
         />
       ) : null}
@@ -263,7 +267,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   }) => {
     setActionError('')
     await updateFeeInvoice(props.students, payload)
-    if (props.onRefresh) props.onRefresh()
+    if (props.onRefresh) await props.onRefresh()
   }
 
   const handleVoidInvoice = async (reason: string) => {
@@ -271,7 +275,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
     setActionError('')
     try {
       await voidFeeInvoice(props.students, { invoiceId: voidingInvoice.id, reason })
-      if (props.onRefresh) props.onRefresh()
+      if (props.onRefresh) await props.onRefresh()
     } catch (err) {
       setActionError(formatRpcErrorMessage(err))
     }
@@ -282,7 +286,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
     setActionError('')
     try {
       await voidFeePayment(props.students, { paymentId: voidingPayment.id, reason })
-      if (props.onRefresh) props.onRefresh()
+      if (props.onRefresh) await props.onRefresh()
     } catch (err) {
       setActionError(formatRpcErrorMessage(err))
     }
@@ -332,6 +336,15 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
                     <span><strong>{formatMonth(item.month)}</strong><small>Due {formatDate(item.dueDate)}</small></span>
                     <span><strong>{formatCurrency(item.outstandingAmount)}</strong><small className={`fee-status-badge ${statusClass(item.status)}`}>{item.status}</small></span>
                   </button>
+                  {item.outstandingAmount > 0 ? (
+                    <WhatsAppComposer
+                      student={student}
+                      user={props.user}
+                      initialTemplate="Fee Reminder"
+                      buttonLabel="WhatsApp"
+                      context={{ fee: { outstandingAmount: item.outstandingAmount, dueDate: item.dueDate } }}
+                    />
+                  ) : null}
                   {canMutate && !item.voidedAt && (
                     <RecordActionMenu
                       actions={[
@@ -360,7 +373,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
             </div>
           </section>
 
-          {canMutate && !invoice.voidedAt && invoice.outstandingAmount > 0 ? <PaymentForm key={invoice.id} invoice={invoice} onRecord={props.onRecordPayment} /> : null}
+          {canMutate && !invoice.voidedAt && invoice.outstandingAmount > 0 ? <PaymentForm key={invoice.id} invoice={invoice} timeZone={props.user.schoolTimezone} onRecord={props.onRecordPayment} /> : null}
         </div>
 
         <section className="fees-panel payment-history-panel">
@@ -425,6 +438,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
           isOpen={showCreateModal}
           onClose={() => setShowCreateModal(false)}
           students={props.students}
+          timeZone={props.user.schoolTimezone}
           defaultStudentId={student.id}
           onCreate={props.onCreateInvoice}
         />
@@ -433,7 +447,11 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
   )
 }
 
-function FeeInvoiceTable({ invoices, onView }: { invoices: FeeInvoiceView[]; onView: (id: string) => void }) {
+function FeeInvoiceTable({ invoices, user, onView }: {
+  invoices: FeeInvoiceView[]
+  user: FeeAccessUser
+  onView: (id: string) => void
+}) {
   return (
     <>
       <div className="fee-table-wrap">
@@ -444,22 +462,51 @@ function FeeInvoiceTable({ invoices, onView }: { invoices: FeeInvoiceView[]; onV
             <td>{invoice.student.className}-{invoice.student.section}</td>
             <td>{formatCurrency(invoice.totalAmount)}</td><td>{formatCurrency(invoice.paidAmount)}</td><td>{formatCurrency(invoice.outstandingAmount)}</td><td>{invoice.status === 'Paid' ? '—' : formatDate(invoice.dueDate)}</td>
             <td><span className={`fee-status-badge ${statusClass(invoice.status)}`}>{invoice.status}</span></td>
-            <td><button type="button" className="text-button" onClick={() => onView(invoice.studentId)}>View</button></td>
+            <td>
+              <div className="fee-whatsapp-actions">
+                <button type="button" className="text-button" onClick={() => onView(invoice.studentId)}>View</button>
+                {invoice.outstandingAmount > 0 ? (
+                  <WhatsAppComposer
+                    student={invoice.student}
+                    user={user}
+                    initialTemplate="Fee Reminder"
+                    buttonLabel="WhatsApp"
+                    context={{ fee: { outstandingAmount: invoice.outstandingAmount, dueDate: invoice.dueDate } }}
+                  />
+                ) : null}
+              </div>
+            </td>
           </tr>)}</tbody>
         </table>
       </div>
       <div className="fee-mobile-list">{invoices.map((invoice) => <article className="fee-mobile-card" key={invoice.id}>
         <div className="fee-mobile-card-heading"><span><strong>{invoice.student.firstName} {invoice.student.lastName}</strong><small>{invoice.student.studentId} · {invoice.student.className}-{invoice.student.section}</small></span><span className={`fee-status-badge ${statusClass(invoice.status)}`}>{invoice.status}</span></div>
         <div className="fee-mobile-values"><span>Expected<strong>{formatCurrency(invoice.totalAmount)}</strong></span><span>Paid<strong>{formatCurrency(invoice.paidAmount)}</strong></span><span>Outstanding<strong>{formatCurrency(invoice.outstandingAmount)}</strong></span><span>Due date<strong>{invoice.status === 'Paid' ? '—' : formatDate(invoice.dueDate)}</strong></span></div>
-        <button type="button" className="secondary-button small-button" onClick={() => onView(invoice.studentId)}>View fee details</button>
+        <div className="fee-mobile-actions">
+          <button type="button" className="secondary-button small-button" onClick={() => onView(invoice.studentId)}>View fee details</button>
+          {invoice.outstandingAmount > 0 ? (
+            <WhatsAppComposer
+              student={invoice.student}
+              user={user}
+              initialTemplate="Fee Reminder"
+              buttonLabel="WhatsApp reminder"
+              context={{ fee: { outstandingAmount: invoice.outstandingAmount, dueDate: invoice.dueDate } }}
+            />
+          ) : null}
+        </div>
       </article>)}</div>
     </>
   )
 }
 
-function PaymentForm({ invoice, onRecord }: { invoice: FeeInvoiceView; onRecord: (payment: FeePaymentSubmission) => Promise<boolean> }) {
+function PaymentForm({ invoice, timeZone, onRecord }: {
+  invoice: FeeInvoiceView
+  timeZone?: string | null
+  onRecord: (payment: FeePaymentSubmission) => Promise<boolean>
+}) {
+  const currentDate = schoolDateKey(timeZone)
   const [amount, setAmount] = useState(String(invoice.outstandingAmount))
-  const [date, setDate] = useState(currentDate)
+  const [date, setDate] = useState(() => currentDate)
   const [method, setMethod] = useState<PaymentMethod>('Cash')
   const [reference, setReference] = useState('')
   const [note, setNote] = useState('')
@@ -550,12 +597,19 @@ function formatCurrency(amount: number): string {
 
 function formatDate(date: string): string {
   if (!date) return '—'
-  return new Intl.DateTimeFormat('en', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${date}T00:00:00`))
+  return new Intl.DateTimeFormat('en', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${date}T00:00:00Z`))
 }
 
 function formatMonth(month: string): string {
-  const date = new Date(`${month}-01T00:00:00`)
-  return Number.isNaN(date.getTime()) ? month : new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(date)
+  const date = new Date(`${month}-01T00:00:00Z`)
+  return Number.isNaN(date.getTime())
+    ? month
+    : new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date)
 }
 
 function statusClass(status: FeeInvoiceView['status']): string {
@@ -570,22 +624,20 @@ function CreateInvoiceModal({
   isOpen,
   onClose,
   students,
+  timeZone,
   defaultStudentId,
   onCreate,
 }: {
   isOpen: boolean
   onClose: () => void
   students: Student[]
+  timeZone?: string | null
   defaultStudentId?: string
   onCreate: (submission: FeeInvoiceCreationInput) => Promise<boolean>
 }) {
   const [studentId, setStudentId] = useState(defaultStudentId ?? '')
-  const [feePeriod, setFeePeriod] = useState(localMonthKey())
-  const [dueDate, setDueDate] = useState(() => {
-    const next = new Date()
-    next.setDate(next.getDate() + 14)
-    return localDateKey(next)
-  })
+  const [feePeriod, setFeePeriod] = useState(() => schoolMonthKey(timeZone))
+  const [dueDate, setDueDate] = useState(() => schoolDateAfterDays(timeZone, 14))
   const [lineItems, setLineItems] = useState<Array<{ id: string; label: string; amount: string }>>([
     { id: '1', label: 'Monthly Tuition Fee', amount: '' },
   ])

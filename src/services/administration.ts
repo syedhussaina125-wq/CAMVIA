@@ -1,4 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { runMutation } from './mutations'
+import { normalizeSchoolTimezone, requireValidSchoolTimezone } from '../utils/schoolTimezone'
 
 const client = supabase as any
 
@@ -82,7 +84,10 @@ export async function fetchAdministrationSnapshot(
   if (!schoolResult.data) throw new Error('The current school settings are unavailable in your authorized scope.')
 
   return {
-    school: schoolResult.data as SchoolSettingsRecord,
+    school: {
+      ...schoolResult.data,
+      timezone: normalizeSchoolTimezone(schoolResult.data.timezone),
+    } as SchoolSettingsRecord,
     campuses: (campusResult.data ?? []) as CampusSettingsRecord[],
     integrations: (integrationResult.data ?? []) as IntegrationConfigRecord[],
   }
@@ -94,15 +99,20 @@ export async function saveSchoolSettings(
   values: Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>,
 ): Promise<SchoolSettingsRecord> {
   const db = requireSupabase()
-  const { data, error } = await db.from('schools')
-    .update(values)
+  const timezone = requireValidSchoolTimezone(values.timezone)
+  const data = await runMutation<SchoolSettingsRecord>('update school settings', schoolId, () => db.from('schools')
+    .update({ ...values, timezone })
     .eq('id', schoolId)
     .eq('organization_id', organizationId)
     .select('id, organization_id, name, short_name, email, phone, address, timezone, country, academic_year, updated_at, updated_by')
-    .single()
-
-  if (error) throw error
-  return data as SchoolSettingsRecord
+    .maybeSingle())
+  if (!data || data.id !== schoolId || data.organization_id !== organizationId) {
+    throw new Error('The school settings update was not confirmed for the requested school.')
+  }
+  return {
+    ...data,
+    timezone: normalizeSchoolTimezone(data.timezone),
+  } as SchoolSettingsRecord
 }
 
 export async function saveCampusSettings(
@@ -112,14 +122,15 @@ export async function saveCampusSettings(
   values: Pick<CampusSettingsRecord, 'name' | 'code' | 'address' | 'status'>,
 ): Promise<CampusSettingsRecord> {
   const db = requireSupabase()
-  const { data, error } = await db.from('campuses')
+  const data = await runMutation<CampusSettingsRecord>('update campus settings', campusId, () => db.from('campuses')
     .update(values)
     .eq('id', campusId)
     .eq('school_id', schoolId)
     .eq('organization_id', organizationId)
     .select('id, organization_id, school_id, name, code, address, status, updated_at, updated_by')
-    .single()
-
-  if (error) throw error
+    .maybeSingle())
+  if (!data || data.id !== campusId || data.school_id !== schoolId || data.organization_id !== organizationId) {
+    throw new Error('The campus settings update was not confirmed for the requested campus.')
+  }
   return data as CampusSettingsRecord
 }

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, Check, FilePlus2, MessageSquareText, Search, Send, X } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import type { Student } from './studentData'
+import { getStudentAttendance } from './attendanceData'
+import { getFeeInvoices } from './feeData'
 import {
   canCreateCommunication,
   communicationChannels,
   communicationTypes,
-  createAttendanceMessageTemplate,
   createFeeMessageTemplate,
   getAccessibleCommunication,
   type CommunicationChannel,
@@ -22,7 +23,9 @@ import type { AttendanceState } from './attendanceData'
 import type { FeeState } from './feeData'
 import type { SchoolUser } from './mockData'
 import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
+import { WhatsAppComposer } from './components/WhatsAppComposer'
 import { deleteCommunicationDraft } from './services/communication'
+import { formatInSchoolTimezone, schoolDateKey } from './utils/schoolTimezone'
 
 type CommunicationPageProps = {
   user: CommunicationUser
@@ -93,8 +96,8 @@ export function CommunicationPage(props: CommunicationPageProps) {
   )
   const userNames = useMemo(() => new Map(props.users.map((user) => [user.id, user.name])), [props.users])
   const pendingPrefill = useMemo(
-    () => buildPrefill(searchParams, authorizedStudents, props.fees),
-    [searchParams, authorizedStudents, props.fees],
+    () => buildPrefill(searchParams, authorizedStudents, props.fees, props.attendance),
+    [searchParams, authorizedStudents, props.fees, props.attendance],
   )
   const canCreate = communicationTypes.some((type) => canCreateCommunication(props.user, type))
   const isReviewer = props.user.role === 'admin' || props.user.role === 'principal'
@@ -141,7 +144,11 @@ export function CommunicationPage(props: CommunicationPageProps) {
 
   const draftsCount = messages.filter((message) => message.status === 'DRAFT' || message.status === 'REJECTED').length
   const approvalCount = messages.filter((message) => message.status === 'AWAITING_APPROVAL').length
-  const sentToday = messages.filter((message) => message.status === 'SENT' && message.sentAt?.slice(0, 10) === localDateKey()).length
+  const today = schoolDateKey(props.user.schoolTimezone)
+  const sentToday = messages.filter((message) => {
+    if (message.status !== 'SENT' || !message.sentAt || !Number.isFinite(Date.parse(message.sentAt))) return false
+    return schoolDateKey(props.user.schoolTimezone, new Date(message.sentAt)) === today
+  }).length
   const deliveryIssues = messages.filter((message) => message.status === 'SENT' && message.deliveryStatus === 'FAILED').length
 
   const openNewDraft = () => {
@@ -304,13 +311,14 @@ export function CommunicationPage(props: CommunicationPageProps) {
         {editing ? <CommunicationEditor
           form={editing}
           students={authorizedStudents}
-            fees={props.fees}
-            user={props.user}
-            onChange={setEditing}
-            onCancel={() => setEditing(null)}
-            onSubmit={saveDraft}
-            saving={saving}
-          /> : null}
+          fees={props.fees}
+          attendance={props.attendance}
+          user={props.user}
+          onChange={setEditing}
+          onCancel={() => setEditing(null)}
+          onSubmit={saveDraft}
+          saving={saving}
+        /> : null}
 
         {selectedMessageId ? (() => {
           const message = messages.find((item) => item.id === selectedMessageId)
@@ -401,10 +409,11 @@ export function CommunicationPage(props: CommunicationPageProps) {
   )
 }
 
-function CommunicationEditor({ form, students, fees, user, onChange, onCancel, onSubmit, saving }: {
+function CommunicationEditor({ form, students, fees, attendance, user, onChange, onCancel, onSubmit, saving }: {
   form: DraftFormState
   students: Student[]
   fees: FeeState
+  attendance: AttendanceState
   user: CommunicationUser
   onChange: (form: DraftFormState) => void
   onCancel: () => void
@@ -414,6 +423,18 @@ function CommunicationEditor({ form, students, fees, user, onChange, onCancel, o
   const allowedStudents = students
   const selectedStudent = allowedStudents.find((student) => student.id === form.studentId)
   const allowedTypes = communicationTypes.filter((type) => canCreateCommunication(user, type))
+  const accessibleInvoices = useMemo(
+    () => getFeeInvoices(fees, students, user).filter((invoice) => invoice.outstandingAmount > 0),
+    [fees, students, user],
+  )
+  const selectedFee = selectedStudent
+    ? accessibleInvoices.find((invoice) =>
+      invoice.studentId === selectedStudent.id &&
+      (form.sourceType !== 'FEE' || !form.sourceId || invoice.id === form.sourceId),
+    )
+    : undefined
+  const attendanceSummary = selectedStudent ? getStudentAttendance(selectedStudent, attendance) : null
+  const latestAttendance = attendanceSummary?.recent[0]
   return (
     <form className="communication-editor" onSubmit={(event) => {
       event.preventDefault()
@@ -423,7 +444,7 @@ function CommunicationEditor({ form, students, fees, user, onChange, onCancel, o
       <div className="communication-form-grid">
         <label>Student<select required value={form.studentId} onChange={(event) => {
           const student = allowedStudents.find((item) => item.id === event.target.value)
-          const invoice = fees.invoices.find((item) => item.studentId === student?.id && item.totalAmount > item.paidAmount)
+          const invoice = accessibleInvoices.find((item) => item.studentId === student?.id)
           const nextSourceType = user.role === 'finance' ? 'FEE' : form.sourceType === 'MANUAL' ? 'STUDENT' : form.sourceType
           const nextSourceId = user.role === 'finance' ? invoice?.id ?? '' : form.sourceType === 'MANUAL' ? student?.id ?? '' : form.sourceId
           onChange({
@@ -434,22 +455,54 @@ function CommunicationEditor({ form, students, fees, user, onChange, onCancel, o
             sourceType: nextSourceType,
             sourceId: nextSourceId,
             message: form.message || (user.role === 'finance' && invoice && student
-              ? createFeeMessageTemplate(student, invoice.totalAmount - invoice.paidAmount, invoice.dueDate)
-              : templateFor(form.type, student)),
+              ? createFeeMessageTemplate(student, invoice.outstandingAmount, invoice.dueDate)
+              : templateFor(form.type, student, attendance)),
           })
         }}><option value="">Select student</option>{allowedStudents.map((student) => <option key={student.id} value={student.id}>{student.firstName} {student.lastName} · {student.className}-{student.section}</option>)}</select></label>
         <label>Guardian<input readOnly value={selectedStudent?.guardian.name ?? form.guardianName} /></label>
         {form.studentId && !form.guardianId ? <p className="communication-feedback error" role="alert">No authorized guardian is linked to this student.</p> : null}
-        <label>Message type<select required value={form.type} onChange={(event) => onChange({ ...form, type: event.target.value as CommunicationType, message: form.message || templateFor(event.target.value as CommunicationType, selectedStudent) })}>{allowedTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
+        <label>Message type<select required value={form.type} onChange={(event) => onChange({ ...form, type: event.target.value as CommunicationType, message: form.message || templateFor(event.target.value as CommunicationType, selectedStudent, attendance) })}>{allowedTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
         <label>Channel<select required value={form.channel} onChange={(event) => onChange({ ...form, channel: event.target.value as CommunicationChannel })}>{communicationChannels.map((channel) => <option key={channel}>{channel}</option>)}</select></label>
-        {user.role === 'finance' ? <label className="communication-message-field">Related fee invoice<select required value={form.sourceId} onChange={(event) => onChange({ ...form, sourceType: 'FEE', sourceId: event.target.value })}><option value="">Select invoice</option>{fees.invoices.filter((invoice) => invoice.studentId === form.studentId && invoice.totalAmount > invoice.paidAmount).map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.month} · PKR {new Intl.NumberFormat('en-PK').format(invoice.totalAmount - invoice.paidAmount)} due {formatDate(invoice.dueDate)}</option>)}</select></label> : null}
+        {user.role === 'finance' ? <label className="communication-message-field">Related fee invoice<select required value={form.sourceId} onChange={(event) => onChange({ ...form, sourceType: 'FEE', sourceId: event.target.value })}><option value="">Select invoice</option>{accessibleInvoices.filter((invoice) => invoice.studentId === form.studentId).map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.month} · PKR {new Intl.NumberFormat('en-PK').format(invoice.outstandingAmount)} due {formatDate(invoice.dueDate)}</option>)}</select></label> : null}
         <label className="communication-message-field">Message<textarea required rows={7} value={form.message} onChange={(event) => onChange({ ...form, message: event.target.value })} /></label>
       </div>
       <p className="communication-template-note">Draft source: deterministic template. No AI or external messaging service is used.</p>
-      <div className="communication-editor-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button><button type="submit" className="secondary-button" disabled={saving || !form.guardianId}>{saving ? 'Saving…' : form.status === 'AWAITING_APPROVAL' ? 'Save Changes' : 'Save Draft'}</button>{form.status !== 'AWAITING_APPROVAL' ? <button type="button" className="primary-button" disabled={saving || !form.guardianId} onClick={(event) => {
+      <div className="communication-editor-actions">
+        {selectedStudent ? (
+          <WhatsAppComposer
+            student={selectedStudent}
+            user={user}
+            initialTemplate={user.role === 'finance'
+              ? 'Fee Reminder'
+              : form.type === 'Attendance Reminder'
+                ? 'Attendance Alert'
+                : form.type === 'General Notice'
+                  ? 'General Message'
+                  : 'Custom Message'}
+            initialMessage={form.type === 'Attendance Reminder' ? '' : form.message}
+            buttonLabel="Prepare WhatsApp"
+            context={{
+              attendance: attendanceSummary
+                ? {
+                    status: latestAttendance?.status ?? null,
+                    date: latestAttendance?.date,
+                    rate: attendanceSummary.counts.rate,
+                    recordedDays: attendanceSummary.counts.total,
+                  }
+                : undefined,
+              fee: selectedFee
+                ? { outstandingAmount: selectedFee.outstandingAmount, dueDate: selectedFee.dueDate }
+                : undefined,
+            }}
+          />
+        ) : null}
+        <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="submit" className="secondary-button" disabled={saving || !form.guardianId}>{saving ? 'Saving…' : form.status === 'AWAITING_APPROVAL' ? 'Save Changes' : 'Save Draft'}</button>
+        {form.status !== 'AWAITING_APPROVAL' ? <button type="button" className="primary-button" disabled={saving || !form.guardianId} onClick={(event) => {
         const formElement = event.currentTarget.closest('form')
         if (formElement instanceof HTMLFormElement && formElement.reportValidity()) onSubmit(true)
-      }}>Submit for Approval</button> : null}</div>
+        }}>Submit for Approval</button> : null}
+      </div>
     </form>
   )
 }
@@ -484,7 +537,7 @@ function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit,
                 <td><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId}</small></td>
                 <td>{message.guardianName}</td><td>{message.type}</td><td>{message.channel}</td>
                 <td><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></td>
-                <td>{userNames.get(message.createdByUserId) ?? 'School staff'}</td><td>{formatDate(message.createdAt)}</td>
+                <td>{userNames.get(message.createdByUserId) ?? 'School staff'}</td><td>{formatDateTime(message.createdAt, user.schoolTimezone)}</td>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <button type="button" className="text-button" onClick={() => {
@@ -513,7 +566,7 @@ function CommunicationMessageList({ messages, userNames, user, onSelect, onEdit,
         return (
           <article className="communication-mobile-card" key={message.id}>
             <div className="communication-mobile-heading"><div><strong>{message.student.firstName} {message.student.lastName}</strong><small>{message.student.studentId} · {message.guardianName}</small></div><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></div>
-            <div className="communication-mobile-meta"><span>{message.type}</span><span>{message.channel}</span><span>{userNames.get(message.createdByUserId) ?? 'School staff'}</span><span>{formatDate(message.createdAt)}</span></div>
+            <div className="communication-mobile-meta"><span>{message.type}</span><span>{message.channel}</span><span>{userNames.get(message.createdByUserId) ?? 'School staff'}</span><span>{formatDateTime(message.createdAt, user.schoolTimezone)}</span></div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
               <button type="button" className="secondary-button small-button" onClick={() => {
                 if (canEdit && tab === 'Drafts') onEdit(message)
@@ -548,7 +601,7 @@ function CommunicationReview({ message, user, userNames, rejectReason, onRejectR
       <div className="communication-review-heading"><div><p className="eyebrow">Message review</p><h2>{message.student.firstName} {message.student.lastName}</h2><p>{message.guardianName} · {message.type} · {message.channel}</p></div><span className={`communication-status ${message.status.toLowerCase()}`}>{displayStatus(message.status)}</span></div>
       <pre className="communication-message-body">{message.message}</pre>
       {message.rejectionReason ? <p className="communication-rejection-reason"><strong>Rejection reason:</strong> {message.rejectionReason}</p> : null}
-      <div className="communication-audit-history"><strong>History</strong>{message.history.map((entry, index) => <span key={`${entry.action}-${entry.timestamp}-${index}`}>{entry.action} · {entry.userName || userNames.get(entry.userId) || 'School staff'} · {formatDateTime(entry.timestamp)}</span>)}</div>
+      <div className="communication-audit-history"><strong>History</strong>{message.history.map((entry, index) => <span key={`${entry.action}-${entry.timestamp}-${index}`}>{entry.action} · {entry.userName || userNames.get(entry.userId) || 'School staff'} · {formatDateTime(entry.timestamp, user.schoolTimezone)}</span>)}</div>
       <div className="communication-review-actions">
         {mayEdit ? <button type="button" className="secondary-button" onClick={onEdit}>Edit</button> : null}
         {canDelete ? (
@@ -574,7 +627,7 @@ function CommunicationReview({ message, user, userNames, rejectReason, onRejectR
   )
 }
 
-function buildPrefill(searchParams: URLSearchParams, students: Student[], fees: FeeState): DraftFormState | null {
+function buildPrefill(searchParams: URLSearchParams, students: Student[], fees: FeeState, attendance: AttendanceState): DraftFormState | null {
   const studentId = searchParams.get('studentId') ?? ''
   if (!studentId) return null
   const student = students.find((item) => item.id === studentId)
@@ -584,9 +637,16 @@ function buildPrefill(searchParams: URLSearchParams, students: Student[], fees: 
   const sourceId = searchParams.get('sourceId') ?? student.id
   const type: CommunicationType = sourceType === 'FEE' ? 'Fee Reminder' : sourceType === 'ATTENDANCE' ? 'Attendance Reminder' : 'Follow-up'
   const invoice = sourceType === 'FEE'
-    ? fees.invoices.find((item) => item.id === sourceId && item.studentId === student.id)
+    ? fees.invoices.find((item) => item.id === sourceId && item.studentId === student.id && !item.voidedAt)
     : undefined
-  const amount = invoice ? Math.max(0, invoice.totalAmount - invoice.paidAmount) : 0
+  const paidForInvoice = invoice
+    ? fees.payments
+        .filter((payment) => payment.invoiceId === invoice.id && !payment.voidedAt)
+        .reduce((sum, payment) => sum + payment.amount, 0)
+    : 0
+  const amount = invoice ? Math.max(0, invoice.totalAmount - paidForInvoice) : 0
+  const studentAttendance = getStudentAttendance(student, attendance)
+  const latestAttendance = studentAttendance.recent[0]
   return {
     studentId: student.id,
     guardianId: student.guardian.id ?? '',
@@ -595,8 +655,10 @@ function buildPrefill(searchParams: URLSearchParams, students: Student[], fees: 
     channel: sourceType === 'FEE' ? 'Email' : 'WhatsApp',
     message: sourceType === 'FEE' && invoice
       ? createFeeMessageTemplate(student, amount, invoice.dueDate)
-      : sourceType === 'ATTENDANCE'
-        ? createAttendanceMessageTemplate(student, 3)
+      : sourceType === 'ATTENDANCE' && latestAttendance
+        ? `Dear Parent/Guardian,\n${student.firstName} ${student.lastName} was marked ${latestAttendance.status.toLowerCase()} on ${formatDate(latestAttendance.date)}.\nPlease contact the school if you need any clarification.`
+        : sourceType === 'ATTENDANCE'
+          ? `Dear Parent/Guardian,\nPlease contact the school regarding ${student.firstName} ${student.lastName}.`
         : `Dear Parent,\nPlease contact the school regarding ${student.firstName} ${student.lastName}.`,
     sourceType,
     sourceId,
@@ -619,9 +681,14 @@ function createBlankDraft(user: CommunicationUser): DraftFormState {
   }
 }
 
-function templateFor(type: CommunicationType, student?: Student): string {
+function templateFor(type: CommunicationType, student?: Student, attendance?: AttendanceState): string {
   if (!student) return ''
-  if (type === 'Attendance Reminder') return createAttendanceMessageTemplate(student, 3)
+  if (type === 'Attendance Reminder') {
+    const latestAttendance = getStudentAttendance(student, attendance ?? { sessions: [], records: [] }).recent[0]
+    return latestAttendance
+      ? `Dear Parent/Guardian,\n${student.firstName} ${student.lastName} was marked ${latestAttendance.status.toLowerCase()} on ${formatDate(latestAttendance.date)}.\nPlease contact the school if you need any clarification.`
+      : `Dear Parent/Guardian,\nPlease contact the school regarding ${student.firstName} ${student.lastName}.`
+  }
   if (type === 'Fee Reminder') return 'Dear Parent,\nPlease review the outstanding fee balance for your child. Contact the school finance office if payment has already been made.'
   if (type === 'General Notice') return `Dear Parent,\nPlease review this school update regarding ${student.firstName} ${student.lastName}.`
   return `Dear Parent,\nPlease contact the school regarding ${student.firstName} ${student.lastName}.`
@@ -655,14 +722,19 @@ function displayStatus(status: CommunicationStatus): string {
 }
 
 function formatDate(date: string): string {
-  return new Intl.DateTimeFormat('en', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(date))
+  return new Intl.DateTimeFormat('en', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(date))
 }
 
-function formatDateTime(date: string): string {
-  return new Intl.DateTimeFormat('en', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(date))
-}
-
-function localDateKey(): string {
-  const date = new Date()
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+function formatDateTime(date: string, timeZone?: string | null): string {
+  return formatInSchoolTimezone(new Date(date), timeZone, 'en', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }

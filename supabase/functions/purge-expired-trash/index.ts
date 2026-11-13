@@ -1,6 +1,9 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
 function getSupabaseSecretKey(): string | null {
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  if (serviceRoleKey) return serviceRoleKey
+
   const directSecret = Deno.env.get('SUPABASE_SECRET_KEY')
   if (directSecret) return directSecret
 
@@ -19,13 +22,15 @@ function getSupabaseSecretKey(): string | null {
   return null
 }
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
-      },
+      headers: corsHeaders,
     })
   }
 
@@ -36,7 +41,7 @@ Deno.serve(async (req: Request) => {
   if (!supabaseUrl || !secretKey) {
     return new Response(
       JSON.stringify({ error: 'Server misconfiguration: Supabase credentials unavailable' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }
 
@@ -48,7 +53,7 @@ Deno.serve(async (req: Request) => {
   if (!token || token !== secretKey) {
     return new Response(
       JSON.stringify({ error: 'Unauthorized: valid secret key bearer token required' }),
-      { status: 401, headers: { 'Content-Type': 'application/json' } }
+      { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }
 
@@ -62,7 +67,7 @@ Deno.serve(async (req: Request) => {
     if (error) {
       return new Response(
         JSON.stringify({ error: 'Purge failed' }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
@@ -72,12 +77,12 @@ Deno.serve(async (req: Request) => {
         purged_at: new Date().toISOString(),
         details: data,
       }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } catch {
     return new Response(
       JSON.stringify({ error: 'Internal server error' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }
 })

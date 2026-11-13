@@ -58,6 +58,7 @@ import {
   type SessionUser,
 } from './mockData'
 import { AttendanceNavigationGuardContext, type AttendanceNavigationGuard } from './components/AttendanceNavigationGuard'
+const PublicRegistrationPage = lazy(() => import('./RegistrationPages').then((module) => ({ default: module.PublicRegistrationPage })))
 const StudentDetailPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentDetailPage })))
 const StudentsPage = lazy(() => import('./StudentPages').then((module) => ({ default: module.StudentsPage })))
 const AttendancePage = lazy(() => import('./AttendancePages').then((module) => ({ default: module.AttendancePage })))
@@ -83,20 +84,20 @@ import {
   getAttendanceForScope,
   getAttendanceTrend,
   getSessionForClass,
-  localDateKey,
   type AttendanceState,
   type AttendanceSubmission,
 } from './attendanceData'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { formatMMSS, getActiveLockout, getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail, signOut as signOutSupabase, updateUserPassword, type AppProfile } from './services/auth'
-import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments } from './services/students'
+import { createStudentRecord as createLiveStudent, fetchStudents, fetchTeacherAssignments, importStudentsBatch } from './services/students'
 import { fetchProfiles } from './services/users'
 import { deactivateSchoolUser, inviteSchoolUser, updateSchoolUser, type SchoolUserInput } from './services/userManagement'
-import { fetchAttendanceState, saveAttendance as saveLiveAttendance, correctAttendanceSession } from './services/attendance'
+import { fetchAttendanceState, getAttendanceErrorMessage, saveAttendance as saveLiveAttendance, correctAttendanceSession } from './services/attendance'
 import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication, deleteCommunicationDraft } from './services/communication'
 import { fetchLiveAlerts } from './services/alerts'
 import { formatRpcErrorMessage } from './utils/errorMapping'
+import { effectiveSchoolTimezone, formatInSchoolTimezone, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
 import {
   fetchAdministrationSnapshot,
   saveCampusSettings,
@@ -110,7 +111,6 @@ import {
   getFeeInvoices,
   getFeeMetrics,
   getFeePaymentsCollected,
-  localMonthKey,
   type FeeInvoiceCreationInput,
   type FeePaymentSubmission,
   type FeeState,
@@ -499,6 +499,7 @@ function App() {
   const [toast, setToast] = useState<ToastState | null>(null)
   const authResolutionId = useRef(0)
   const studentsRequestId = useRef(0)
+  const attendanceRefreshInFlight = useRef(false)
   const resolvingUserId = useRef<string | null>(null)
   const resolvedUserId = useRef<string | null>(null)
 
@@ -565,7 +566,6 @@ function App() {
       const message = error instanceof Error ? error.message : 'Unable to load students from Supabase.'
       console.error('[Supabase] Student directory retry failed:', message)
       if (requestId === studentsRequestId.current) {
-        setStudents([])
         setStudentsError('Students could not be loaded from Supabase. Please retry.')
       }
       return null
@@ -595,7 +595,6 @@ function App() {
       console.error('[Supabase] Profiles request failed:', message)
       if (resolvedUserId.current === owner.authUserId) {
         setProfilesError('Profiles could not be loaded from Supabase. Please retry.')
-        setLiveProfiles([])
       }
     } finally {
       if (resolvedUserId.current === owner.authUserId) setProfilesLoading(false)
@@ -618,7 +617,17 @@ function App() {
   }, [toast])
 
   const buildSessionUser = async (profile: AppProfile): Promise<SessionUser> => {
-    const teacherAssignments = await fetchTeacherAssignments()
+    const role = normalizeRole(profile.role)
+    let teacherAssignments: SessionUser['teacherAssignments'] = []
+    if (role === 'teacher') {
+      teacherAssignments = await fetchTeacherAssignments()
+    } else {
+      try {
+        teacherAssignments = await fetchTeacherAssignments()
+      } catch (error) {
+        console.warn('Unable to load optional teacher assignments for non-teacher session:', error)
+      }
+    }
     return {
       id: profile.id.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0),
       authUserId: profile.id,
@@ -628,7 +637,7 @@ function App() {
       schoolTimezone: profile.school_timezone,
       name: profile.full_name,
       email: profile.email,
-      role: normalizeRole(profile.role),
+      role,
       schoolName: profile.school_name ?? 'No school assigned',
       campusName: profile.campus_name ?? 'No campus assigned',
       teacherAssignments,
@@ -700,15 +709,18 @@ function App() {
 
     if (needsAttendance) {
       parallelTasks.push(
-        fetchAttendanceState()
+        fetchAttendanceState({ role: userRole, route: window.location.pathname })
           .then((nextAttendance) => {
-            if (resolutionId === authResolutionId.current) setAttendance(nextAttendance)
+            if (resolutionId === authResolutionId.current) {
+              setAttendance(nextAttendance)
+              if (studentLoadFailed) {
+                setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
+              }
+            }
           })
           .catch((error) => {
-            console.error('[Supabase] Attendance request failed:', error)
             if (resolutionId === authResolutionId.current) {
-              setAttendanceError('Attendance could not be loaded from Supabase. Please retry.')
-              setAttendance(emptyAttendanceState)
+              setAttendanceError(getAttendanceErrorMessage(error))
             }
           })
           .finally(() => {
@@ -731,7 +743,6 @@ function App() {
               console.error('[Supabase] Fee request failed:', error)
               if (resolutionId === authResolutionId.current) {
                 setFeesError('Fee information could not be loaded from Supabase. Please retry.')
-                setFees({ invoices: [], payments: [] })
               }
             })
             .finally(() => {
@@ -1126,13 +1137,46 @@ function App() {
     }
   }
 
-  const handleImportStudents = (_payload: NewStudent[]) => {
+  const handleImportStudents = async (payload: NewStudent[], campusId: string): Promise<boolean> => {
     if (session?.role !== 'admin') {
-      setToast({ type: 'error', text: 'Only administrators can import students.' })
-      return false
+      const msg = 'Only administrators can import students.'
+      setToast({ type: 'error', text: msg })
+      throw new Error(msg)
     }
-    setToast({ type: 'error', text: 'Student import is not enabled in this read-only Supabase migration. No local records were created.' })
-    return false
+    if (!campusId) {
+      const msg = 'Select an authorized campus before importing.'
+      setToast({ type: 'error', text: msg })
+      throw new Error(msg)
+    }
+
+    try {
+      const summary = await importStudentsBatch(payload, campusId)
+      const refreshedStudents = await refreshStudents(session)
+      if (!refreshedStudents || resolvedUserId.current !== session.authUserId) {
+        throw new Error('Students were imported, but the student directory could not be refreshed.')
+      }
+      dispatchBuddyEvent('student-created')
+      await refreshAlerts(session.authUserId)
+
+      if (summary.rejectedRows > 0) {
+        const errorDetail = summary.firstSupabaseError?.message ? ` (${summary.firstSupabaseError.message})` : ''
+        setToast({
+          type: 'info',
+          text: `Imported ${summary.createdCount} of ${summary.totalParsedRows} students. ${summary.rejectedRows} failed${errorDetail}.`,
+        })
+      } else {
+        setToast({
+          type: 'success',
+          text: `Successfully imported ${summary.createdCount} students.`,
+        })
+      }
+      return true
+    } catch (error) {
+      dispatchBuddyEvent('operation-error')
+      const message = formatRpcErrorMessage(error)
+      setToast({ type: 'error', text: message })
+      throw new Error(message)
+    }
   }
 
   const handleSaveAttendance = async (submission: AttendanceSubmission): Promise<AttendanceState> => {
@@ -1145,7 +1189,7 @@ function App() {
       const nextState = await saveLiveAttendance(session, attendanceClass, submission)
       setAttendance(nextState)
       dispatchBuddyEvent('attendance-saved')
-      await refreshAlerts(session.authUserId)
+      void refreshAlerts(session.authUserId)
       return nextState
     } catch (error) {
       dispatchBuddyEvent('operation-error')
@@ -1154,19 +1198,30 @@ function App() {
   }
 
   const handleRefreshAttendance = async () => {
+    if (attendanceRefreshInFlight.current) return
+    attendanceRefreshInFlight.current = true
+    const resolutionId = authResolutionId.current
     setAttendanceLoading(true)
     setAttendanceError('')
     try {
-      setAttendance(await fetchAttendanceState())
+      const [loadedStudents, nextAttendance] = await Promise.all([
+        session ? refreshStudents(session) : Promise.resolve(null),
+        fetchAttendanceState({ role: session?.role, route: window.location.pathname }),
+      ])
+      if (resolutionId === authResolutionId.current) {
+        setAttendance(nextAttendance)
+        if (loadedStudents === null) {
+          setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
+        }
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to load attendance from Supabase.'
-      console.error('[Supabase] Attendance retry failed:', message)
-      setAttendanceError('Attendance could not be loaded from Supabase. Please retry.')
-      setAttendance(emptyAttendanceState)
+      if (resolutionId === authResolutionId.current) {
+        setAttendanceError(getAttendanceErrorMessage(error))
+      }
     } finally {
-      setAttendanceLoading(false)
+      attendanceRefreshInFlight.current = false
+      if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
     }
-    if (session) await refreshAlerts(session.authUserId)
   }
 
   const handleRefreshFees = async () => {
@@ -1178,7 +1233,6 @@ function App() {
       const message = error instanceof Error ? error.message : 'Unable to load fees from Supabase.'
       console.error('[Supabase] Fee retry failed:', message)
       setFeesError('Fee information could not be loaded from Supabase. Please retry.')
-      setFees({ invoices: [], payments: [] })
     } finally {
       setFeesLoading(false)
     }
@@ -1235,7 +1289,6 @@ function App() {
       const message = error instanceof Error ? error.message : 'Unable to load parent communication from Supabase.'
       console.error('[Supabase] Communication retry failed:', message)
       setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
-      setCommunication(emptyCommunicationState)
     } finally {
       setCommunicationLoading(false)
     }
@@ -1308,7 +1361,10 @@ function App() {
       return
     }
     try {
-      const updated = await correctAttendanceSession(payload)
+      const updated = await correctAttendanceSession(payload, {
+        role: session.role,
+        route: window.location.pathname,
+      })
       setAttendance(updated)
       setToast({ type: 'success', text: 'Attendance session corrected successfully.' })
       dispatchBuddyEvent('attendance-saved')
@@ -1370,6 +1426,7 @@ function App() {
         <Route path="/set-password" element={<SetPasswordPage mode="invite" />} />
         <Route path="/reset-password" element={<SetPasswordPage mode="reset" />} />
         <Route path="/auth/callback" element={<AuthCallbackHandler />} />
+        <Route path="/register/:token" element={<PublicRegistrationPage />} />
 
         <Route element={<ProtectedRoute user={session} loading={authLoading} />}>
         <Route
@@ -1625,9 +1682,16 @@ function AuthCallbackHandler() {
       }
 
       if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session) {
-          navigate('/set-password', { replace: true })
+        try {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (!active) return
+          if (session) {
+            navigate('/set-password', { replace: true })
+            return
+          }
+        } catch {
+          if (!active) return
+          setErrorMessage('Unable to verify your authentication session. Please request a new link.')
           return
         }
       }
@@ -1720,27 +1784,36 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
   useEffect(() => {
     if (status === 'expired' || !supabase) return
     let active = true
+    let timer: number | undefined
     const client = supabase
 
     const checkSession = async () => {
-      const { data: { session } } = await client.auth.getSession()
-      if (session?.user) {
-        if (!active) return
-        setUserEmail(session.user.email ?? null)
-        setStatus('ready')
-        return
+      try {
+        const { data: { session } } = await client.auth.getSession()
+        if (session?.user) {
+          if (!active) return
+          setUserEmail(session.user.email ?? null)
+          setStatus('ready')
+          return
+        }
+      } catch {
+        // Fall through to polling attempts.
       }
 
       let attempts = 0
-      const timer = window.setInterval(async () => {
+      timer = window.setInterval(async () => {
         attempts += 1
-        const { data: { session: delayedSession } } = await client.auth.getSession()
-        if (delayedSession?.user) {
-          window.clearInterval(timer)
-          if (!active) return
-          setUserEmail(delayedSession.user.email ?? null)
-          setStatus('ready')
-          return
+        try {
+          const { data: { session: delayedSession } } = await client.auth.getSession()
+          if (delayedSession?.user) {
+            window.clearInterval(timer)
+            if (!active) return
+            setUserEmail(delayedSession.user.email ?? null)
+            setStatus('ready')
+            return
+          }
+        } catch {
+          // Continue until max attempts reached.
         }
         if (attempts >= 5) {
           window.clearInterval(timer)
@@ -1766,6 +1839,7 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
 
     return () => {
       active = false
+      if (timer !== undefined) window.clearInterval(timer)
       authListener?.subscription.unsubscribe()
     }
   }, [mode, status])
@@ -2353,6 +2427,31 @@ function AppShell({
   const [searchFocused, setSearchFocused] = useState(false)
   const [searchMobileOpen, setSearchMobileOpen] = useState(false)
   const [selectedSearchResult, setSelectedSearchResult] = useState(0)
+  const [buddyReady, setBuddyReady] = useState(false)
+
+  useEffect(() => {
+    if (!user || location.pathname.startsWith('/statements/')) return
+    let cancelled = false
+    const activate = () => {
+      if (!cancelled) setBuddyReady(true)
+    }
+    const win = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+    }
+    if (typeof win.requestIdleCallback === 'function') {
+      const idleId = win.requestIdleCallback(activate, { timeout: 1500 })
+      return () => {
+        cancelled = true
+        win.cancelIdleCallback?.(idleId)
+      }
+    }
+    const timerId = window.setTimeout(activate, 1200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [location.pathname, user])
   const searchContainerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pageTitle = location.pathname.startsWith('/students/')
@@ -2477,7 +2576,7 @@ function AppShell({
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
           <div className="sidebar-brand-row">
-            <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" />
+            <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" width={580} height={290} />
             <button
               type="button"
               className="icon-button sidebar-close-btn"
@@ -2699,9 +2798,28 @@ function AppShell({
 
               {profileOpen ? (
                 <div className="profile-menu" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" onClick={() => { setProfileOpen(false); navigate(defaultDashboardForRole(user.role)) }}>My Profile</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = defaultDashboardForRole(user.role)
+                      setProfileOpen(false)
+                      if (attendanceNavigationGuard.shouldBlock(target)) return
+                      navigate(target)
+                    }}
+                  >
+                    My Profile
+                  </button>
                   <button type="button" onClick={() => { setProfileOpen(false); onRestartTour(user.role) }}>Restart Tour</button>
-                  <button type="button" onClick={() => { setProfileOpen(false); onLogout() }}>Logout</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProfileOpen(false)
+                      if (attendanceNavigationGuard.shouldBlock('/login', onLogout)) return
+                      onLogout()
+                    }}
+                  >
+                    Logout
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -2742,7 +2860,7 @@ function AppShell({
           <Outlet />
         </main>
       </div>
-      {!location.pathname.startsWith('/statements/') ? (
+      {buddyReady && !location.pathname.startsWith('/statements/') ? (
         <Suspense fallback={null}>
           <AIBuddy />
         </Suspense>
@@ -2812,29 +2930,14 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   profilesError: string
   academicYear: string | null
 }) {
-  const [prevRole, setPrevRole] = useState(user?.role)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
-
-  if (prevRole !== user?.role) {
-    setPrevRole(user?.role)
-    setStatus('loading')
-  }
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => setStatus('ready'), 600)
-    return () => window.clearTimeout(timeoutId)
-  }, [user?.role])
+  const [status, setStatus] = useState<'ready' | 'error'>('ready')
 
   if (!user) {
     return null
   }
 
-  if (status === 'loading') {
-    return <DashboardLoadingState role={user.role} />
-  }
-
   if (status === 'error') {
-    return <DashboardErrorState onRetry={() => setStatus('loading')} />
+    return <DashboardErrorState onRetry={() => setStatus('ready')} />
   }
 
   if (attendanceLoading || feesLoading) {
@@ -2887,7 +2990,7 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   const communicationSummary = getCommunicationSummary(communication, students, user)
   const feeInvoices = getFeeInvoices(fees, students, user)
   const feeMetrics = getFeeMetrics(feeInvoices)
-  const currentMonthInvoices = feeInvoices.filter((invoice) => invoice.month === localMonthKey())
+  const currentMonthInvoices = feeInvoices.filter((invoice) => invoice.month === schoolMonthKey(user.schoolTimezone))
   const currentMonthMetrics = getFeeMetrics(currentMonthInvoices)
   const currentMonthCollections = getFeePaymentsCollected(fees, students, user)
   const pendingFeeApprovals = visibleAlerts.filter((alert) => alert.sourceType === 'COMMUNICATION' && alert.status === 'IN_REVIEW')
@@ -2929,7 +3032,7 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     }
   }
 
-  const today = localDateKey()
+  const today = schoolDateKey(user.schoolTimezone)
   const classes = getAttendanceClasses(students)
   const todayCounts = getAttendanceForScope(attendance, classes, today).counts
   const attendanceAttention = getAttendanceAttention(attendance, students)
@@ -2982,7 +3085,7 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     .filter((alert) => alert.sourceType === 'ATTENDANCE' && alert.status !== 'RESOLVED')
     .map((alert) => alertToAttention(alert, user))
   const attention = [...attendanceItems, ...feeAttention].slice(0, 5)
-  const pendingCommunicationAlerts = liveAlerts.filter((alert) => alert.sourceType === 'COMMUNICATION' && alert.status === 'IN_REVIEW')
+  const pendingCommunicationAlerts = visibleAlerts.filter((alert) => alert.sourceType === 'COMMUNICATION' && alert.status === 'IN_REVIEW')
   if (!alertsUnavailable && pendingCommunicationAlerts.length && user.role !== 'teacher') {
     attention.unshift({
       level: 'NOTICE',
@@ -3044,7 +3147,7 @@ function alertToAttention(alert: AlertItem, user: SessionUser): AttentionItem {
     path: alert.studentId
       ? `/students/${encodeURIComponent(alert.studentId)}`
       : alert.classId
-        ? `/attendance/take/${encodeURIComponent(alert.classId)}?date=${localDateKey()}`
+        ? `/attendance/take/${encodeURIComponent(alert.classId)}?date=${schoolDateKey(user.schoolTimezone)}`
         : '/attendance',
   }
 }
@@ -3131,7 +3234,7 @@ function AlertsPage({
               <p>{alert.detail}</p>
               <div className="alert-meta">
                 <span>{alert.sourceType}</span>
-                <span>{new Date(alert.createdAt).toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                <span>{formatInSchoolTimezone(new Date(alert.createdAt), user.schoolTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
               </div>
               <button type="button" className="primary-button small-button" onClick={() => handleOpen(alert)}>
                 {alert.sourceType === 'COMMUNICATION' ? 'Review' : 'Open'}
@@ -3225,7 +3328,7 @@ function ApprovalsPage({
               <div className="alert-meta">
                 <span>{message.channel}</span>
                 <span>{message.sourceType}</span>
-                <span>{new Date(message.createdAt).toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                <span>{formatInSchoolTimezone(new Date(message.createdAt), user.schoolTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
               </div>
               <textarea
                 value={rejectReason[message.id] ?? ''}
@@ -3376,7 +3479,7 @@ function SchoolDashboard({
           icon={<Activity size={18} className="panel-title-icon text-blue" />}
           badgeText={`${activities.length} recent`}
         >
-          <RecentActivities activities={activities} navigate={navigate} />
+          <RecentActivities activities={activities} navigate={navigate} timeZone={user.schoolTimezone} />
         </DashboardSection>
         <DashboardSection title="Quick Actions" badgeText="Shortcuts">
           <QuickActions actions={config.quickActions} navigate={navigate} />
@@ -3461,7 +3564,7 @@ function AttendanceOverview({ data, currentRate, error }: {
   const area = `${xStart},${top + plotHeight} ${line} ${xEnd},${top + plotHeight}`
   const selectedPoint = activePoint === null ? null : points[activePoint]
   const selectedDate = selectedPoint?.date
-    ? new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium' }).format(new Date(`${selectedPoint.date}T00:00:00`))
+    ? new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${selectedPoint.date}T00:00:00Z`))
     : selectedPoint?.day
 
   return (
@@ -3678,9 +3781,10 @@ function getDashboardActivities(
     .slice(0, 5)
 }
 
-function RecentActivities({ activities, navigate }: {
+function RecentActivities({ activities, navigate, timeZone }: {
   activities: DashboardActivity[]
   navigate: (path: string) => void
+  timeZone?: string | null
 }) {
   const [now] = useState(() => Date.now())
   if (!activities.length) {
@@ -3703,7 +3807,7 @@ function RecentActivities({ activities, navigate }: {
             <button type="button" className="activity-copy" onClick={() => navigate(activity.path)}>
               <strong>{activity.title}</strong>
               <span>{activity.detail}</span>
-              <time dateTime={activity.occurredAt}>{formatRelativeActivityTime(activity.occurredAt, now)}</time>
+              <time dateTime={activity.occurredAt}>{formatRelativeActivityTime(activity.occurredAt, now, timeZone)}</time>
             </button>
           </li>
         )
@@ -3712,12 +3816,12 @@ function RecentActivities({ activities, navigate }: {
   )
 }
 
-function formatRelativeActivityTime(value: string, now: number): string {
+function formatRelativeActivityTime(value: string, now: number, timeZone?: string | null): string {
   const timestamp = Date.parse(value)
   if (!Number.isFinite(timestamp)) return 'Time unavailable'
   const elapsedMinutes = Math.round((timestamp - now) / 60_000)
   if (elapsedMinutes > 1) {
-    return new Intl.DateTimeFormat('en-PK', { day: 'numeric', month: 'short' }).format(timestamp)
+    return formatInSchoolTimezone(new Date(timestamp), timeZone, 'en-PK', { day: 'numeric', month: 'short' })
   }
   const minutes = Math.abs(elapsedMinutes)
   if (minutes < 1) return 'Just now'
@@ -3725,7 +3829,7 @@ function formatRelativeActivityTime(value: string, now: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
-  return days < 7 ? `${days}d ago` : new Intl.DateTimeFormat('en-PK', { day: 'numeric', month: 'short' }).format(timestamp)
+  return days < 7 ? `${days}d ago` : formatInSchoolTimezone(new Date(timestamp), timeZone, 'en-PK', { day: 'numeric', month: 'short' })
 }
 
 function FinanceDashboard({ user, config }: { user: SessionUser; config: DashboardConfig }) {
@@ -3765,7 +3869,7 @@ function FinanceDashboard({ user, config }: { user: SessionUser; config: Dashboa
 function TeacherDashboard({ user, config, students }: { user: SessionUser; config: DashboardConfig; students: Student[] }) {
   const navigate = useNavigate()
   const classes = getAttendanceClasses(students)
-  const today = localDateKey()
+  const today = schoolDateKey(user.schoolTimezone)
 
   return (
     <section className="dashboard-page">
@@ -3816,13 +3920,15 @@ function PageHeader({ user, title, academicYear }: { user: SessionUser; title: s
   const greetingName = academicYear !== undefined ? user.name : firstName
   const [dateContext] = useState(() => {
     const now = new Date()
+    const timeZone = effectiveSchoolTimezone(user.schoolTimezone)
+    const hour = Number(new Intl.DateTimeFormat('en', { timeZone, hour: 'numeric', hourCycle: 'h23' }).format(now))
     return {
-      hour: now.getHours(),
-      formatted: new Intl.DateTimeFormat('en-PK', {
+      hour,
+      formatted: formatInSchoolTimezone(now, timeZone, 'en-PK', {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
-      }).format(now),
+      }),
     }
   })
   const greeting = dateContext.hour < 12 ? 'Good Morning' : dateContext.hour < 17 ? 'Good Afternoon' : 'Good Evening'
@@ -4244,13 +4350,13 @@ function MyClassesPage({ user, students, attendance, attendanceLoading, attendan
             <p className="student-muted">Section {attendanceClass.section}</p>
             <ul className="list-stack">
               <li><span>Students</span><strong>{attendanceClass.students.length}</strong></li>
-              <li><span>Attendance status</span><strong>{attendanceLoading ? 'Loading…' : attendanceError ? 'Unavailable' : getSessionForClass(attendance, localDateKey(), attendanceClass) ? 'Recorded today' : 'Not marked yet'}</strong></li>
+              <li><span>Attendance status</span><strong>{attendanceLoading ? 'Loading…' : attendanceError ? 'Unavailable' : getSessionForClass(attendance, schoolDateKey(user.schoolTimezone), attendanceClass) ? 'Recorded today' : 'Not marked yet'}</strong></li>
             </ul>
             <button
               type="button"
               className="primary-button small-button"
               disabled={attendanceLoading || Boolean(attendanceError)}
-              onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${localDateKey()}`)}
+              onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${schoolDateKey(user.schoolTimezone)}`)}
             >
               Open Attendance
             </button>

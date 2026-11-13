@@ -1,5 +1,6 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
+import { schoolDateKey } from './utils/schoolTimezone'
 
 export type CommunicationType = 'Attendance Reminder' | 'Fee Reminder' | 'General Notice' | 'Follow-up'
 export type CommunicationChannel = 'WhatsApp' | 'SMS' | 'Email'
@@ -52,6 +53,7 @@ export type CommunicationUser = {
   authUserId?: string
   organizationId?: string | null
   schoolId?: string | null
+  schoolTimezone?: string | null
   campusId?: string | null
   name: string
   role: Role
@@ -133,14 +135,17 @@ export function getAccessibleCommunication(
 
 export function getCommunicationSummary(state: CommunicationState, students: Student[], user: CommunicationUser) {
   const messages = getAccessibleCommunication(state, students, user)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = schoolDateKey(user.schoolTimezone)
   const awaitingApproval = messages.filter((message) => message.status === 'AWAITING_APPROVAL')
   return {
     drafts: messages.filter((message) => message.status === 'DRAFT').length,
     awaitingApproval: awaitingApproval.length,
     feeAwaitingApproval: awaitingApproval.filter((message) => message.type === 'Fee Reminder').length,
     teacherDrafts: messages.filter((message) => user.role === 'teacher' && message.status === 'DRAFT').length,
-    sentToday: messages.filter((message) => message.status === 'SENT' && message.sentAt?.slice(0, 10) === today).length,
+    sentToday: messages.filter((message) => {
+      if (message.status !== 'SENT' || !message.sentAt || !Number.isFinite(Date.parse(message.sentAt))) return false
+      return schoolDateKey(user.schoolTimezone, new Date(message.sentAt)) === today
+    }).length,
     deliveryIssues: messages.filter((message) => message.status === 'SENT' && message.deliveryStatus === 'FAILED').length,
   }
 }
@@ -150,7 +155,12 @@ export function createAttendanceMessageTemplate(student: Student, consecutiveAbs
 }
 
 export function createFeeMessageTemplate(student: Student, amount: number, dueDate: string): string {
-  const formattedDate = new Intl.DateTimeFormat('en', { day: '2-digit', month: 'long', year: 'numeric' })
+  const formattedDate = new Intl.DateTimeFormat('en', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
     .format(new Date(`${dueDate}T00:00:00Z`))
   return `Dear Parent,\nPKR ${new Intl.NumberFormat('en-PK').format(amount)} is currently outstanding for ${student.firstName} ${student.lastName}.\nDue date: ${formattedDate}.\nPlease contact the school finance office if payment has already been made.`
 }

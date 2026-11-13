@@ -1,5 +1,6 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
+import { normalizeSchoolTimezone, schoolDateKey } from './utils/schoolTimezone'
 
 export type AttendanceStatus = 'PRESENT' | 'ABSENT' | 'LATE'
 export type AttendanceSessionStatus = 'IN_PROGRESS' | 'COMPLETED'
@@ -52,6 +53,13 @@ export type AttendanceUser = {
   organizationId?: string | null
   schoolId?: string | null
   schoolTimezone?: string | null
+  teacherAssignments?: Array<{
+    school_id: string
+    campus_id: string
+    class_name: string
+    section: string
+    active: boolean
+  }>
 }
 
 export type AttendanceClass = {
@@ -95,38 +103,26 @@ export function localDateKey(date = new Date()): string {
 }
 
 export function attendanceDateKey(timeZone: string | null | undefined, date = new Date()): string {
-  const schoolTimeZone = timeZone?.trim() || 'UTC'
-  try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: schoolTimeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(date)
-    const valueFor = (type: 'year' | 'month' | 'day') => parts.find((part) => part.type === type)?.value
-    const year = valueFor('year')
-    const month = valueFor('month')
-    const day = valueFor('day')
-    if (!year || !month || !day) throw new Error('The school date could not be formatted.')
-    return `${year}-${month}-${day}`
-  } catch (error) {
-    if (!(error instanceof RangeError)) throw error
-    if (import.meta.env.DEV) {
-      console.error('[CAMVIA Attendance] Invalid school timezone; using UTC.', {
-        operation: 'attendance.date',
-        timeZone: schoolTimeZone,
-        message: error.message,
-      })
-    }
-    return date.toISOString().slice(0, 10)
+  const schoolTimeZone = normalizeSchoolTimezone(timeZone)
+  if (timeZone?.trim() && !schoolTimeZone && import.meta.env.DEV) {
+    console.error('[CAMVIA Attendance] Invalid school timezone; using UTC.', {
+      operation: 'attendance.date',
+      timeZone,
+    })
   }
+  return schoolDateKey(schoolTimeZone, date)
 }
 
 export function formatAttendanceDate(dateKey: string): string {
   if (!dateKey) return 'Select a date'
-  const date = new Date(`${dateKey}T00:00:00`)
-  if (Number.isNaN(date.getTime()) || localDateKey(date) !== dateKey) return 'Invalid date'
-  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+  const date = new Date(`${dateKey}T00:00:00Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== dateKey) return 'Invalid date'
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
     .format(date)
 }
 
@@ -281,36 +277,48 @@ export function getAttendanceAttention(
   students: Student[],
 ): AttendanceAttention[] {
   const classes = getAttendanceClasses(students)
-  const scopedStudentIds = new Set(classes.flatMap((attendanceClass) => attendanceClass.students.map((student) => student.id)))
-  const sessionsWithRecords = new Set(state.records.filter((record) => !record.trashedAt).map((record) => record.sessionId))
+  const studentsById = new Map(students.map((student) => [student.id, student]))
+  const sessionsById = new Map(state.sessions.map((session) => [session.id, session]))
+  const scopedClassIds = new Map<string, AttendanceClass>()
+  for (const attendanceClass of classes) {
+    scopedClassIds.set(`${attendanceClass.schoolId}:${attendanceClass.campusId}:${attendanceClass.id}`, attendanceClass)
+  }
+
+  const recordsBySession = new Map<string, AttendanceRecord[]>()
+  for (const record of state.records) {
+    if (record.trashedAt) continue
+    const list = recordsBySession.get(record.sessionId)
+    if (list) list.push(record)
+    else recordsBySession.set(record.sessionId, [record])
+  }
+
   const sessions = state.sessions
     .filter((session) =>
-      classes.some((attendanceClass) =>
-        session.classId === attendanceClass.id &&
-        session.schoolId === attendanceClass.schoolId &&
-        session.campusId === attendanceClass.campusId &&
-        sessionsWithRecords.has(session.id),
-      ),
+      scopedClassIds.has(`${session.schoolId}:${session.campusId}:${session.classId}`) &&
+      recordsBySession.has(session.id),
     )
     .sort((left, right) => right.date.localeCompare(left.date))
+  const scopedSessionIds = new Set(sessions.map((session) => session.id))
+
   const recordsByStudent = new Map<string, AttendanceRecord[]>()
   for (const record of state.records) {
     if (record.trashedAt) continue
-    if (!scopedStudentIds.has(record.studentId)) continue
-    const session = state.sessions.find((item) => item.id === record.sessionId)
-    if (!session || !sessions.some((item) => item.id === session.id)) continue
-    const student = students.find((item) => item.id === record.studentId)
-    if (!student?.campusId || session.classId !== getAttendanceClassId(student.className, student.section, student.campusId)) continue
-    recordsByStudent.set(record.studentId, [...(recordsByStudent.get(record.studentId) ?? []), record])
+    if (!scopedSessionIds.has(record.sessionId)) continue
+    const student = studentsById.get(record.studentId)
+    const session = sessionsById.get(record.sessionId)
+    if (!student?.campusId || !session || session.classId !== getAttendanceClassId(student.className, student.section, student.campusId)) continue
+    const list = recordsByStudent.get(record.studentId)
+    if (list) list.push(record)
+    else recordsByStudent.set(record.studentId, [record])
   }
 
   const attention: AttendanceAttention[] = []
   for (const [studentId, records] of recordsByStudent) {
-    const student = students.find((item) => item.id === studentId)
+    const student = studentsById.get(studentId)
     if (!student) continue
     const orderedRecords = records.sort((left, right) => {
-      const leftDate = state.sessions.find((session) => session.id === left.sessionId)?.date ?? ''
-      const rightDate = state.sessions.find((session) => session.id === right.sessionId)?.date ?? ''
+      const leftDate = sessionsById.get(left.sessionId)?.date ?? ''
+      const rightDate = sessionsById.get(right.sessionId)?.date ?? ''
       return rightDate.localeCompare(leftDate)
     })
     let consecutiveAbsences = 0
@@ -318,7 +326,7 @@ export function getAttendanceAttention(
       if (record.status !== 'ABSENT') break
       consecutiveAbsences += 1
     }
-    const { counts } = getStudentAttendance(student, state)
+    const counts = getAttendanceCounts(orderedRecords)
     if (consecutiveAbsences >= attendanceRules.consecutiveAbsences) {
       attention.push({
         level: 'HIGH',
@@ -340,14 +348,12 @@ export function getAttendanceAttention(
   }
 
   for (const attendanceClass of classes) {
-    const classSessions = sessions
-      .filter((session) => session.classId === attendanceClass.id)
-      .sort((left, right) => right.date.localeCompare(left.date))
+    const classSessions = sessions.filter((session) => session.classId === attendanceClass.id)
     if (classSessions.length < 2) continue
-    const latest = getAttendanceCounts(getSessionRecords(state, classSessions[0].id)).rate
+    const latest = getAttendanceCounts(recordsBySession.get(classSessions[0].id) ?? []).rate
     const comparisonSessions = classSessions.slice(1, 4)
     const comparisonRates = comparisonSessions
-      .map((session) => getAttendanceCounts(getSessionRecords(state, session.id)).rate)
+      .map((session) => getAttendanceCounts(recordsBySession.get(session.id) ?? []).rate)
       .filter((rate): rate is number => rate !== null)
     if (latest === null || comparisonRates.length === 0) continue
     const recentAverage = comparisonRates.reduce((sum, rate) => sum + rate, 0) / comparisonRates.length
@@ -385,7 +391,7 @@ export function getAttendanceTrend(
   return dates.map((date) => {
     const daily = getAttendanceForScope(state, classes, date).counts
     return {
-      day: new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(`${date}T00:00:00`)),
+      day: new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`)),
       date,
       value: daily.rate ?? 0,
       total: daily.total,

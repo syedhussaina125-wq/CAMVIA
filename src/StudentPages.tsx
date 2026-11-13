@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
-import { ArrowLeft, CalendarDays, FileText, FileUp, Search, UserRound, Users } from 'lucide-react'
+import { ArrowLeft, CalendarDays, FileText, FileUp, Link2, Search, UserRound, Users } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Role, SchoolUser } from './mockData'
 import type { AlertItem } from './alertsData'
 import { getStudentAttendance, type AttendanceState, type AttendanceStatus } from './attendanceData'
 import { getFeeInvoices, getFeeMetrics, localDateKey, type FeeInvoiceView, type FeePayment, type FeeState } from './feeData'
+import { addCalendarDays, schoolDateKey } from './utils/schoolTimezone'
 import {
   canCreateCommunication,
   getAccessibleCommunication,
@@ -18,6 +19,7 @@ import {
 import {
   fetchStudentById,
   fetchStudentCreationOptions,
+  fetchSchoolStudentsForDuplicateCheck,
   type StudentCampusOption,
   type TeacherAssignment,
   updateStudent,
@@ -26,10 +28,19 @@ import {
   linkStudentGuardian,
   unlinkStudentGuardian,
 } from './services/students'
+import {
+  checkStudentDuplicate,
+  evaluateCsvDuplicates,
+  studentToCandidate,
+  type CsvSkippedRow,
+  type StudentCandidate,
+} from './utils/studentDuplicates'
 import { trashStudent } from './services/trash'
 import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
 import { StudentEditModal } from './components/StudentEditModal'
 import { GuardianModal } from './components/GuardianModal'
+import { WhatsAppComposer } from './components/WhatsAppComposer'
+import { ParentRegistrationLinkModal, PendingAdmissionsPanel } from './RegistrationPages'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 
 type StudentPageUser = {
@@ -39,6 +50,7 @@ type StudentPageUser = {
   email: string
   schoolName: string
   campusName: string
+  schoolTimezone?: string | null
   organizationId?: string | null
   schoolId?: string | null
   campusId?: string | null
@@ -52,8 +64,8 @@ type StudentsPageProps = {
   error: string
   onRetry: () => void
   onAddStudent: (student: NewStudent, campusId: string) => Promise<void>
-  onImportStudents: (students: NewStudent[]) => boolean
-  onRefresh?: () => void
+  onImportStudents: (students: NewStudent[], campusId: string) => Promise<boolean>
+  onRefresh?: () => void | Promise<unknown>
 }
 
 type DetailPageProps = {
@@ -71,7 +83,7 @@ type DetailPageProps = {
   alerts: AlertItem[]
   alertsLoading: boolean
   alertsError: string
-  onRefresh?: () => void
+  onRefresh?: () => void | Promise<unknown>
 }
 
 type StudentTab = 'Overview' | 'Attendance' | 'Fees' | 'Communication' | 'Statements'
@@ -111,6 +123,8 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [sectionFilter, setSectionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
+  const [showRegistrationLink, setShowRegistrationLink] = useState(false)
+  const [adminStudentView, setAdminStudentView] = useState<'students' | 'admissions'>('students')
   const [editingStudent, setEditingStudent] = useState<Student | null>(null)
   const [archivingStudent, setArchivingStudent] = useState<Student | null>(null)
   const [trashingStudent, setTrashingStudent] = useState<Student | null>(null)
@@ -124,7 +138,9 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [studentSaving, setStudentSaving] = useState(false)
   const [campusId, setCampusId] = useState('')
   const [importPreview, setImportPreview] = useState<NewStudent[] | null>(null)
+  const [importSkipped, setImportSkipped] = useState<CsvSkippedRow[]>([])
   const [importError, setImportError] = useState('')
+  const [importing, setImporting] = useState(false)
   const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort()
   const sectionOptions = [...new Set(
     accessibleStudents
@@ -191,14 +207,32 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const handleAddSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setStudentSaveError('')
-    const normalizedStudentId = form.studentId.trim()
-    if (user.schoolId && students.some((existingStudent) =>
-      existingStudent.studentId === normalizedStudentId &&
-      existingStudent.schoolId === user.schoolId,
-    )) {
-      setStudentSaveError('This Student ID is already in use at your school. Enter a different Student ID and try again.')
+
+    let existingCandidates: StudentCandidate[] = students.map(studentToCandidate)
+    try {
+      const fullList = await fetchSchoolStudentsForDuplicateCheck()
+      if (fullList.length > 0) existingCandidates = fullList
+    } catch {
+      // fallback to in-memory students
+    }
+
+    const duplicate = checkStudentDuplicate(
+      {
+        studentId: form.studentId,
+        firstName: form.firstName,
+        lastName: form.lastName,
+        className: form.className,
+        section: form.section,
+        rollNumber: form.rollNumber,
+        dateOfBirth: form.dateOfBirth,
+      },
+      existingCandidates,
+    )
+    if (duplicate.isDuplicate && duplicate.message) {
+      setStudentSaveError(duplicate.message)
       return
     }
+
     if (user.role === 'teacher' && !activeTeacherScopes.some((scope) =>
       scope.campus_id === campusId &&
       scope.class_name === form.className.trim() &&
@@ -253,17 +287,54 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     }
 
     try {
+      setImportError('')
+      setImportPreview(null)
+      setImportSkipped([])
       const parsed = parseStudentCsv(await file.text())
-      setImportPreview(parsed)
+
+      let existingCandidates: StudentCandidate[] = students.map(studentToCandidate)
+      try {
+        const fullList = await fetchSchoolStudentsForDuplicateCheck()
+        if (fullList.length > 0) existingCandidates = fullList
+      } catch {
+        // fallback to in-memory students
+      }
+
+      const { validRows, skippedRows } = evaluateCsvDuplicates(parsed, existingCandidates)
+      setImportSkipped(skippedRows)
+
+      if (validRows.length === 0) {
+        setImportPreview(null)
+        setImportError(`All ${parsed.length} rows in this CSV are duplicates and cannot be imported.`)
+      } else {
+        setImportPreview(validRows)
+      }
     } catch (error) {
       setImportError(error instanceof Error ? error.message : 'Unable to read this CSV file.')
     }
   }
 
-  const confirmImport = () => {
-    if (importPreview && onImportStudents(importPreview)) {
-      setImportPreview(null)
-      setImportError('')
+  const confirmImport = async () => {
+    if (!importPreview || importPreview.length === 0) return
+    if (!campusId) {
+      setImportError('Please select a campus before importing students.')
+      return
+    }
+    setImporting(true)
+    setImportError('')
+    try {
+      const ok = await onImportStudents(importPreview, campusId)
+      if (ok) {
+        setImportPreview(null)
+        setImportSkipped([])
+        setImportError('')
+        const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
+        if (fileInput) fileInput.value = ''
+      }
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Unable to complete student import.')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -281,21 +352,21 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   }) => {
     setActionError('')
     await updateStudent(payload)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const handleArchiveStudent = async (reason: string) => {
     if (!archivingStudent) return
     setActionError('')
     await archiveStudent(archivingStudent.id, reason)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const handleTrashStudent = async (reason: string) => {
     if (!trashingStudent) return
     setActionError('')
     await trashStudent(trashingStudent.id, reason)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const getStudentActions = (student: Student): ActionItem[] => {
@@ -356,6 +427,9 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
             <button type="button" className="primary-button small-button" onClick={() => { setStudentSaveError(''); setShowAddForm((current) => !current) }}>
               + Add Student
             </button>
+            {user.role === 'admin' ? <button type="button" className="secondary-button small-button" onClick={() => setShowRegistrationLink(true)}>
+              <Link2 size={16} /> Parent Registration Link
+            </button> : null}
             {user.role === 'admin' ? <input
               id="student-import-file"
               className="visually-hidden"
@@ -426,6 +500,44 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
             <>
               <h2>Import needs attention</h2>
               <p>{importError}</p>
+              {importSkipped.length > 0 && (
+                <div style={{ margin: '12px 0', padding: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '6px' }}>
+                  <p style={{ fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>
+                    {importSkipped.length} duplicate row(s) skipped:
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#78350f', maxHeight: '160px', overflowY: 'auto' }}>
+                    {importSkipped.map((item) => (
+                      <li key={`${item.rowNumber}-${item.student.studentId}`}>
+                        <strong>Row {item.rowNumber}</strong> ({item.student.studentId} - {item.student.firstName} {item.student.lastName}): {item.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="student-form-actions" style={{ marginTop: '12px' }}>
+                <button
+                  type="button"
+                  className="secondary-button small-button"
+                  onClick={() => {
+                    setImportError('')
+                    setImportSkipped([])
+                    const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
+                    if (fileInput) fileInput.value = ''
+                  }}
+                >
+                  Dismiss
+                </button>
+                {importPreview && (
+                  <button
+                    type="button"
+                    className="primary-button small-button"
+                    disabled={importing || !campusId}
+                    onClick={() => void confirmImport()}
+                  >
+                    Retry Import
+                  </button>
+                )}
+              </div>
             </>
           ) : importPreview ? (
             <>
@@ -434,11 +546,64 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
                   <h2>Preview import</h2>
                   <p>{importPreview.length} student records are ready to confirm.</p>
                 </div>
+                {campuses.length > 0 && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem', color: '#183252' }}>
+                    <label htmlFor="import-campus-select"><strong>Campus:</strong></label>
+                    {campuses.length > 1 ? (
+                      <select
+                        id="import-campus-select"
+                        disabled={importing}
+                        value={campusId}
+                        onChange={(event) => setCampusId(event.target.value)}
+                        style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                      >
+                        {campuses.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span>{campuses[0].name}</span>
+                    )}
+                  </div>
+                )}
                 <div className="student-form-actions">
-                  <button type="button" className="secondary-button small-button" onClick={() => setImportPreview(null)}>Cancel</button>
-                  <button type="button" className="primary-button small-button" onClick={confirmImport}>Confirm Import</button>
+                  <button
+                    type="button"
+                    className="secondary-button small-button"
+                    disabled={importing}
+                    onClick={() => {
+                      setImportPreview(null)
+                      setImportSkipped([])
+                      const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
+                      if (fileInput) fileInput.value = ''
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button small-button"
+                    disabled={importing || !campusId}
+                    onClick={() => void confirmImport()}
+                  >
+                    {importing ? `Importing ${importPreview.length} students…` : `Confirm Import (${importPreview.length} students)`}
+                  </button>
                 </div>
               </div>
+              {importSkipped.length > 0 && (
+                <div style={{ margin: '12px 0', padding: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '6px' }}>
+                  <p style={{ fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>
+                    {importSkipped.length} duplicate row(s) detected and skipped:
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#78350f', maxHeight: '160px', overflowY: 'auto' }}>
+                    {importSkipped.map((item) => (
+                      <li key={`${item.rowNumber}-${item.student.studentId}`}>
+                        <strong>Row {item.rowNumber}</strong> ({item.student.studentId} - {item.student.firstName} {item.student.lastName}): {item.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="import-preview-list">
                 {importPreview.slice(0, 5).map((student) => (
                   <div key={student.studentId}>
@@ -453,6 +618,21 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         </section>
       ) : null}
 
+      {user.role === 'admin' ? (
+        <div className="admissions-view-tabs" role="tablist" aria-label="Student records">
+          <button type="button" role="tab" aria-selected={adminStudentView === 'students'} className={adminStudentView === 'students' ? 'is-active' : ''} onClick={() => setAdminStudentView('students')}>Active Students</button>
+          <button type="button" role="tab" aria-selected={adminStudentView === 'admissions'} className={adminStudentView === 'admissions' ? 'is-active' : ''} onClick={() => setAdminStudentView('admissions')}>Pending Admissions</button>
+        </div>
+      ) : null}
+
+      {user.role === 'admin' && adminStudentView === 'admissions' ? (
+        <PendingAdmissionsPanel
+          students={accessibleStudents}
+          campuses={campuses}
+          onRefreshStudents={() => onRefresh?.()}
+        />
+      ) : (
+      <>
       <div className="student-filters">
         <label className="student-search">
           <Search size={17} />
@@ -546,6 +726,8 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         </>
       )}
       <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleStudents.length} students</p>
+      </>
+      )}
 
       {editingStudent && (
         <StudentEditModal
@@ -581,6 +763,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           onConfirm={handleTrashStudent}
         />
       )}
+      {showRegistrationLink ? <ParentRegistrationLinkModal onClose={() => setShowRegistrationLink(false)} /> : null}
     </section>
   )
 }
@@ -674,6 +857,9 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     assignment.class_name.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.className.trim().replace(/\s+/g, ' ').toLowerCase() &&
     assignment.section.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.section.trim().replace(/\s+/g, ' ').toLowerCase(),
   )
+  const studentAttendanceSummary = getStudentAttendance(authorizedStudent, attendance)
+  const latestAttendance = studentAttendanceSummary.recent[0]
+  const feeReminderInvoice = feeInvoices.find((invoice) => invoice.outstandingAmount > 0)
   const allTabs: StudentTab[] = ['Overview', 'Attendance', 'Fees', 'Communication', 'Statements']
   const tabs = allTabs.filter(
     (tab) => canViewStudentTab(user.role, tab) &&
@@ -696,22 +882,22 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     setActionError('')
     const updated = await updateStudent(payload)
     setAuthorizedStudent(updated)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const handleArchiveStudent = async (reason: string) => {
     if (!authorizedStudent) return
     setActionError('')
     await archiveStudent(authorizedStudent.id, reason)
-    const updated = await fetchStudentById(authorizedStudent.id)
-    setAuthorizedStudent(updated)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
+    navigate('/students')
   }
 
   const handleTrashStudent = async (reason: string) => {
     if (!authorizedStudent) return
     setActionError('')
     await trashStudent(authorizedStudent.id, reason)
+    if (onRefresh) await onRefresh()
     navigate('/students')
   }
 
@@ -728,7 +914,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     await updateGuardian(payload)
     const updated = await fetchStudentById(authorizedStudent.id)
     setAuthorizedStudent(updated)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const handleLinkGuardian = async (payload: {
@@ -742,7 +928,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     await linkStudentGuardian(payload)
     const updated = await fetchStudentById(authorizedStudent.id)
     setAuthorizedStudent(updated)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const handleUnlinkGuardian = async (reason: string) => {
@@ -755,7 +941,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     })
     const updated = await fetchStudentById(authorizedStudent.id)
     setAuthorizedStudent(updated)
-    if (onRefresh) onRefresh()
+    if (onRefresh) await onRefresh()
   }
 
   const studentActions: ActionItem[] = []
@@ -803,6 +989,21 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span className={`status-pill ${authorizedStudent.status === 'Active' ? 'success' : 'muted'}`}>{authorizedStudent.status}</span>
+          <WhatsAppComposer
+            student={authorizedStudent}
+            user={user}
+            context={{
+              attendance: {
+                status: latestAttendance?.status ?? null,
+                date: latestAttendance?.date,
+                rate: studentAttendanceSummary.counts.rate,
+                recordedDays: studentAttendanceSummary.counts.total,
+              },
+              fee: feeReminderInvoice
+                ? { outstandingAmount: feeReminderInvoice.outstandingAmount, dueDate: feeReminderInvoice.dueDate }
+                : undefined,
+            }}
+          />
           {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
         </div>
       </div>
@@ -891,7 +1092,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
           onUnlinkGuardian={() => setUnlinkingGuardian(true)}
         />
       ) : null}
-      {selectedTab === 'Attendance' ? <StudentAttendance student={authorizedStudent} attendance={attendance} loading={attendanceLoading} error={attendanceError} /> : null}
+      {selectedTab === 'Attendance' ? <StudentAttendance student={authorizedStudent} attendance={attendance} loading={attendanceLoading} error={attendanceError} timeZone={user.schoolTimezone} /> : null}
       {selectedTab === 'Fees' && canViewStudentTab(user.role, 'Fees') ? <StudentFees invoices={feeInvoices} payments={feePayments} loading={feesLoading} error={feesError} onRetry={onRetryFees} /> : null}
       {selectedTab === 'Communication' ? <StudentCommunication student={authorizedStudent} messages={communicationMessages} user={user} invoices={feeInvoices} users={users} /> : null}
       {selectedTab === 'Statements' ? (
@@ -1070,11 +1271,12 @@ function StudentOverview({
   )
 }
 
-function StudentAttendance({ student, attendance, loading, error }: {
+function StudentAttendance({ student, attendance, loading, error, timeZone }: {
   student: Student
   attendance: AttendanceState
   loading: boolean
   error: string
+  timeZone?: string | null
 }) {
   const summary = getStudentAttendance(student, attendance)
   if (loading) return <StudentListState title="Loading attendance…" />
@@ -1089,7 +1291,7 @@ function StudentAttendance({ student, attendance, loading, error }: {
       </div>
       <section className="student-info-card student-attendance-trend-card">
         <h2>Attendance trend</h2>
-        <AttendanceTrend data={summary.trend} />
+        <AttendanceTrend data={summary.trend} timeZone={timeZone} />
       </section>
       <section className="student-info-card">
         <h2>Recent attendance</h2>
@@ -1189,15 +1391,18 @@ function ActivityTimeline({ items }: { items: Student['activity'] }) {
   )
 }
 
-function AttendanceTrend({ data }: { data: { date: string; value: number }[] }) {
+function AttendanceTrend({ data, timeZone }: {
+  data: { date: string; value: number }[]
+  timeZone?: string | null
+}) {
   const [period, setPeriod] = useState<'week' | 'month'>('week')
-  const [today] = useState(localDateKey)
+  const [today] = useState(() => schoolDateKey(timeZone))
+  const year = Number(today.slice(0, 4))
   const chartRef = useRef<SVGSVGElement>(null)
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 })
-  const [year, month, day] = today.split('-').map(Number)
   const startDate = period === 'week'
-    ? localDateKey(new Date(year, month - 1, day - 6))
-    : `${year}-${String(month).padStart(2, '0')}-01`
+    ? addCalendarDays(today, -6)
+    : `${today.slice(0, 7)}-01`
   const visibleData = data.filter((point) => point.date >= startDate && point.date <= today)
   const chartWidth = chartSize.width
   const chartHeight = chartSize.height
@@ -1217,7 +1422,7 @@ function AttendanceTrend({ data }: { data: { date: string; value: number }[] }) 
   const line = points.map((point) => `${point.x},${point.y}`).join(' ')
   const periodLabel = period === 'week'
     ? 'Last 7 days'
-    : `${new Intl.DateTimeFormat('en', { month: 'long' }).format(new Date(year, month - 1, 1))} ${year}`
+    : `${new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' }).format(new Date(`${today.slice(0, 7)}-01T00:00:00Z`))} ${year}`
 
   useEffect(() => {
     const chart = chartRef.current

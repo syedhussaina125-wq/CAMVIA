@@ -1,13 +1,11 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { ArrowLeft, CalendarDays, Download, FileText, Printer } from 'lucide-react'
-import { autoTable } from 'jspdf-autotable'
-import { jsPDF } from 'jspdf'
+import type { jsPDF } from 'jspdf'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AttendanceStatus } from './attendanceData'
 import { getAttendanceCountsFromStatuses } from './attendanceData'
 import {
   getFeeStatementMetrics,
-  localDateKey,
   type FeeAccessUser,
   type FeeState,
 } from './feeData'
@@ -15,6 +13,7 @@ import type { Role, SessionUser } from './mockData'
 import type { Student } from './studentData'
 import { fetchAccountStatementState, fetchAttendanceStatementRecords } from './services/statements'
 import camviaLogo from './assets/camvia-light-logo.png'
+import { schoolDateKey } from './utils/schoolTimezone'
 
 export type StatementKind = 'account' | 'attendance'
 
@@ -42,6 +41,7 @@ type StatementData =
       dateFrom: string
       dateTo: string
       feePeriod: string
+      timeZone: string | null | undefined
       state: FeeState
     }
   | {
@@ -51,6 +51,7 @@ type StatementData =
       dateTo: string
       className: string
       section: string
+      timeZone: string | null | undefined
       records: AttendanceStatementRow[]
     }
 
@@ -63,9 +64,6 @@ type AccountLedgerRow = {
   balance: number
   cancellationReason?: string
 }
-
-const today = localDateKey()
-const firstDayOfMonth = `${today.slice(0, 7)}-01`
 
 function canViewAccountStatement(role: Role): boolean {
   return role === 'admin' || role === 'principal' || role === 'finance'
@@ -99,10 +97,15 @@ function formatCurrency(amount: number): string {
 
 function formatDate(value: string): string {
   if (!value) return '—'
-  const date = new Date(`${value.slice(0, 10)}T00:00:00`)
+  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`)
   return Number.isNaN(date.getTime())
     ? '—'
-    : new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(date)
+    : new Intl.DateTimeFormat('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'UTC',
+    }).format(date)
 }
 
 function statementMonths(dateFrom: string, dateTo: string, feePeriod: string): [string, string] {
@@ -156,7 +159,7 @@ function buildAccountLedgerRows(
   }
 
   entries.sort((left, right) =>
-    left.date.localeCompare(right.date) || left.order - right.order || left.invoiceId.localeCompare(right.invoiceId),
+    (left.date ?? '').localeCompare(right.date ?? '') || left.order - right.order || left.invoiceId.localeCompare(right.invoiceId),
   )
 
   let balance = 0
@@ -175,18 +178,26 @@ function buildAccountLedgerRows(
   })
 }
 
-function makeFilename(kind: StatementKind, studentId: string): string {
+function makeFilename(kind: StatementKind, studentId: string, timeZone: string | null | undefined): string {
   const safeStudentId = studentId.trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Student'
-  const date = localDateKey()
+  const date = schoolDateKey(timeZone)
   return `CAMVIA_${kind === 'account' ? 'Account' : 'Attendance'}_Statement_${safeStudentId}_${date}.pdf`
 }
 
 async function downloadPdf(data: StatementData): Promise<void> {
-  const document = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const [{ jsPDF: JsPDF }, { autoTable }] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ])
+  const document = new JsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const logo = new Image()
   logo.src = camviaLogo
-  await logo.decode()
-  document.addImage(logo, 'PNG', 14, 10, 48, 16)
+  try {
+    await logo.decode()
+    document.addImage(logo, 'PNG', 14, 10, 48, 16)
+  } catch {
+    // Continue PDF generation without logo if image decoding fails.
+  }
   document.setTextColor(25, 45, 80)
   document.setFontSize(17)
   document.setFont('helvetica', 'bold')
@@ -197,7 +208,7 @@ async function downloadPdf(data: StatementData): Promise<void> {
   document.text(`Student: ${data.student.firstName} ${data.student.lastName}`, 14, 49)
   document.text(`Student ID: ${data.student.studentId}  |  Class: ${data.student.className}  |  Section: ${data.student.section}`, 14, 55)
   document.text(`Date From: ${formatDate(data.dateFrom)}  |  Date To: ${formatDate(data.dateTo)}`, 14, 61)
-  document.text(`Generated: ${formatDate(localDateKey())}`, 14, 67)
+  document.text(`Generated: ${formatDate(schoolDateKey(data.timeZone))}`, 14, 67)
 
   if (data.kind === 'account') {
     const months = statementMonths(data.dateFrom, data.dateTo, data.feePeriod)
@@ -217,13 +228,14 @@ async function downloadPdf(data: StatementData): Promise<void> {
       headStyles: { fillColor: [238, 243, 249], textColor: [25, 45, 80], fontStyle: 'bold' },
       margin: { left: 14, right: 14 },
     })
+    const ledgerRows = buildAccountLedgerRows(data)
     autoTable(document, {
       startY: (document as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY
         ? (document as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6
         : 96,
       head: [['Date', 'Description', 'Invoice Amount', 'Payment Amount', 'Status', 'Balance']],
-      body: buildAccountLedgerRows(data).length
-        ? buildAccountLedgerRows(data).map((row) => [
+      body: ledgerRows.length
+        ? ledgerRows.map((row) => [
           formatDate(row.date),
           `${row.description}${row.cancellationReason ? `\nCancellation Reason: ${row.cancellationReason}` : ''}`,
           row.invoiceAmount === null ? '—' : formatCurrency(row.invoiceAmount),
@@ -280,7 +292,7 @@ async function downloadPdf(data: StatementData): Promise<void> {
     })
   }
 
-  document.save(makeFilename(data.kind, data.student.studentId))
+  document.save(makeFilename(data.kind, data.student.studentId, data.timeZone))
 }
 
 function attendanceStatusLabel(status: AttendanceStatus): string {
@@ -299,9 +311,11 @@ export function StatementsPage({
 }: StatementsPageProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const today = schoolDateKey(user.schoolTimezone)
+  const firstDayOfMonth = `${today.slice(0, 7)}-01`
   const [studentId, setStudentId] = useState(searchParams.get('studentId') ?? '')
-  const [dateFrom, setDateFrom] = useState(firstDayOfMonth)
-  const [dateTo, setDateTo] = useState(today)
+  const [dateFrom, setDateFrom] = useState(() => firstDayOfMonth)
+  const [dateTo, setDateTo] = useState(() => today)
   const [feePeriod, setFeePeriod] = useState('')
   const [className, setClassName] = useState('')
   const [section, setSection] = useState('')
@@ -356,7 +370,7 @@ export function StatementsPage({
       if (kind === 'account') {
         const [fromMonth, toMonth] = statementMonths(dateFrom, dateTo, feePeriod)
         const state = await fetchAccountStatementState(selectedStudent, fromMonth, toMonth)
-        setStatement({ kind, student: selectedStudent, accessUser: user, dateFrom, dateTo, feePeriod, state })
+        setStatement({ kind, student: selectedStudent, accessUser: user, dateFrom, dateTo, feePeriod, timeZone: user.schoolTimezone, state })
       } else {
         const records = await fetchAttendanceStatementRecords(
           selectedStudent,
@@ -365,7 +379,7 @@ export function StatementsPage({
           className,
           section,
         )
-        setStatement({ kind, student: selectedStudent, dateFrom, dateTo, className, section, records })
+        setStatement({ kind, student: selectedStudent, dateFrom, dateTo, className, section, timeZone: user.schoolTimezone, records })
       }
     } catch (requestError) {
       console.error(`[Statements] ${kind} statement could not be loaded:`, requestError)
@@ -394,8 +408,12 @@ export function StatementsPage({
     <section className="statement-page">
       <header className="statement-page-heading statement-no-print">
         <div>
-          <button type="button" className="back-link" onClick={() => navigate(kind === 'account' ? '/fees' : '/attendance')}>
-            <ArrowLeft size={16} /> {kind === 'account' ? 'Fees & Collections' : 'Attendance'}
+          <button
+            type="button"
+            className="back-link"
+            onClick={() => navigate(kind === 'account' ? (user.role === 'principal' ? '/dashboard' : '/fees') : '/attendance')}
+          >
+            <ArrowLeft size={16} /> {kind === 'account' ? (user.role === 'principal' ? 'Dashboard' : 'Fees & Collections') : 'Attendance'}
           </button>
           <p className="eyebrow">CAMVIA · STUDENT RECORDS</p>
           <h1>{kind === 'account' ? 'Account Statement' : 'Attendance Statement'}</h1>
@@ -483,7 +501,7 @@ export function StatementsPage({
             {statement.kind === 'attendance' && attendanceSummary ? (
               <AttendanceStatementContent statement={statement} summary={attendanceSummary} />
             ) : null}
-            <footer className="statement-generated">Generated {formatDate(localDateKey())} · CAMVIA</footer>
+            <footer className="statement-generated">Generated {formatDate(schoolDateKey(user.schoolTimezone))} · CAMVIA</footer>
           </article>
         </div>
       ) : null}

@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type { ProfileStatus, RoleName } from '../types/database'
+import { normalizeSchoolTimezone } from '../utils/schoolTimezone'
 
 const supabaseClient = supabase as any
 
@@ -85,7 +86,7 @@ export async function getActiveProfile(userId: string): Promise<AppProfile | nul
   }
 
   const schoolName: string | null = schoolResult.data?.name ?? null
-  const schoolTimezone: string | null = schoolResult.data?.timezone ?? null
+  const schoolTimezone = normalizeSchoolTimezone(schoolResult.data?.timezone)
   const campusName: string | null = campusResult.data?.name ?? null
 
   return {
@@ -287,7 +288,7 @@ export async function signInWithEmail(email: string, password: string): Promise<
 
   const { data, error } = authResponse
 
-  if (error || !data.user) {
+  if (error || !data?.user) {
     const rawMsg = error?.message ?? ''
     const lowerMsg = rawMsg.toLowerCase()
     const status = error?.status

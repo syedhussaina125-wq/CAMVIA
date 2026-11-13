@@ -4,12 +4,25 @@ import type { Database } from '../types/database'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+export const expectedSupabaseProjectRef = 'hkvvwjiwdkdkezvmpsxp'
 
-export const isSupabaseConfigured = Boolean(
-  supabaseUrl &&
-    supabaseAnonKey &&
-    supabaseUrl.startsWith('https://'),
-)
+function urlTargetsExpectedProject(value: string | undefined): boolean {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' &&
+      url.hostname === `${expectedSupabaseProjectRef}.supabase.co` &&
+      (url.pathname === '/' || url.pathname === '')
+  } catch {
+    return false
+  }
+}
+
+export const isSupabaseConfigured = Boolean(supabaseAnonKey && urlTargetsExpectedProject(supabaseUrl))
+
+export const supabaseConfigurationError = supabaseAnonKey
+  ? `Supabase must be configured for project ${expectedSupabaseProjectRef}.`
+  : 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.'
 
 const supabaseGlobal = globalThis as typeof globalThis & {
   __edupulseSupabaseClient?: SupabaseClient<Database>

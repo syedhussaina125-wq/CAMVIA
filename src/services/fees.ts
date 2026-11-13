@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import { mapConcurrent } from './mapConcurrent'
+import { runMutation } from './mutations'
 import type { Student } from '../studentData'
 import type { FeeInvoiceCreationInput, FeePaymentSubmission, FeeState, PaymentMethod } from '../feeData'
 
@@ -50,7 +51,8 @@ function requireSupabase() {
   return client
 }
 
-function profileDisplayId(authUserId: string): number {
+function profileDisplayId(authUserId: string | null | undefined): number {
+  if (!authUserId) return 0
   return authUserId.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
 }
 
@@ -126,7 +128,7 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
         campusId: row.campus_id,
         organizationId: row.organization_id,
         schoolId: row.school_id,
-        month: row.fee_period.slice(0, 7),
+        month: (row.fee_period ?? '').slice(0, 7),
         dueDate: row.due_date,
         totalAmount: lineItems.reduce((total, item) => total + item.amount, 0),
         paidAmount: 0,
@@ -168,7 +170,7 @@ export async function recordFeePayment(
   if (invoice.error) throw invoice.error
   if (!invoice.data) throw new Error('The fee invoice is not available in your authorized scope.')
 
-  const { error } = await db.rpc('record_fee_payment', {
+  await runMutation('record_fee_payment', submission.invoiceId, () => db.rpc('record_fee_payment', {
     target_invoice_id: submission.invoiceId,
     target_student_id: invoice.data.student_id,
     target_amount: submission.amount,
@@ -177,8 +179,7 @@ export async function recordFeePayment(
     target_reference: submission.reference,
     target_note: submission.note,
     target_idempotency_key: submission.idempotencyKey,
-  })
-  if (error) throw error
+  }))
   return fetchFeeState(students)
 }
 
@@ -219,14 +220,14 @@ export async function createFeeInvoice(
   const db = requireSupabase()
   const feePeriod = submission.feePeriod.length === 7 ? `${submission.feePeriod}-01` : submission.feePeriod
 
-  const { error } = await db.rpc('create_fee_invoice', {
-    target_student_id: submission.studentId,
-    target_fee_period: feePeriod,
-    target_due_date: submission.dueDate,
-    target_line_items: submission.lineItems,
-  })
-
-  if (error) {
+  try {
+    await runMutation('create_fee_invoice', submission.studentId, () => db.rpc('create_fee_invoice', {
+      target_student_id: submission.studentId,
+      target_fee_period: feePeriod,
+      target_due_date: submission.dueDate,
+      target_line_items: submission.lineItems,
+    }))
+  } catch (error) {
     throw mapFeeInvoiceError(error)
   }
   return fetchFeeState(students)
@@ -242,13 +243,12 @@ export async function updateFeeInvoice(
   },
 ): Promise<FeeState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('update_fee_invoice', {
+  await runMutation('update_fee_invoice', payload.invoiceId, () => db.rpc('update_fee_invoice', {
     p_invoice_id: payload.invoiceId,
     p_due_date: payload.dueDate,
     p_line_items: payload.lineItems,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }))
   return fetchFeeState(students)
 }
 
@@ -257,11 +257,13 @@ export async function voidFeeInvoice(
   payload: { invoiceId: string; reason: string },
 ): Promise<FeeState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('void_fee_invoice', {
+  const data = await runMutation<{ invoice_id: string; voided_at: string }>('void_fee_invoice', payload.invoiceId, () => db.rpc('void_fee_invoice', {
     p_invoice_id: payload.invoiceId,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }), true)
+  if (!data || data.invoice_id !== payload.invoiceId || !data.voided_at) {
+    throw new Error('void_fee_invoice did not confirm the requested invoice was voided.')
+  }
   return fetchFeeState(students)
 }
 
@@ -270,10 +272,12 @@ export async function voidFeePayment(
   payload: { paymentId: string; reason: string },
 ): Promise<FeeState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('void_fee_payment', {
+  const data = await runMutation<{ payment_id: string; voided_at: string }>('void_fee_payment', payload.paymentId, () => db.rpc('void_fee_payment', {
     p_payment_id: payload.paymentId,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }), true)
+  if (!data || data.payment_id !== payload.paymentId || !data.voided_at) {
+    throw new Error('void_fee_payment did not confirm the requested payment was voided.')
+  }
   return fetchFeeState(students)
 }

@@ -7,6 +7,7 @@ export type TrashedRecordType =
   | 'ATTENDANCE_SESSION'
   | 'CANCELLED_INVOICE'
   | 'CANCELLED_PAYMENT'
+  | 'REJECTED_ADMISSION'
 
 export type TrashedItem = {
   id: string
@@ -22,4 +23,23 @@ export type TrashedItem = {
   days_remaining: number | null
   is_tombstoned: boolean
   restorable?: boolean
+  application_reference?: string
+  applying_class?: string
+  guardian_name?: string
+  guardian_phone?: string
+  submitted_at?: string
+  rejected_at?: string
+  source?: string
 }
+
+export type PermanentTrashDeleteResult =
+  | { success: true }
+  | { success: false; message: string }
+
+export type PermanentlyDeletableTrashRecordType =
+  | 'STUDENT'
+  | 'GUARDIAN'
+  | 'COMMUNICATION_DRAFT'
+  | 'REJECTED_ADMISSION'
+
+export const TEST_HANDOVER_PURGE_CONFIRMATION = 'PURGE TEST/HANDOVER'

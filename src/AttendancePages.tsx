@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, CalendarDays, ClipboardCheck, FileText, Search, Users } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { AttendanceClass, AttendanceState, AttendanceStatus, AttendanceSubmission, AttendanceUser } from './attendanceData'
@@ -9,12 +9,14 @@ import {
   formatAttendanceDate,
   getAttendanceClasses,
   getAttendanceCounts,
+  getStudentAttendance,
   getSessionForClass,
   getSessionRecords,
   localDateKey,
 } from './attendanceData'
 import type { Student } from './studentData'
 import { RecordActionMenu, type ActionItem } from './components/RecordActionControls'
+import { WhatsAppComposer } from './components/WhatsAppComposer'
 import { AttendanceCorrectionModal, type AttendanceCorrectionRecord } from './components/AttendanceCorrectionModal'
 import { AttendanceNavigationGuardContext } from './components/AttendanceNavigationGuard'
 import { correctAttendanceSession } from './services/attendance'
@@ -185,7 +187,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                         ? 'Completed'
                         : 'In Progress'
                   const classActions: ActionItem[] = []
-                  if (user.role !== 'finance' && session?.status === 'COMPLETED' && sessionRecords.length === attendanceClass.students.length) {
+                  if (user.role !== 'finance' && session?.status === 'COMPLETED' && sessionRecords.length > 0) {
                     classActions.push({
                       label: 'Correct Attendance',
                       onClick: () => {
@@ -269,7 +271,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
                 onTrash={session && sessionRecords.length > 0 && user.role === 'admin'
                   ? () => { void handleTrashAttendance(session.id, attendanceClass.className, attendanceClass.section) }
                   : undefined}
-                onCorrect={session?.status === 'COMPLETED' && sessionRecords.length === attendanceClass.students.length && user.role !== 'finance' ? () => {
+                onCorrect={session?.status === 'COMPLETED' && sessionRecords.length > 0 && user.role !== 'finance' ? () => {
                   setCorrectingSession({
                     sessionId: session.id,
                     className: attendanceClass.className,
@@ -307,7 +309,7 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
             if (onCorrectAttendance) {
               await onCorrectAttendance(payload)
             } else {
-              await correctAttendanceSession(payload)
+              await correctAttendanceSession(payload, { role: user.role, route: window.location.pathname })
               if (onRefresh) onRefresh()
             }
           }}
@@ -325,6 +327,18 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   const today = attendanceDateKey(user.schoolTimezone)
   const requestedDate = searchParams.get('date') ?? today
   const attendanceClass = useMemo(() => canAccessAttendanceClass(students, classId), [students, classId])
+  const teacherHasClassAssignment = Boolean(attendanceClass && user.teacherAssignments?.some((assignment) =>
+    assignment.active &&
+    assignment.school_id === attendanceClass.schoolId &&
+    assignment.campus_id === attendanceClass.campusId &&
+    assignment.class_name === attendanceClass.className &&
+    assignment.section === attendanceClass.section,
+  ))
+  const hasClassAttendanceAccess = Boolean(attendanceClass && (
+    user.role === 'admin' ||
+    user.role === 'principal' ||
+    (user.role === 'teacher' && teacherHasClassAssignment)
+  ))
   const [date, setDate] = useState(() => {
     const parsedDate = new Date(`${requestedDate}T00:00:00`)
     return !Number.isNaN(parsedDate.getTime()) &&
@@ -342,12 +356,18 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   const [query, setQuery] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState('')
+  const saveInFlight = useRef(false)
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null)
   const attendanceNavigationGuard = useContext(AttendanceNavigationGuardContext)
   const existingSession = attendanceClass ? getSessionForClass(attendance, date, attendanceClass) : undefined
   const existingRecords = existingSession ? getSessionRecords(attendance, existingSession.id) : []
   const draftKey = getAttendanceDraftKey(attendanceClass, date)
   const recordsByStudentId = new Map(existingRecords.map((record) => [record.studentId, record]))
+  const canCorrectAttendance = Boolean(
+    existingSession?.status === 'COMPLETED' &&
+    (user.role === 'admin' || user.role === 'principal' || (user.role === 'teacher' && teacherHasClassAssignment)),
+  )
   const defaultStatuses = Object.fromEntries(attendanceClass?.students.map((student) => [
     student.id,
     recordsByStudentId.get(student.id)?.status ?? 'UNMARKED',
@@ -387,8 +407,12 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
 
   if (loading) return <AttendanceLoadingState />
   if (error) return <AttendanceErrorState detail={error} onRetry={onRetry} />
-  if (!attendanceClass || user.role === 'finance') {
-    return <AttendanceEmptyState title="Class not found" detail="This class is not included in your authorized attendance scope." onBack={() => navigate('/attendance')} />
+  if (!attendanceClass || !hasClassAttendanceAccess) {
+    const isUnassignedTeacherClass = user.role === 'teacher' && attendanceClass !== null
+    const detail = isUnassignedTeacherClass
+      ? 'This class is not assigned to you.'
+      : 'This class is not included in your authorized attendance scope.'
+    return <AttendanceEmptyState title={isUnassignedTeacherClass ? 'Class not assigned' : 'Class not found'} detail={detail} onBack={() => navigate('/attendance')} />
   }
   if (existingSession?.studentCount === 0) {
     return <AttendanceEmptyState title="Attendance is in Trash" detail="Restore this attendance session from Trash before opening or editing it." onBack={() => navigate(user.role === 'admin' ? '/trash' : '/attendance')} />
@@ -415,6 +439,7 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
     setDate(nextDate)
     setDraft({ key: getAttendanceDraftKey(attendanceClass, nextDate), statuses: {}, notes: {} })
     setSaveError('')
+    setSaveSuccess('')
   }
   const requestNavigation = (to: string) => {
     if (shouldBlockNavigation(to)) return
@@ -429,6 +454,7 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
       setDate(destination.date)
       setDraft({ key: getAttendanceDraftKey(attendanceClass, destination.date), statuses: {}, notes: {} })
       setSaveError('')
+      setSaveSuccess('')
       return
     }
     if (destination.onDiscard) {
@@ -441,14 +467,6 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (dirtyStudentIds.length === 0) return
-    if (existingSession?.status === 'COMPLETED') {
-      if (unmarkedCount > 0) {
-        setSaveError('A saved attendance correction requires a status for every student.')
-        return
-      }
-      setShowCorrectionModal(true)
-      return
-    }
     if (date > attendanceDateKey(user.schoolTimezone)) {
       setSaveError('Attendance cannot be recorded for a future date.')
       return
@@ -463,8 +481,11 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
       setSaveError('Select Present, Absent, or Late for each changed student before saving.')
       return
     }
+    if (saveInFlight.current) return
+    saveInFlight.current = true
     setSaving(true)
     setSaveError('')
+    setSaveSuccess('')
     try {
       await onSave({
         date,
@@ -473,11 +494,13 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
         statuses: changedStatuses,
         notes: Object.fromEntries(dirtyStudentIds.map((studentId) => [studentId, notes[studentId] ?? ''])),
       })
-      navigate(`/attendance?date=${date}`)
+      setDraft({ key: draftKey, statuses: {}, notes: {} })
+      setSaveSuccess('All changes saved.')
     } catch (error) {
       console.error('[CAMVIA Attendance] Attendance save failed:', error)
       setSaveError('Some attendance changes could not be saved. Your unsaved selections are still here; check your connection and try again.')
     } finally {
+      saveInFlight.current = false
       setSaving(false)
     }
   }
@@ -492,28 +515,48 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
             <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
             <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
           </div>
-          <label className="take-date-control"><span>Date</span><input type="date" max={today} value={date} onChange={(event) => requestDateChange(event.target.value)} /></label>
+          <label className="take-date-control"><span>Date</span><input type="date" max={today} value={date} disabled={saving} onChange={(event) => requestDateChange(event.target.value)} /></label>
         </header>
 
         <div className="take-attendance-toolbar">
           <label className="attendance-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name or student ID" aria-label="Search class students" /></label>
-          <button type="button" className="secondary-button small-button" onClick={() => setDraft({
+          <button type="button" className="secondary-button small-button" disabled={saving} onClick={() => {
+            setSaveSuccess('')
+            setSaveError('')
+            setDraft({
             key: draftKey,
             statuses: Object.fromEntries(attendanceClass.students.map((student) => [student.id, 'PRESENT'])),
             notes: { ...notes },
-          })}>
+            })
+          }}>
             <ClipboardCheck size={16} /> Mark All Present
           </button>
         </div>
 
         <div className="attendance-student-list">
-          {filteredStudents.map((student) => (
+          {filteredStudents.map((student) => {
+            const summary = getStudentAttendance(student, attendance)
+            return (
             <article className={`attendance-student-row${dirtyStudentIds.includes(student.id) ? ' changed' : ''}`} key={student.id}>
               <div className="attendance-student-person">
                 <div className="student-avatar"><Users size={17} /></div>
                 <div>
                   <strong>{student.firstName} {student.lastName}</strong>
                   <span>{student.studentId} · Roll {student.rollNumber}</span>
+                  <WhatsAppComposer
+                    student={student}
+                    user={user}
+                    initialTemplate="Attendance Alert"
+                    buttonLabel="Message guardian"
+                    context={{
+                      attendance: {
+                        status: statuses[student.id] ?? 'UNMARKED',
+                        date,
+                        rate: summary.counts.rate,
+                        recordedDays: summary.counts.total,
+                      },
+                    }}
+                  />
                   {statuses[student.id] === 'UNMARKED'
                     ? <span className="attendance-row-state">Unmarked</span>
                     : dirtyStudentIds.includes(student.id)
@@ -523,22 +566,31 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
               </div>
               <div className="attendance-segmented" role="group" aria-label={`Attendance for ${student.firstName} ${student.lastName}`}>
                 {statusOptions.map((option) => (
-                  <button type="button" key={option.status} aria-pressed={statuses[student.id] === option.status} className={`${statuses[student.id] === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => setDraft((current) => ({
-                    key: draftKey,
-                    statuses: { ...(current.key === draftKey ? current.statuses : {}), [student.id]: option.status },
-                    notes: current.key === draftKey ? current.notes : {},
-                  }))}>{option.label}</button>
+                  <button type="button" key={option.status} disabled={saving} aria-pressed={statuses[student.id] === option.status} className={`${statuses[student.id] === option.status ? 'selected' : ''} ${option.status.toLowerCase()}`} onClick={() => {
+                    setSaveSuccess('')
+                    setSaveError('')
+                    setDraft((current) => ({
+                      key: draftKey,
+                      statuses: { ...(current.key === draftKey ? current.statuses : {}), [student.id]: option.status },
+                      notes: current.key === draftKey ? current.notes : {},
+                    }))
+                  }}>{option.label}</button>
                 ))}
               </div>
               {statuses[student.id] === 'ABSENT' || statuses[student.id] === 'LATE' ? (
-                <input className="attendance-note" value={notes[student.id] ?? ''} onChange={(event) => setDraft((current) => ({
-                  key: draftKey,
-                  statuses: current.key === draftKey ? current.statuses : { ...defaultStatuses },
-                  notes: { ...(current.key === draftKey ? current.notes : {}), [student.id]: event.target.value },
-                }))} placeholder="Optional note" aria-label={`Optional note for ${student.firstName} ${student.lastName}`} />
+                <input className="attendance-note" disabled={saving} value={notes[student.id] ?? ''} onChange={(event) => {
+                  setSaveSuccess('')
+                  setSaveError('')
+                  setDraft((current) => ({
+                    key: draftKey,
+                    statuses: current.key === draftKey ? current.statuses : { ...defaultStatuses },
+                    notes: { ...(current.key === draftKey ? current.notes : {}), [student.id]: event.target.value },
+                  }))
+                }} placeholder="Optional note" aria-label={`Optional note for ${student.firstName} ${student.lastName}`} />
               ) : null}
             </article>
-          ))}
+            )
+          })}
         </div>
 
         {saveError ? <div className="attendance-empty-notice" role="alert">{saveError}</div> : null}
@@ -548,21 +600,23 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
             <span><i className="total-dot absent-dot" /> Absent: <strong>{totals.absent}</strong></span>
             <span><i className="total-dot late-dot" /> Late: <strong>{totals.late}</strong></span>
             <span>Unmarked: <strong>{unmarkedCount}</strong></span>
-            {dirtyStudentIds.length > 0 ? <span className="attendance-unsaved-count">{dirtyStudentIds.length} unsaved changes</span> : null}
+            {dirtyStudentIds.length > 0
+              ? <span className="attendance-unsaved-count">{dirtyStudentIds.length} unsaved {dirtyStudentIds.length === 1 ? 'change' : 'changes'}</span>
+              : saveSuccess ? <span className="attendance-saved-count" role="status">{saveSuccess}</span> : null}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {existingSession?.status === 'COMPLETED' && (
+          <div className="attendance-save-actions">
+            {canCorrectAttendance && (
               <button
                 type="button"
                 className="secondary-button"
-                disabled={saving || unmarkedCount > 0}
+                disabled={saving || existingRecords.length === 0}
                 onClick={() => setShowCorrectionModal(true)}
               >
                 Audited Correction
               </button>
             )}
             <button type="submit" className="primary-button attendance-save-button" disabled={saving || dirtyStudentIds.length === 0}>
-              {saving ? 'Saving…' : existingSession?.status === 'COMPLETED' ? 'Continue to Audited Correction' : existingSession ? 'Save Changes' : 'Save Attendance'}
+              {saving ? 'Saving...' : 'Save Attendance'}
             </button>
           </div>
         </footer>
@@ -581,7 +635,7 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
         </div>
       )}
 
-      {showCorrectionModal && existingSession?.status === 'COMPLETED' && (
+      {showCorrectionModal && canCorrectAttendance && existingSession?.status === 'COMPLETED' && (
         <AttendanceCorrectionModal
           isOpen={showCorrectionModal}
           sessionId={existingSession.id}
@@ -597,12 +651,22 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
               note: notes[student.id] ?? '',
             }
           })}
+          originalRecords={attendanceClass.students.flatMap((student) => {
+            const record = recordsByStudentId.get(student.id)
+            if (!record) return []
+            return [{
+              student_id: student.id,
+              student_name: `${student.firstName} ${student.lastName}`,
+              status: record.status,
+              note: record.note,
+            }]
+          })}
           onClose={() => setShowCorrectionModal(false)}
           onSave={async (payload) => {
             if (onCorrectAttendance) {
               await onCorrectAttendance(payload)
             } else {
-              await correctAttendanceSession(payload)
+              await correctAttendanceSession(payload, { role: user.role, route: window.location.pathname })
               if (onRefresh) onRefresh()
             }
             navigate(`/attendance?date=${date}`)

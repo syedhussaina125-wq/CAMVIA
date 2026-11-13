@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
+import { runMutation } from './mutations'
 import { mapConcurrent } from './mapConcurrent'
 import type {
   CommunicationAction,
@@ -50,7 +51,8 @@ function requireSupabase() {
   return client
 }
 
-function displayId(uuid: string): number {
+function displayId(uuid: string | null | undefined): number {
+  if (!uuid) return 0
   return uuid.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
 }
 
@@ -166,7 +168,7 @@ export async function saveCommunicationDraft(
   students: Student[],
 ): Promise<{ messageId: string; state: CommunicationState }> {
   const db = requireSupabase()
-  const { data, error } = await db.rpc('save_communication_draft', {
+  const data = await runMutation('save_communication_draft', submission.messageId ?? submission.studentId, () => db.rpc('save_communication_draft', {
     target_student_id: submission.studentId,
     target_guardian_id: submission.guardianId,
     target_message_type: submission.type,
@@ -176,8 +178,7 @@ export async function saveCommunicationDraft(
     target_source_id: submission.sourceId ?? submission.studentId,
     target_message_id: submission.messageId ?? null,
     target_submit: submit,
-  })
-  if (error) throw error
+  }))
   if (typeof data !== 'string') throw new Error('Supabase did not return a saved communication ID.')
   return { messageId: data, state: await fetchCommunicationState(students) }
 }
@@ -187,12 +188,11 @@ export async function transitionCommunication(
   students: Student[],
 ): Promise<CommunicationState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('transition_communication_message', {
+  await runMutation('transition_communication_message', operation.messageId, () => db.rpc('transition_communication_message', {
     target_message_id: operation.messageId,
     target_operation: operation.type,
     target_rejection_reason: operation.type === 'reject' ? operation.reason : '',
-  })
-  if (error) throw error
+  }))
   return fetchCommunicationState(students)
 }
 
@@ -202,10 +202,12 @@ export async function deleteCommunicationDraft(
   students: Student[],
 ): Promise<CommunicationState> {
   const db = requireSupabase()
-  const { error } = await db.rpc('trash_communication_draft', {
+  const data = await runMutation<{ message_id: string; deleted_at: string }>('trash_communication_draft', messageId, () => db.rpc('trash_communication_draft', {
     p_message_id: messageId,
     p_reason: reason,
-  })
-  if (error) throw error
+  }), true)
+  if (!data || data.message_id !== messageId || !data.deleted_at) {
+    throw new Error('trash_communication_draft did not confirm the requested draft was moved to Trash.')
+  }
   return fetchCommunicationState(students)
 }

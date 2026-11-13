@@ -22,6 +22,9 @@ export function formatRpcErrorMessage(error: unknown): string {
   const hint = typeof errorObject?.hint === 'string' ? errorObject.hint : ''
   const status = typeof errorObject?.status === 'number' ? errorObject.status : undefined
   const errorText = `${message} ${details} ${hint}`
+  if (typeof errorObject?.mutationOperation === 'string' && message.trim()) {
+    return message.trim()
+  }
 
   // 1. Permission / Access Denied (SQLSTATE 42501)
   if (/teacher assignment scope|assigned class|assigned campus|assigned section/i.test(errorText)) {
@@ -42,8 +45,17 @@ export function formatRpcErrorMessage(error: unknown): string {
     code === '23505' ||
     /duplicate key|unique constraint/i.test(errorText)
   ) {
-    if (/students_school_code_unique|student ID already exists/i.test(errorText)) {
-      return 'This Student ID is already in use at your school. Enter a different Student ID and try again.'
+    if (/student ID already exists/i.test(errorText)) {
+      return 'Student ID already exists.'
+    }
+    if (/roll number already exists/i.test(errorText)) {
+      return message.trim() || 'Roll number already exists in this class and section.'
+    }
+    if (/possible duplicate student/i.test(errorText)) {
+      return 'Possible duplicate student found. Review before creating.'
+    }
+    if (/students_school_code_unique/i.test(errorText)) {
+      return 'Student ID already exists.'
     }
     return 'A record with one of these unique values already exists. Check the entered values and try again.'
   }

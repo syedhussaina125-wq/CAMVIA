@@ -1,6 +1,12 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import { mapConcurrent } from './mapConcurrent'
+import { mutationConfirmationError, runMutation, verifyMutationSession } from './mutations'
 import type { NewStudent, Student } from '../studentData'
+import {
+  evaluateCsvDuplicates,
+  type CsvSkippedRow,
+  type StudentCandidate,
+} from '../utils/studentDuplicates'
 
 const client = supabase as any
 const pageSize = 1000
@@ -207,11 +213,12 @@ export async function fetchStudents(): Promise<Student[]> {
     if (page.length < pageSize) break
   }
 
-  const students: Student[] = []
+  const rowBatches: StudentRow[][] = []
   for (let start = 0; start < rows.length; start += relationBatchSize) {
-    students.push(...await mapRows(rows.slice(start, start + relationBatchSize)))
+    rowBatches.push(rows.slice(start, start + relationBatchSize))
   }
-  return students
+  const mappedBatches = await mapConcurrent(rowBatches, mapRows)
+  return mappedBatches.flat()
 }
 
 export async function fetchStudentById(studentUuid: string): Promise<Student | null> {
@@ -291,7 +298,7 @@ export async function createStudentRecord(
   if (hasGuardian && !student.guardian.name.trim()) {
     throw new Error('Enter the guardian name when adding guardian contact details.')
   }
-  const { data, error } = await db.rpc('create_student', {
+  const data = await runMutation('create_student', student.studentId, () => db.rpc('create_student', {
     target_campus_id: campusId,
     target_student_code: student.studentId.trim(),
     target_first_name: student.firstName.trim(),
@@ -306,14 +313,182 @@ export async function createStudentRecord(
     target_guardian_phone: student.guardian.phone.trim() || null,
     target_guardian_email: student.guardian.email.trim() || null,
     target_guardian_relationship: student.guardian.relationship?.trim() || null,
-  })
+  }))
 
-  if (error) throw error
   if (typeof data !== 'string') throw new Error('Student creation did not return a valid student ID.')
 
   const created = await fetchStudentById(data)
   if (!created) throw new Error('Student was created, but could not be loaded in your authorized scope.')
   return created
+}
+
+export async function fetchSchoolStudentsForDuplicateCheck(): Promise<StudentCandidate[]> {
+  if (!isSupabaseConfigured || !client) return []
+  try {
+    const { data, error } = await client
+      .from('students')
+      .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth')
+    if (error) {
+      console.warn('[Supabase] Failed to fetch school students for duplicate check:', error.message)
+      return []
+    }
+    return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      id: typeof row.id === 'string' ? row.id : undefined,
+      studentId: typeof row.student_code === 'string' ? row.student_code : '',
+      firstName: typeof row.first_name === 'string' ? row.first_name : '',
+      lastName: typeof row.last_name === 'string' ? row.last_name : '',
+      className: typeof row.class_name === 'string' ? row.class_name : '',
+      section: typeof row.section === 'string' ? row.section : '',
+      rollNumber: typeof row.roll_number === 'string' ? row.roll_number : '',
+      dateOfBirth: typeof row.date_of_birth === 'string' ? row.date_of_birth : '',
+    }))
+  } catch (error) {
+    console.warn('[Supabase] Error fetching school students for duplicate check:', error)
+    return []
+  }
+}
+
+export type ImportBatchSummary = {
+  totalParsedRows: number
+  validRows: number
+  rejectedRows: number
+  selectedCampus: string
+  createdCount: number
+  firstSupabaseError: {
+    code?: string
+    message: string
+    details?: unknown
+    hint?: unknown
+  } | null
+  skippedDetails: CsvSkippedRow[]
+}
+
+export async function importStudentsBatch(
+  students: NewStudent[],
+  campusId: string,
+): Promise<ImportBatchSummary> {
+  if (!campusId || typeof campusId !== 'string') {
+    throw new Error('A valid campus must be selected before importing students.')
+  }
+  if (!Array.isArray(students) || students.length === 0) {
+    throw new Error('No students provided for import.')
+  }
+  const MAX_IMPORT_ROWS = 500
+  if (students.length > MAX_IMPORT_ROWS) {
+    throw new Error(`The import contains ${students.length} students, which exceeds the maximum limit of ${MAX_IMPORT_ROWS} students per import.`)
+  }
+
+  // Verify active session & role permission before mutating database
+  await verifyMutationSession('import_students', campusId)
+  const db = requireSupabase()
+  const totalParsedRows = students.length
+
+  // Pre-validate for duplicates against existing school records (active + trashed) and intra-CSV
+  const existingRecords = await fetchSchoolStudentsForDuplicateCheck()
+  const { validRows: nonDuplicateStudents, skippedRows } = evaluateCsvDuplicates(students, existingRecords)
+
+  let firstSupabaseError: {
+    code?: string
+    message: string
+    details?: unknown
+    hint?: unknown
+  } | null = null
+
+  if (skippedRows.length > 0) {
+    firstSupabaseError = {
+      code: '23505',
+      message: skippedRows[0].reason,
+    }
+  }
+
+  // Process valid non-duplicate rows with controlled concurrency (4 parallel RPC requests)
+  const results = await mapConcurrent(nonDuplicateStudents, async (student) => {
+    const guardianName = student.guardian.name.trim().split(/\s+/)
+    const hasGuardian = Boolean(student.guardian.name.trim() || student.guardian.phone.trim() || student.guardian.email.trim())
+
+    const { error } = await db.rpc('create_student', {
+      target_campus_id: campusId,
+      target_student_code: student.studentId.trim(),
+      target_first_name: student.firstName.trim(),
+      target_last_name: student.lastName.trim(),
+      target_class_name: student.className.trim(),
+      target_section: student.section.trim(),
+      target_roll_number: student.rollNumber.trim() || null,
+      target_date_of_birth: student.dateOfBirth || null,
+      target_gender: student.gender || null,
+      target_guardian_first_name: hasGuardian ? guardianName[0] : null,
+      target_guardian_last_name: hasGuardian ? (guardianName.slice(1).join(' ') || guardianName[0]) : null,
+      target_guardian_phone: student.guardian.phone.trim() || null,
+      target_guardian_email: student.guardian.email.trim() || null,
+      target_guardian_relationship: student.guardian.relationship?.trim() || null,
+    })
+
+    if (error) {
+      return {
+        success: false as const,
+        student,
+        error: {
+          code: typeof error.code === 'string' ? error.code : undefined,
+          message: error.message || 'Unknown database error',
+          details: error.details,
+          hint: error.hint,
+        },
+      }
+    }
+    return { success: true as const, student }
+  }, 4)
+
+  const createdCount = results.filter((r) => r.success).length
+  const failedRpcResults = results.filter((r) => !r.success)
+
+  if (failedRpcResults.length > 0 && failedRpcResults[0].error) {
+    firstSupabaseError = failedRpcResults[0].error
+  }
+
+  const allSkipped: CsvSkippedRow[] = [
+    ...skippedRows,
+    ...failedRpcResults.map((r, i) => ({
+      rowNumber: totalParsedRows - failedRpcResults.length + i + 1,
+      student: r.student,
+      reason: r.error.message,
+      rule: 'identity' as const,
+    })),
+  ]
+
+  const rejectedRows = totalParsedRows - createdCount
+  const validRows = createdCount
+
+  console.log('[Student Import] Summary:', {
+    totalParsedRows,
+    validRows,
+    rejectedRows,
+    selectedCampus: campusId,
+    firstSupabaseError,
+  })
+
+  if (firstSupabaseError) {
+    console.error('[Supabase] First import error details:', {
+      code: firstSupabaseError.code,
+      message: firstSupabaseError.message,
+      details: firstSupabaseError.details,
+      hint: firstSupabaseError.hint,
+    })
+  }
+
+  if (createdCount === 0 && rejectedRows > 0) {
+    const detail = firstSupabaseError?.message ? `: ${firstSupabaseError.message}` : ''
+    throw new Error(`Import failed${detail}`)
+  }
+
+  return {
+    totalParsedRows,
+    validRows,
+    rejectedRows,
+    selectedCampus: campusId,
+    createdCount,
+    firstSupabaseError,
+    skippedDetails: allSkipped,
+  }
 }
 
 export async function updateStudent(payload: {
@@ -329,7 +504,7 @@ export async function updateStudent(payload: {
   reason: string
 }): Promise<Student> {
   const db = requireSupabase()
-  const { error } = await db.rpc('update_student', {
+  await runMutation('update_student', payload.studentId, () => db.rpc('update_student', {
     p_student_id: payload.studentId,
     p_campus_id: payload.campusId,
     p_first_name: payload.firstName,
@@ -340,9 +515,8 @@ export async function updateStudent(payload: {
     p_date_of_birth: payload.dateOfBirth || null,
     p_gender: payload.gender || null,
     p_reason: payload.reason,
-  })
+  }), true)
 
-  if (error) throw error
   const updated = await fetchStudentById(payload.studentId)
   if (!updated) throw new Error('Student was updated, but could not be re-loaded.')
   return updated
@@ -350,11 +524,17 @@ export async function updateStudent(payload: {
 
 export async function archiveStudent(studentId: string, reason: string): Promise<void> {
   const db = requireSupabase()
-  const { error } = await db.rpc('archive_student', {
+  const data = await runMutation<{ student_id: string; status: string }>('archive_student', studentId, () => db.rpc('archive_student', {
     p_student_id: studentId,
     p_reason: reason,
-  })
-  if (error) throw error
+  }), true)
+  if (!data || data.student_id !== studentId || data.status !== 'ARCHIVED') {
+    throw mutationConfirmationError(
+      'archive_student',
+      studentId,
+      'archive_student did not confirm the requested student was archived.',
+    )
+  }
 }
 
 export async function updateGuardian(payload: {
@@ -367,7 +547,7 @@ export async function updateGuardian(payload: {
   reason: string
 }): Promise<void> {
   const db = requireSupabase()
-  const { error } = await db.rpc('update_guardian', {
+  await runMutation('update_guardian', payload.guardianId, () => db.rpc('update_guardian', {
     p_guardian_id: payload.guardianId,
     p_first_name: payload.firstName,
     p_last_name: payload.lastName,
@@ -375,8 +555,7 @@ export async function updateGuardian(payload: {
     p_email: payload.email || null,
     p_address: payload.address || null,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }), true)
 }
 
 export async function linkStudentGuardian(payload: {
@@ -387,14 +566,13 @@ export async function linkStudentGuardian(payload: {
   reason: string
 }): Promise<void> {
   const db = requireSupabase()
-  const { error } = await db.rpc('link_student_guardian', {
+  await runMutation('link_student_guardian', payload.studentId, () => db.rpc('link_student_guardian', {
     p_student_id: payload.studentId,
     p_guardian_id: payload.guardianId,
     p_relationship: payload.relationship || null,
     p_is_primary: payload.isPrimary,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }), true)
 }
 
 export async function unlinkStudentGuardian(payload: {
@@ -403,10 +581,9 @@ export async function unlinkStudentGuardian(payload: {
   reason: string
 }): Promise<void> {
   const db = requireSupabase()
-  const { error } = await db.rpc('unlink_student_guardian', {
+  await runMutation('unlink_student_guardian', payload.studentId, () => db.rpc('unlink_student_guardian', {
     p_student_id: payload.studentId,
     p_guardian_id: payload.guardianId,
     p_reason: payload.reason,
-  })
-  if (error) throw error
+  }), true)
 }

@@ -46,6 +46,10 @@ type AttendanceStatementRow = {
   }
 }
 
+function isMissingAttendanceTrashColumn(error: { code?: string; message?: string }): boolean {
+  return error.code === '42703' && /trashed_at/i.test(error.message ?? '')
+}
+
 function requireSupabase() {
   if (!isSupabaseConfigured || !client) {
     throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
@@ -137,7 +141,7 @@ export async function fetchAccountStatementState(
         campusId: invoice.campus_id,
         organizationId: invoice.organization_id,
         schoolId: invoice.school_id,
-        month: invoice.fee_period.slice(0, 7),
+        month: (invoice.fee_period ?? '').slice(0, 7),
         dueDate: invoice.due_date,
         totalAmount: lineItems.reduce((total, item) => total + item.amount, 0),
         paidAmount: 0,
@@ -178,30 +182,50 @@ export async function fetchAttendanceStatementRecords(
   }
 
   const rows: AttendanceStatementRow[] = []
+  let trashColumnAvailable = true
   for (let offset = 0; ; offset += pageSize) {
-    let request = db.from('attendance_records')
-      .select('status, attendance_sessions!inner(attendance_date, class_name, section)')
-      .eq('student_id', student.id)
-      .eq('attendance_sessions.school_id', student.schoolId)
-      .gte('attendance_sessions.attendance_date', dateFrom)
-      .lte('attendance_sessions.attendance_date', dateTo)
-      .order('attendance_date', { ascending: false, referencedTable: 'attendance_sessions' })
-      .range(offset, offset + pageSize - 1)
+    const request = () => {
+      let query = db.from('attendance_records')
+        .select('status, attendance_sessions!inner(attendance_date, class_name, section)')
+        .eq('student_id', student.id)
+        .eq('attendance_sessions.school_id', student.schoolId)
+        .gte('attendance_sessions.attendance_date', dateFrom)
+        .lte('attendance_sessions.attendance_date', dateTo)
+        .order('attendance_date', { ascending: false, referencedTable: 'attendance_sessions' })
+        .range(offset, offset + pageSize - 1)
+      if (className) query = query.eq('attendance_sessions.class_name', className)
+      if (section) query = query.eq('attendance_sessions.section', section)
+      return query
+    }
 
-    if (className) request = request.eq('attendance_sessions.class_name', className)
-    if (section) request = request.eq('attendance_sessions.section', section)
-
-    const { data, error } = await request
+    let result = trashColumnAvailable
+      ? await request().is('trashed_at', null)
+      : await request()
+    if (result.error && trashColumnAvailable && isMissingAttendanceTrashColumn(result.error)) {
+      trashColumnAvailable = false
+      if (import.meta.env.DEV) {
+        console.warn('[CAMVIA Statements] Attendance Trash migration is not installed; loading legacy attendance records.', {
+          operation: 'attendance_statement.select',
+          role: 'unknown',
+          column: 'attendance_records.trashed_at',
+        })
+      }
+      result = await request()
+    }
+    const { data, error } = result
     if (error) throw error
     const page = (data ?? []) as AttendanceStatementRow[]
     rows.push(...page)
     if (page.length < pageSize) break
   }
 
-  return rows.map((record) => ({
-    date: record.attendance_sessions.attendance_date,
-    status: record.status,
-    className: record.attendance_sessions.class_name,
-    section: record.attendance_sessions.section,
-  }))
+  return rows.flatMap((record) => {
+    if (!record.attendance_sessions) return []
+    return [{
+      date: record.attendance_sessions.attendance_date,
+      status: record.status,
+      className: record.attendance_sessions.class_name,
+      section: record.attendance_sessions.section,
+    }]
+  })
 }

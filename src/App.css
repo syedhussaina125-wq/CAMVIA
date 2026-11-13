@@ -149,8 +149,10 @@
 
 .sidebar-logo {
   display: block;
+  width: 100%;
   max-width: 152px;
   height: auto;
+  aspect-ratio: 2 / 1;
 }
 
 .sidebar-subtitle {
@@ -748,10 +750,10 @@
   gap: 8px;
   min-height: 42px;
   padding: 10px 18px;
-  border: 1px solid #fecaca;
+  border: 1px solid #fca5a5;
   border-radius: var(--camvia-radius-md);
   background: #fef2f2;
-  color: #dc2626;
+  color: #b91c1c;
   font-size: 0.9rem;
   font-weight: 700;
   cursor: pointer;
@@ -761,8 +763,8 @@
 
 .danger-button:hover {
   background: #fee2e2;
-  border-color: #fca5a5;
-  color: #b91c1c;
+  border-color: #f87171;
+  color: #991b1b;
   transform: translateY(-1px);
 }
 
@@ -4140,6 +4142,7 @@ table tbody tr:last-child td,
 
 .attendance-save-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -4153,6 +4156,8 @@ table tbody tr:last-child td,
 .attendance-totals {
   display: flex;
   align-items: center;
+  flex: 1 1 430px;
+  flex-wrap: wrap;
   gap: 17px;
   color: #60738f;
   font-size: 0.83rem;
@@ -4171,6 +4176,20 @@ table tbody tr:last-child td,
 .attendance-unsaved-count {
   color: #315fa8;
   font-weight: 700;
+}
+
+.attendance-saved-count {
+  color: #24744d;
+  font-weight: 700;
+}
+
+.attendance-save-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .total-dot {
@@ -4196,6 +4215,7 @@ table tbody tr:last-child td,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  white-space: nowrap;
 }
 
 .attendance-discard-backdrop {
@@ -4380,6 +4400,17 @@ table tbody tr:last-child td,
     margin-top: 4px;
     padding: 12px;
     box-shadow: 0 8px 26px rgba(26, 45, 79, 0.15);
+  }
+
+  .attendance-save-actions {
+    width: 100%;
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .attendance-save-actions > button {
+    width: 100%;
+    min-height: 46px;
   }
 
   .attendance-totals {
@@ -4878,7 +4909,9 @@ table tbody tr:last-child td,
   .fee-mobile-values strong { display: block; }
   .fee-mobile-values span { color: #8290a6; font-size: 0.68rem; }
   .fee-mobile-values strong { margin-top: 3px; color: #314562; font-size: 0.78rem; }
-  .fee-mobile-card > .secondary-button { width: 100%; justify-content: center; }
+  .fee-mobile-actions { align-items: stretch; flex-direction: column; }
+  .fee-mobile-actions > button,
+  .fee-mobile-actions > .whatsapp-open-button { width: 100%; justify-content: center; }
   .detail-heading { align-items: flex-start; flex-direction: column; }
   .fee-payment-form { grid-template-columns: minmax(0, 1fr); }
   .fee-payment-form .fee-note-field,
@@ -5279,6 +5312,135 @@ table tbody tr:last-child td,
 
 .communication-feedback.success { color: #177853; background: #eaf8f1; }
 .communication-feedback.error { color: #b43b54; background: #fff0f2; }
+
+.whatsapp-open-button {
+  width: fit-content;
+}
+
+.whatsapp-modal-backdrop {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 18px;
+  background: rgba(15, 32, 57, 0.52);
+}
+
+.whatsapp-modal {
+  display: flex;
+  width: min(100%, 560px);
+  max-height: calc(100dvh - 36px);
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 22px;
+  border: 1px solid #dfe9f7;
+  border-radius: 17px;
+  background: #fff;
+  box-shadow: 0 20px 55px rgba(13, 30, 55, 0.25);
+}
+
+.whatsapp-modal-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.whatsapp-modal-heading h2 {
+  margin: 0;
+  color: #1c395e;
+  font-size: 1.15rem;
+}
+
+.whatsapp-modal-heading .eyebrow {
+  margin-bottom: 5px;
+}
+
+.whatsapp-modal-heading p:last-child {
+  margin: 5px 0 0;
+  color: #71829a;
+  font-size: 0.8rem;
+}
+
+.whatsapp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #536682;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.whatsapp-field select,
+.whatsapp-field textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 11px;
+  border: 1px solid #dce5f2;
+  border-radius: 10px;
+  outline: 0;
+  background: #fff;
+  color: #203354;
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+.whatsapp-field textarea {
+  min-height: 150px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.whatsapp-field select:focus,
+.whatsapp-field textarea:focus {
+  border-color: #7ea6f5;
+  box-shadow: 0 0 0 3px rgba(55, 113, 232, 0.12);
+}
+
+.whatsapp-context-note,
+.whatsapp-safety-note,
+.whatsapp-prepared-note {
+  margin: -5px 0 0;
+  color: #60738f;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.whatsapp-prepared-note {
+  margin: 0;
+  color: #177853;
+  font-weight: 700;
+}
+
+.whatsapp-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.whatsapp-link-button {
+  text-decoration: none;
+}
+
+.fee-whatsapp-actions,
+.fee-mobile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fee-mobile-actions > * {
+  flex: 1;
+  justify-content: center;
+}
+
+.fee-mobile-actions .whatsapp-open-button {
+  width: 100%;
+}
 
 .communication-review-heading {
   align-items: center;
@@ -9687,5 +9849,1059 @@ table tbody tr:last-child td,
 
   .statement-generated {
     color: #333 !important;
+  }
+}
+
+.admissions-view-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 18px 0;
+  border-bottom: 1px solid #e4e9f0;
+}
+
+.admissions-view-tabs button {
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.admissions-view-tabs button.is-active {
+  border-bottom-color: #1687d4;
+  color: #126ca8;
+}
+
+.registration-modal-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow: auto;
+  background: rgb(13 27 48 / 56%);
+}
+
+.registration-link-modal {
+  width: min(100%, 620px);
+  max-height: min(92vh, 850px);
+  overflow: auto;
+  padding: 26px;
+  border: 1px solid #e4eaf1;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(15 35 60 / 24%);
+}
+
+.registration-modal-heading,
+.pending-admissions-heading,
+.pending-detail-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.registration-modal-heading h2,
+.pending-admissions-heading h2 {
+  margin: 0;
+  color: #12243a;
+}
+
+.registration-school-name {
+  margin: 18px 0 8px;
+  color: #31445a;
+  font-weight: 700;
+}
+
+.registration-link-status,
+.admission-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.registration-link-status.is-active,
+.admission-approved {
+  background: #e8f7ef;
+  color: #167443;
+}
+
+.registration-link-status.is-disabled,
+.admission-rejected {
+  background: #f1f3f6;
+  color: #687789;
+}
+
+.admission-pending {
+  background: #fff4dc;
+  color: #8a5a04;
+}
+
+.registration-link-field,
+.public-registration-form label,
+.admission-approval-fields label,
+.admission-edit-form label,
+.admission-rejection-input {
+  display: grid;
+  gap: 7px;
+  color: #31445a;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.registration-link-field {
+  margin: 16px 0 12px;
+}
+
+.registration-link-field input,
+.public-registration-form input,
+.public-registration-form select,
+.admission-approval-fields input,
+.admission-approval-fields select,
+.admission-edit-form input,
+.admission-rejection-input textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #cfd9e4;
+  border-radius: 10px;
+  background: #fff;
+  color: #1b2d42;
+  font: inherit;
+}
+
+.registration-link-actions,
+.registration-link-bottom,
+.admission-review-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.registration-link-modal .secondary-button {
+  text-decoration: none;
+}
+
+.registration-qr-section {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid #e4eaf1;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.registration-qr-section img,
+.registration-qr-placeholder {
+  flex: 0 0 128px;
+  width: 128px;
+  height: 128px;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
+}
+
+.registration-qr-placeholder {
+  display: grid;
+  place-items: center;
+  color: #7c8da0;
+}
+
+.registration-qr-section p {
+  margin: 5px 0 12px;
+  color: #687789;
+  font-size: 0.88rem;
+}
+
+.registration-link-bottom {
+  justify-content: space-between;
+  padding-top: 14px;
+  border-top: 1px solid #e8edf2;
+}
+
+.registration-link-bottom > a {
+  color: #1477b9;
+  font-weight: 650;
+}
+
+.trash-category-tabs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.trash-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.trash-search {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid #cfd9e4;
+  border-radius: 8px;
+  background: #fff;
+  color: #53677d;
+}
+
+.trash-search:focus-within {
+  border-color: var(--camvia-border-focus);
+  box-shadow: 0 0 0 3px rgba(61, 131, 255, 0.18);
+}
+
+.trash-search input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #1b2d42;
+  font-size: 14px;
+}
+
+.trash-search input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.trash-filter {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.trash-filter-full {
+  grid-column: 1 / -1;
+}
+
+.trash-filter label {
+  color: #53677d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trash-filter input,
+.trash-filter select {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: 1px solid #cfd9e4;
+  border-radius: 8px;
+  background: #fff;
+  color: #1b2d42;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.trash-admission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trash-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.danger-button-solid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 18px;
+  border: 1px solid #991b1b;
+  border-radius: var(--camvia-radius-md);
+  background: #b91c1c;
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.danger-button-solid:hover {
+  border-color: #7f1d1d;
+  background: #991b1b;
+}
+
+.danger-button-solid:disabled {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+  cursor: not-allowed;
+}
+
+.trash-delete-modal {
+  width: min(520px, 100%);
+}
+
+.trash-delete-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #b91c1c;
+}
+
+.trash-delete-content {
+  display: grid;
+  gap: 14px;
+  padding: 20px 24px 24px;
+}
+
+.trash-delete-content > p {
+  margin: 0;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.trash-delete-record {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.trash-delete-record > div {
+  display: grid;
+  grid-template-columns: minmax(130px, 38%) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.trash-delete-record dt,
+.trash-delete-confirm-label {
+  color: #64748b;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.trash-delete-record dd {
+  min-width: 0;
+  margin: 0;
+  color: #1e293b;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.trash-delete-confirm-label {
+  display: grid;
+  gap: 7px;
+}
+
+.trash-delete-confirm-label input {
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #1e293b;
+  font: inherit;
+}
+
+.trash-delete-confirm-label strong {
+  color: #b91c1c;
+}
+
+.trash-exceptional-purge {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.trash-exceptional-purge > summary {
+  color: #b91c1c;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.trash-exceptional-purge > p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.trash-exceptional-purge > button {
+  width: 100%;
+}
+
+.trash-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.trash-protected-note {
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.admission-trash-detail,
+.admission-reject-modal {
+  width: min(100%, 620px);
+  max-height: min(90vh, 760px);
+  overflow: auto;
+}
+
+.admission-trash-detail .admission-details {
+  padding: 18px;
+}
+
+.admission-trash-detail > .secondary-button {
+  margin: 0 18px 18px;
+}
+
+.admission-reject-content {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+}
+
+.admission-reject-content > p {
+  margin: 0;
+  color: #31445a;
+}
+
+.admission-reject-note {
+  color: #687789 !important;
+  font-size: 0.84rem;
+}
+
+.trash-category-tabs .secondary-button,
+.trash-category-tabs .primary-button {
+  flex: 0 0 auto;
+}
+
+.trash-fee-subcategories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.trash-fee-subcategories button {
+  padding: 6px 10px;
+  border: 1px solid #d5dfeb;
+  border-radius: 999px;
+  background: #fff;
+  color: #43587d;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.trash-fee-subcategories button.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+@media (max-width: 720px) {
+  .trash-record-list {
+    overflow-x: hidden;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .trash-records-table,
+  .trash-records-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .trash-records-table thead {
+    display: none;
+  }
+
+  .trash-records-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .trash-records-table tbody tr {
+    display: block;
+    overflow: hidden;
+    border: 1px solid #e3eaf3;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 4px 12px rgb(19 42 77 / 5%);
+  }
+
+  .trash-records-table tbody td {
+    display: grid;
+    grid-template-columns: minmax(92px, 30%) minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    padding: 10px 12px;
+    border-bottom: 1px solid #edf2f7;
+    overflow-wrap: anywhere;
+  }
+
+  .trash-records-table tbody td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .trash-records-table tbody td:last-child {
+    border-bottom: 0;
+  }
+
+  .trash-category-tabs {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .trash-fee-subcategories {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    overscroll-behavior-x: contain;
+  }
+
+  .trash-fee-subcategories button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .trash-admission-actions {
+    min-width: 150px;
+  }
+
+  .trash-record-actions {
+    gap: 10px;
+  }
+
+  .trash-delete-actions {
+    justify-content: stretch;
+  }
+
+  .trash-delete-actions > button {
+    flex: 1 1 150px;
+  }
+
+  .trash-delete-content {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .trash-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .trash-search,
+  .trash-filter-full {
+    grid-column: auto;
+  }
+}
+
+.public-registration-page {
+  min-height: 100vh;
+  padding: 22px 18px 16px;
+  background:
+    radial-gradient(ellipse at 10% 0%, rgb(34 164 203 / 9%), transparent 34rem),
+    #f4f7fb;
+}
+
+.public-registration-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 auto 22px;
+  color: #53677d;
+  font-size: 0.88rem;
+}
+
+.public-registration-brand img {
+  width: 112px;
+  max-height: 38px;
+  object-fit: contain;
+}
+
+.public-registration-card {
+  width: min(100%, 820px);
+  margin: 0 auto;
+  padding: clamp(20px, 4vw, 36px);
+  border: 1px solid #e6ebf2;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 14px 40px rgb(29 51 77 / 8%);
+}
+
+.public-registration-title {
+  max-width: 680px;
+  margin-bottom: 24px;
+}
+
+.public-registration-title h1,
+.public-registration-success h1,
+.public-registration-invalid h1 {
+  margin: 2px 0 8px;
+  color: #14283f;
+  font-size: clamp(1.7rem, 4vw, 2.2rem);
+}
+
+.public-registration-title > p:last-child,
+.public-registration-success > p,
+.public-registration-invalid > p {
+  margin: 0;
+  color: #596c80;
+  line-height: 1.65;
+}
+
+.public-registration-form {
+  display: grid;
+  gap: 22px;
+}
+
+.public-registration-form fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.public-registration-form legend {
+  width: 100%;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e8edf2;
+  color: #203750;
+  font-size: 1.02rem;
+  font-weight: 750;
+}
+
+.public-registration-form label > span {
+  color: #b42318;
+}
+
+.public-registration-form > fieldset > label {
+  margin-bottom: 14px;
+}
+
+.public-registration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.registration-grid-full {
+  grid-column: 1 / -1;
+}
+
+.public-registration-form input,
+.public-registration-form select {
+  min-height: 48px;
+}
+
+.public-registration-form input:focus,
+.public-registration-form select:focus,
+.registration-link-field input:focus {
+  outline: 3px solid rgb(24 136 208 / 18%);
+  border-color: #2389c9;
+}
+
+.registration-required-note {
+  margin: -4px 0 0;
+  color: #65768a;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.registration-submit {
+  width: 100%;
+  min-height: 48px;
+  justify-content: center;
+  font-size: 1rem;
+}
+
+.registration-spinner {
+  animation: registration-spin 1s linear infinite;
+}
+
+@keyframes registration-spin {
+  to { transform: rotate(360deg); }
+}
+
+.registration-honeypot {
+  position: absolute !important;
+  left: -10000px !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+}
+
+.public-registration-success,
+.public-registration-invalid {
+  max-width: 620px;
+  text-align: center;
+}
+
+.registration-success-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 16px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8f7ef;
+  color: #167443;
+}
+
+.registration-reference {
+  display: grid;
+  gap: 4px;
+  margin: 24px auto 0;
+  padding: 14px;
+  border: 1px solid #dfe8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.registration-reference span {
+  color: #69798a;
+  font-size: 0.82rem;
+}
+
+.registration-reference strong {
+  color: #1c6da5;
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+}
+
+.public-registration-footer {
+  margin: 18px auto 0;
+  color: #7a8898;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.pending-admissions-panel {
+  padding: 22px;
+  border: 1px solid #e4eaf1;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.pending-admissions-heading {
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.pending-admissions-heading p:last-child {
+  margin: 7px 0 0;
+  color: #64748b;
+}
+
+.pending-admissions-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.4fr);
+  gap: 16px;
+}
+
+.pending-admissions-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.pending-admission-card {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 13px;
+  border: 1px solid #e5eaf0;
+  border-radius: 12px;
+  background: #fff;
+  color: #526579;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pending-admission-card.is-selected {
+  border-color: #4aa3d6;
+  background: #f2f9fd;
+  box-shadow: 0 0 0 2px rgb(74 163 214 / 12%);
+}
+
+.pending-admission-card strong {
+  color: #203750;
+}
+
+.pending-admission-card .admission-status {
+  font-size: 0.7rem;
+}
+
+.pending-admission-card small {
+  color: #76869a;
+}
+
+.pending-admission-detail {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #e5eaf0;
+  border-radius: 14px;
+  background: #fbfcfe;
+}
+
+.pending-detail-title {
+  align-items: center;
+}
+
+.pending-detail-title h3 {
+  margin: 2px 0 0;
+  color: #1c3046;
+}
+
+.admission-submitted-date {
+  margin: 8px 0 18px;
+  color: #75859a;
+  font-size: 0.83rem;
+}
+
+.admission-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 18px;
+}
+
+.admission-details > div {
+  min-width: 0;
+}
+
+.admission-details dt {
+  color: #75859a;
+  font-size: 0.78rem;
+}
+
+.admission-details dd {
+  margin: 3px 0 0;
+  color: #273b51;
+  overflow-wrap: anywhere;
+}
+
+.admission-approval-fields,
+.admission-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admission-rejection-input {
+  margin: 14px 0;
+}
+
+.admission-rejection-input textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.admission-review-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.admission-reject-button {
+  color: #a23030;
+}
+
+.admission-duplicate-warning {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #f0d09a;
+  border-radius: 10px;
+  background: #fff8e9;
+  color: #78520a;
+  font-size: 0.88rem;
+}
+
+.admission-rejection-reason,
+.admission-approved-note {
+  color: #526579;
+}
+
+.admission-edit-form .student-form-actions {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .pending-admissions-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pending-admissions-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .public-registration-page {
+    padding: 14px 10px;
+  }
+
+  .public-registration-brand {
+    margin-bottom: 14px;
+  }
+
+  .public-registration-brand img {
+    width: 94px;
+  }
+
+  .public-registration-brand span {
+    font-size: 0.75rem;
+  }
+
+  .public-registration-card {
+    border-radius: 15px;
+  }
+
+  .public-registration-grid,
+  .admission-details,
+  .admission-approval-fields,
+  .admission-edit-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .registration-grid-full,
+  .admission-edit-form .student-form-actions {
+    grid-column: auto;
+  }
+
+  .registration-modal-backdrop {
+    place-items: end center;
+    padding: 0;
+  }
+
+  .registration-link-modal {
+    width: 100%;
+    max-height: 94vh;
+    padding: 20px 16px;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .registration-qr-section {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .registration-link-actions > *,
+  .registration-link-bottom > * {
+    min-height: 42px;
+  }
+
+  .pending-admissions-panel {
+    padding: 15px;
+  }
+
+  .pending-admissions-heading {
+    align-items: flex-start;
+  }
+
+  .pending-admissions-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pending-admission-detail {
+    padding: 14px;
+  }
+
+  .admission-review-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admission-review-actions .primary-button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media print {
+  body.registration-qr-print * {
+    visibility: hidden !important;
+  }
+
+  body.registration-qr-print .registration-qr-section,
+  body.registration-qr-print .registration-qr-section img {
+    visibility: visible !important;
+  }
+
+  body.registration-qr-print .registration-qr-section {
+    position: fixed;
+    inset: 0;
+    display: grid !important;
+    place-items: center;
+    border: 0;
+    background: #fff;
+  }
+
+  body.registration-qr-print .registration-qr-section > *:not(img) {
+    display: none !important;
+  }
+
+  body.registration-qr-print .registration-qr-section img {
+    width: 240px;
+    height: 240px;
   }
 }

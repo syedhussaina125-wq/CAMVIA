@@ -1,6 +1,7 @@
 import type { Role, UserStatus } from '../mockData'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { mutationConfirmationError, verifyMutationSession } from './mutations'
 
 export type TeacherAssignmentScope = {
   campus_id: string
@@ -40,17 +41,69 @@ function requireClient(): SupabaseClient {
 async function invokeUserManagement(
   body: Record<string, unknown>,
 ): Promise<UserManagementResponse> {
-  const { data, error } = await requireClient()
-    .functions.invoke<UserManagementResponse>('manage-school-user', { body })
+  const action = typeof body.action === 'string' ? body.action : 'unknown'
+  const recordId = typeof body.targetUserId === 'string' ? body.targetUserId : 'new-user'
+  const operation = `manage-school-user:${action}`
+  await verifyMutationSession(operation, recordId)
+
+  const { data, error } = await requireClient().functions.invoke<UserManagementResponse>(
+    'manage-school-user',
+    { body },
+  )
 
   if (error) {
     if (error.context instanceof Response) {
-      const errorBody = await error.context.json().catch(() => null) as UserManagementResponse | null
+      let responseText = ''
+      try {
+        if (!error.context.bodyUsed && typeof error.context.text === 'function') {
+          responseText = await error.context.text()
+        }
+      } catch {
+        // Response body already disturbed or unreadable
+      }
+      let errorBody: UserManagementResponse | null = null
+      if (responseText) {
+        try {
+          errorBody = JSON.parse(responseText) as UserManagementResponse
+        } catch (parseError) {
+          if (!(parseError instanceof SyntaxError)) throw parseError
+        }
+      }
+      console.error('[Supabase] Mutation failed:', {
+        operation,
+        recordId,
+        code: error.name,
+        message: errorBody?.error ?? responseText ?? error.message,
+        details: errorBody ?? responseText,
+        hint: errorBody?.error,
+        status: error.context.status,
+      })
       if (errorBody?.error) throw new Error(errorBody.error)
+      if (responseText.trim()) throw new Error(responseText.trim())
     }
-    throw new Error('Secure user management is unavailable. Confirm the Edge Function is deployed.')
+    console.error('[Supabase] Mutation failed:', {
+      operation,
+      recordId,
+      code: error.name,
+      message: error.message,
+      details: error,
+      hint: undefined,
+      status: undefined,
+    })
+    throw error
   }
-  if (data?.error) throw new Error(data.error)
+  if (data?.error) {
+    console.error('[Supabase] Mutation failed:', {
+      operation,
+      recordId,
+      code: undefined,
+      message: data.error,
+      details: data,
+      hint: undefined,
+      status: undefined,
+    })
+    throw new Error(data.error)
+  }
   return data ?? {}
 }
 
@@ -80,13 +133,25 @@ export async function updateSchoolUser(
   targetUserId: string,
   input: SchoolUserInput,
 ): Promise<void> {
-  await invokeUserManagement({
+  const result = await invokeUserManagement({
     action: 'update',
     targetUserId,
     ...requestValues(input),
   })
+  if (
+    result.user?.id !== targetUserId ||
+    result.user.full_name !== input.fullName.trim() ||
+    result.user.role !== input.role.toUpperCase() ||
+    result.user.status !== input.status.toUpperCase() ||
+    result.user.campus_id !== input.campusId
+  ) {
+    throw mutationConfirmationError('manage-school-user:update', targetUserId, 'The user update was not confirmed by the server.')
+  }
 }
 
 export async function deactivateSchoolUser(targetUserId: string): Promise<void> {
-  await invokeUserManagement({ action: 'deactivate', targetUserId })
+  const result = await invokeUserManagement({ action: 'deactivate', targetUserId })
+  if (result.user?.id !== targetUserId || result.user.status !== 'INACTIVE') {
+    throw mutationConfirmationError('manage-school-user:deactivate', targetUserId, 'The user deactivation was not confirmed by the server.')
+  }
 }

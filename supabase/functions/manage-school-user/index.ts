@@ -122,17 +122,25 @@ Deno.serve(async (request: Request) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
 
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
   const secretKeysRaw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  let secretKey = serviceRoleKey ?? Deno.env.get('SUPABASE_SECRET_KEY') ?? ''
 
-  if (!secretKeysRaw) {
-    throw new Error('Supabase secret keys are not configured')
+  if (!secretKey && secretKeysRaw) {
+    try {
+      const secretKeys = JSON.parse(secretKeysRaw) as Record<string, unknown> | null
+      if (secretKeys && typeof secretKeys === 'object' && typeof secretKeys.default === 'string') {
+        secretKey = secretKeys.default
+      }
+    } catch {
+      console.error('User provisioning function received malformed SUPABASE_SECRET_KEYS JSON.')
+      return response(500, { error: 'Secure user provisioning is not configured.' })
+    }
   }
 
-  const secretKeys = JSON.parse(secretKeysRaw)
-  const secretKey = secretKeys.default
-
   if (!secretKey) {
-    throw new Error('Default Supabase secret key is unavailable')
+    console.error('User provisioning function is missing Supabase secret key configuration.')
+    return response(500, { error: 'Secure user provisioning is not configured.' })
   }
 
   if (!supabaseUrl || !anonKey) {
@@ -268,7 +276,7 @@ Deno.serve(async (request: Request) => {
       data: { full_name: fullName },
       redirectTo,
     })
-    if (inviteError || !invitation.user) {
+    if (inviteError || !invitation?.user) {
       if (invitation?.user?.id) {
         const { error: cleanupError } = await service.auth.admin.deleteUser(invitation.user.id)
         if (cleanupError) {
@@ -355,7 +363,7 @@ Deno.serve(async (request: Request) => {
     return response(404, { error: 'The selected user was not found in your school.' })
   }
 
-  const authEmailChanged = existingTarget.email.toLowerCase() !== email
+  const authEmailChanged = (existingTarget.email ?? '').toLowerCase() !== email
   if (authEmailChanged) {
     const { data: duplicateProfile, error: duplicateProfileError } = await service
       .from('profiles')

@@ -1,5 +1,6 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
+import { addCalendarDays, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
 
 export type FeeStatus = 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue' | 'Cancelled' | 'Voided'
 export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Online'
@@ -55,6 +56,14 @@ export type FeeAccessUser = {
   campusName: string
   organizationId?: string | null
   schoolId?: string | null
+  schoolTimezone?: string | null
+  teacherAssignments?: Array<{
+    school_id?: string
+    campus_id: string
+    class_name: string
+    section: string
+    active: boolean
+  }>
 }
 
 export type FeePaymentSubmission = {
@@ -102,9 +111,7 @@ export function localDateKey(date = new Date()): string {
 }
 
 function shiftDate(date: string, days: number): string {
-  const value = new Date(`${date}T12:00:00`)
-  value.setDate(value.getDate() + days)
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+  return addCalendarDays(date, days)
 }
 
 function daysBetween(earlier: string, later: string): number {
@@ -131,7 +138,7 @@ export function getFeeInvoices(
   state: FeeState,
   students: Student[],
   user: FeeAccessUser,
-  today = localDateKey(),
+  today = schoolDateKey(user.schoolTimezone),
 ): FeeInvoiceView[] {
   if (!canAccessFeeData(user) || !Array.isArray(state?.invoices) || !Array.isArray(state?.payments)) return []
 
@@ -168,10 +175,10 @@ export function getFeeInvoices(
       ? 'Cancelled'
       : outstandingAmount === 0
         ? 'Paid'
-        : paidAmount > 0
-          ? 'Partially Paid'
-          : invoice.dueDate < today
-            ? 'Overdue'
+        : invoice.dueDate < today
+          ? 'Overdue'
+          : paidAmount > 0
+            ? 'Partially Paid'
             : 'Pending'
     return [{ ...invoice, student, paidAmount, outstandingAmount, status, overdueDays }]
   })
@@ -243,7 +250,7 @@ export function getFeeCollectionTrend(
   state: FeeState,
   students: Student[],
   user: FeeAccessUser,
-  today = localDateKey(),
+  today = schoolDateKey(user.schoolTimezone),
 ) {
   if (!Array.isArray(state?.payments) || state.payments.length === 0) return []
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user, today).map((invoice) => invoice.id))
@@ -255,7 +262,7 @@ export function getFeeCollectionTrend(
     const collected = relevantPayments
       .filter((payment) => payment.date === date)
       .reduce((sum, payment) => sum + payment.amount, 0)
-    const day = new Intl.DateTimeFormat('en', { weekday: 'short' }).format(new Date(`${date}T00:00:00`))
+    const day = new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`))
     return { day, value: roundMoney(collected) }
   })
 
@@ -267,7 +274,7 @@ export function getFeePaymentsCollected(
   state: FeeState,
   students: Student[],
   user: FeeAccessUser,
-  month = localMonthKey(),
+  month = schoolMonthKey(user.schoolTimezone),
 ): number {
   if (!Array.isArray(state?.payments)) return 0
   const authorizedInvoiceIds = new Set(getFeeInvoices(state, students, user).map((invoice) => invoice.id))
