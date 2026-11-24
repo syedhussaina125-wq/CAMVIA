@@ -624,7 +624,7 @@ function findMatchedStudent(students: Student[], lower: string): Student | undef
   })
 }
 
-function answerLocallyWithRoleScope(prompt: string, input: AskCamviaAuthorizedInput, romanUrdu: boolean): string {
+function answerLocallyWithRoleScope(prompt: string, input: AskCamviaAuthorizedInput, romanUrdu: boolean): string | null {
   const ctx = buildAuthorizedContextSnapshot(input)
   const lower = prompt.toLowerCase()
 
@@ -658,10 +658,15 @@ function answerLocallyWithRoleScope(prompt: string, input: AskCamviaAuthorizedIn
     return answerCommunicationSummary(ctx.communication, romanUrdu)
   }
 
-  const scopeHint = getScopeHint(input.user.role, romanUrdu)
+  return null
+}
+
+function getRoleFallbackHint(role: Role, romanUrdu: boolean): string {
+  const scopeHint = getScopeHint(role, romanUrdu)
+  const roleLabel = role.toUpperCase()
   return romanUrdu
-    ? `Aap ${ctx.user.role} role ke mutabiq students, ${scopeHint}, alerts aur communications ke bare mein sawal pooch sakte hain.`
-    : `As ${ctx.user.role}, you can ask about students, ${scopeHint}, alerts, and communications within your role scope.`
+    ? `Aap ${roleLabel} role ke mutabiq students, ${scopeHint}, alerts aur communications ke bare mein sawal pooch sakte hain.`
+    : `As ${roleLabel}, you can ask about students, ${scopeHint}, alerts, and communications within your role scope.`
 }
 
 async function invokeEdgeAssistant(prompt: string): Promise<string | null> {
@@ -687,19 +692,24 @@ async function tryAuthorizedAnswer(
   trimmed: string,
   authorizedInput: AskCamviaAuthorizedInput,
   romanUrdu: boolean,
-): Promise<string | null> {
+): Promise<string> {
   const mutationRefusal = getMutationRefusal(trimmed, romanUrdu)
   if (mutationRefusal) return mutationRefusal
 
   const roleRefusal = getRoleDomainRefusal(trimmed, authorizedInput.user.role, romanUrdu)
   if (roleRefusal) return roleRefusal
 
+  const deterministicAnswer = answerLocallyWithRoleScope(trimmed, authorizedInput, romanUrdu)
+  if (deterministicAnswer) return deterministicAnswer
+
   try {
-    return await queryGeminiWithContext(trimmed, authorizedInput)
-  } catch (error) {
-    console.warn('[CAMVIA AI] Gemini fallback triggered:', error instanceof Error ? error.message : 'Unknown error')
-    return null
+    const aiText = await queryGeminiWithContext(trimmed, authorizedInput)
+    if (aiText) return aiText
+  } catch {
+    // Silent fallback to role hint when Gemini is temporarily unavailable
   }
+
+  return getRoleFallbackHint(authorizedInput.user.role, romanUrdu)
 }
 
 export async function askCamvia(
@@ -710,9 +720,7 @@ export async function askCamvia(
   const romanUrdu = isRomanUrduPrompt(trimmed)
 
   if (authorizedInput) {
-    const directAnswer = await tryAuthorizedAnswer(trimmed, authorizedInput, romanUrdu)
-    if (directAnswer) return { text: directAnswer }
-    return { text: answerLocallyWithRoleScope(trimmed, authorizedInput, romanUrdu) }
+    return { text: await tryAuthorizedAnswer(trimmed, authorizedInput, romanUrdu) }
   }
 
   const edgeText = await invokeEdgeAssistant(trimmed)
