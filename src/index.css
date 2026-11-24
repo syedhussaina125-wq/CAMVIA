@@ -97,6 +97,7 @@
 html {
   background: #f6fbff;
   -webkit-text-size-adjust: 100%;
+  overflow-x: clip;
 }
 
 body {
@@ -110,7 +111,7 @@ body {
     radial-gradient(ellipse 55% 55% at 15% 75%, rgba(213, 204, 255, 0.28) 0%, transparent 55%),
     radial-gradient(ellipse 70% 60% at 45% 40%, rgba(228, 239, 255, 0.5) 0%, rgba(246, 251, 255, 0.85) 100%);
   background-attachment: fixed;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 button,
@@ -207,4 +208,15 @@ svg.lucide,
   flex-shrink: 0;
   display: inline-block;
   vertical-align: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

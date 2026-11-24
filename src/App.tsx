@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type SubmitEvent } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -31,6 +31,7 @@ import {
   LayoutDashboard,
   LogOut,
   MessageSquareText,
+  RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
@@ -51,6 +52,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  type NavigateFunction,
 } from 'react-router-dom'
 import {
   type Role,
@@ -84,6 +86,7 @@ import {
   getAttendanceForScope,
   getAttendanceTrend,
   getSessionForClass,
+  type AttendanceClass,
   type AttendanceState,
   type AttendanceSubmission,
 } from './attendanceData'
@@ -119,6 +122,7 @@ import {
   getAccessibleCommunication,
   getCommunicationSummary,
   type CommunicationDraftSubmission,
+  type CommunicationMessageView,
   type CommunicationOperation,
   type CommunicationState,
 } from './communicationData'
@@ -126,9 +130,33 @@ const AIBuddy = lazy(() => import('./components/ai-buddy/AIBuddy').then((module)
 import { AskCamviaProvider } from './components/ai-buddy/AskCamviaContext'
 import { dispatchBuddyEvent } from './components/ai-buddy/events'
 import camviaLogo from './assets/camvia-dark-logo.png'
+import camviaLightLogo from './assets/camvia-light-logo.png'
 import schoolBuildingIllustration from './assets/school-building-reference.png'
 import './App.css'
 import './LoginPage.css'
+
+function useLoginTheme() {
+  const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'light'
+    try {
+      return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+
+  const toggleLoginTheme = () => {
+    const nextTheme = loginTheme === 'light' ? 'dark' : 'light'
+    setLoginTheme(nextTheme)
+    try {
+      window.localStorage.setItem('camvia_login_theme', nextTheme)
+    } catch {
+      // Theme switching still works when browser storage is unavailable.
+    }
+  }
+
+  return { loginTheme, toggleLoginTheme }
+}
 
 const emptyAttendanceState: AttendanceState = { sessions: [], records: [] }
 const emptyCommunicationState: CommunicationState = { messages: [] }
@@ -436,7 +464,7 @@ function defaultDashboardForRole(role: Role) {
   return '/dashboard'
 }
 
-function AttendanceRoute({ user, students, attendance, loading, error, onRetry, onRefresh, onCorrectAttendance }: {
+type AttendanceRouteProps = Readonly<{
   user: SessionUser
   students: Student[]
   attendance: AttendanceState
@@ -449,7 +477,9 @@ function AttendanceRoute({ user, students, attendance, loading, error, onRetry, 
     records: Array<{ student_id: string; status: 'PRESENT' | 'ABSENT' | 'LATE'; note?: string }>
     reason: string
   }) => Promise<void>
-}) {
+}>
+
+function AttendanceRoute({ user, students, attendance, loading, error, onRetry, onRefresh, onCorrectAttendance }: AttendanceRouteProps) {
   const navigate = useNavigate()
   return (
     <AttendancePage
@@ -468,7 +498,207 @@ function AttendanceRoute({ user, students, attendance, loading, error, onRetry, 
   )
 }
 
-function App() {
+async function buildSessionUser(profile: AppProfile): Promise<SessionUser> {
+  const role = normalizeRole(profile.role)
+  let teacherAssignments: SessionUser['teacherAssignments'] = []
+  if (role === 'teacher') {
+    teacherAssignments = await fetchTeacherAssignments()
+  } else {
+    try {
+      teacherAssignments = await fetchTeacherAssignments()
+    } catch (error) {
+      console.warn('Unable to load optional teacher assignments for non-teacher session:', error)
+    }
+  }
+  return {
+    id: profile.id.split('').reduce((value, char) => (value * 31 + (char.codePointAt(0) ?? 0)) >>> 0, 0),
+    authUserId: profile.id,
+    organizationId: profile.organization_id,
+    schoolId: profile.school_id,
+    campusId: profile.campus_id,
+    schoolTimezone: profile.school_timezone,
+    name: profile.full_name,
+    email: profile.email,
+    role,
+    schoolName: profile.school_name ?? 'No school assigned',
+    campusName: profile.campus_name ?? 'No campus assigned',
+    teacherAssignments,
+  }
+}
+
+function isPasswordSetupPath(): boolean {
+  if (typeof window === 'undefined') return false
+  const p = window.location.pathname
+  const h = window.location.hash
+  return (
+    p.startsWith('/set-password') ||
+    p.startsWith('/reset-password') ||
+    p.startsWith('/auth/callback') ||
+    h.includes('type=invite') ||
+    h.includes('type=recovery')
+  )
+}
+
+type UserDataLoaders = Readonly<{
+  userRole: Role
+  resolutionId: number
+  currentResolutionId: () => number
+  studentLoadFailed: boolean
+  loadedStudents: Student[]
+  setAttendance: React.Dispatch<React.SetStateAction<AttendanceState>>
+  setAttendanceError: React.Dispatch<React.SetStateAction<string>>
+  setAttendanceLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setFees: React.Dispatch<React.SetStateAction<FeeState>>
+  setFeesError: React.Dispatch<React.SetStateAction<string>>
+  setFeesLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setCommunication: React.Dispatch<React.SetStateAction<CommunicationState>>
+  setCommunicationError: React.Dispatch<React.SetStateAction<string>>
+  setCommunicationLoading: React.Dispatch<React.SetStateAction<boolean>>
+  refreshAlerts: (ownerId: string) => Promise<void>
+  refreshProfiles: (user: SessionUser) => Promise<void>
+  refreshAdministration: (user: SessionUser) => Promise<void>
+  profileId: string
+  nextSession: SessionUser
+}>
+
+function createUserDataTasks(loaders: UserDataLoaders): Promise<unknown>[] {
+  const {
+    userRole,
+    resolutionId,
+    currentResolutionId,
+    studentLoadFailed,
+    loadedStudents,
+    setAttendance,
+    setAttendanceError,
+    setAttendanceLoading,
+    setFees,
+    setFeesError,
+    setFeesLoading,
+    setCommunication,
+    setCommunicationError,
+    setCommunicationLoading,
+    refreshAlerts,
+    refreshProfiles,
+    refreshAdministration,
+    profileId,
+    nextSession,
+  } = loaders
+
+  const needsAttendance = userRole === 'admin' || userRole === 'principal' || userRole === 'teacher'
+  const needsFees = userRole === 'admin' || userRole === 'principal' || userRole === 'finance'
+  const needsProfiles = userRole === 'admin' || userRole === 'principal'
+  const needsAdmin = userRole === 'admin'
+
+  const parallelTasks: Promise<unknown>[] = []
+
+  if (needsAttendance) {
+    parallelTasks.push(
+      fetchAttendanceState({ role: userRole, route: window.location.pathname })
+        .then((nextAttendance) => {
+          if (resolutionId === currentResolutionId()) {
+            setAttendance(nextAttendance)
+            if (studentLoadFailed) {
+              setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
+            }
+          }
+        })
+        .catch((error) => {
+          if (resolutionId === currentResolutionId()) {
+            setAttendanceError(getAttendanceErrorMessage(error))
+          }
+        })
+        .finally(() => {
+          if (resolutionId === currentResolutionId()) setAttendanceLoading(false)
+        })
+    )
+  }
+
+  if (needsFees) {
+    if (studentLoadFailed) {
+      setFeesError('Student scope could not be loaded for fee records.')
+      setFeesLoading(false)
+    } else {
+      parallelTasks.push(
+        fetchFeeState(loadedStudents)
+          .then((nextFees) => {
+            if (resolutionId === currentResolutionId()) setFees(nextFees)
+          })
+          .catch((error) => {
+            console.error('[Supabase] Fee request failed:', error)
+            if (resolutionId === currentResolutionId()) {
+              setFeesError('Fee information could not be loaded from Supabase. Please retry.')
+            }
+          })
+          .finally(() => {
+            if (resolutionId === currentResolutionId()) setFeesLoading(false)
+          })
+      )
+    }
+  }
+
+  if (studentLoadFailed) {
+    setCommunicationError('Student scope could not be loaded for communication.')
+    setCommunicationLoading(false)
+  } else {
+    parallelTasks.push(
+      fetchCommunicationState(loadedStudents)
+        .then((nextCommunication) => {
+          if (resolutionId === currentResolutionId()) {
+            window.localStorage.removeItem('edupulse_communication')
+            setCommunication(nextCommunication)
+          }
+        })
+        .catch((error) => {
+          console.error('[Supabase] Communication request failed:', error)
+          if (resolutionId === currentResolutionId()) {
+            setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
+            setCommunication(emptyCommunicationState)
+          }
+        })
+        .finally(() => {
+          if (resolutionId === currentResolutionId()) setCommunicationLoading(false)
+        })
+    )
+  }
+
+  parallelTasks.push(refreshAlerts(profileId))
+  if (needsProfiles) parallelTasks.push(refreshProfiles(nextSession))
+  if (needsAdmin) parallelTasks.push(refreshAdministration(nextSession))
+
+  return parallelTasks
+}
+
+type SignedOutStateSetters = Readonly<{
+  setSession: React.Dispatch<React.SetStateAction<SessionUser | null>>
+  setStudents: React.Dispatch<React.SetStateAction<Student[]>>
+  setAttendance: React.Dispatch<React.SetStateAction<AttendanceState>>
+  setFees: React.Dispatch<React.SetStateAction<FeeState>>
+  setCommunication: React.Dispatch<React.SetStateAction<CommunicationState>>
+  setLiveProfiles: React.Dispatch<React.SetStateAction<SchoolUser[]>>
+  setAuthLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setStudentsLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setAttendanceLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setFeesLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setCommunicationLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setProfilesLoading: React.Dispatch<React.SetStateAction<boolean>>
+}>
+
+function resetAppStateToSignedOut(setters: SignedOutStateSetters) {
+  setters.setSession(null)
+  setters.setStudents([])
+  setters.setAttendance(emptyAttendanceState)
+  setters.setFees({ invoices: [], payments: [] })
+  setters.setCommunication(emptyCommunicationState)
+  setters.setLiveProfiles([])
+  setters.setAuthLoading(false)
+  setters.setStudentsLoading(false)
+  setters.setAttendanceLoading(false)
+  setters.setFeesLoading(false)
+  setters.setCommunicationLoading(false)
+  setters.setProfilesLoading(false)
+}
+
+function useAppSessionManager() {
   const [session, setSession] = useState<SessionUser | null>(null)
   const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
   const [authError, setAuthError] = useState(isSupabaseConfigured ? '' : 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
@@ -493,13 +723,9 @@ function App() {
   const [administration, setAdministration] = useState<AdministrationSnapshot | null>(null)
   const [administrationLoading, setAdministrationLoading] = useState(true)
   const [administrationError, setAdministrationError] = useState('')
-  const [walkthroughState, setWalkthroughState] = useState<Record<Role, boolean>>(() => readLocalStorage<Record<Role, boolean>>(walkthroughStorageKey, defaultWalkthroughState))
-  const [tourOpen, setTourOpen] = useState(false)
-  const [activeTourRole, setActiveTourRole] = useState<Role | null>(null)
-  const [toast, setToast] = useState<ToastState | null>(null)
+
   const authResolutionId = useRef(0)
   const studentsRequestId = useRef(0)
-  const attendanceRefreshInFlight = useRef(false)
   const resolvingUserId = useRef<string | null>(null)
   const resolvedUserId = useRef<string | null>(null)
 
@@ -601,72 +827,37 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    window.localStorage.removeItem('edupulse_attendance')
-    window.localStorage.removeItem(legacyFeesStorageKey)
-  }, [])
 
-  useEffect(() => {
-    window.localStorage.setItem(walkthroughStorageKey, JSON.stringify(walkthroughState))
-  }, [walkthroughState])
 
-  useEffect(() => {
-    if (!toast) return
-    const timeout = window.setTimeout(() => setToast(null), 2800)
-    return () => window.clearTimeout(timeout)
-  }, [toast])
 
-  const buildSessionUser = async (profile: AppProfile): Promise<SessionUser> => {
-    const role = normalizeRole(profile.role)
-    let teacherAssignments: SessionUser['teacherAssignments'] = []
-    if (role === 'teacher') {
-      teacherAssignments = await fetchTeacherAssignments()
-    } else {
-      try {
-        teacherAssignments = await fetchTeacherAssignments()
-      } catch (error) {
-        console.warn('Unable to load optional teacher assignments for non-teacher session:', error)
-      }
-    }
-    return {
-      id: profile.id.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0),
-      authUserId: profile.id,
-      organizationId: profile.organization_id,
-      schoolId: profile.school_id,
-      campusId: profile.campus_id,
-      schoolTimezone: profile.school_timezone,
-      name: profile.full_name,
-      email: profile.email,
-      role,
-      schoolName: profile.school_name ?? 'No school assigned',
-      campusName: profile.campus_name ?? 'No campus assigned',
-      teacherAssignments,
-    }
+
+  const handleInactiveProfile = async () => {
+    setSession(null)
+    setAlertSnapshot({ ownerId: null, items: [] })
+    setAlertsLoading(false)
+    setAlertsError('')
+    setStudents([])
+    setAttendance(emptyAttendanceState)
+    setFees({ invoices: [], payments: [] })
+    setCommunication(emptyCommunicationState)
+    setLiveProfiles([])
+    setAdministration(null)
+    setAdministrationLoading(false)
+    setAdministrationError('')
+    setAuthError('This account is inactive. Please contact the administrator.')
+    setAuthLoading(false)
+    setStudentsLoading(false)
+    setAttendanceLoading(false)
+    setFeesLoading(false)
+    setCommunicationLoading(false)
+    setProfilesLoading(false)
+    await signOutSupabase()
   }
 
   const activateUser = async (profile: AppProfile, resolutionId: number) => {
     if (profile.status !== 'ACTIVE') {
       if (resolutionId !== authResolutionId.current) return null
-      setSession(null)
-      setAlertSnapshot({ ownerId: null, items: [] })
-      setAlertsLoading(false)
-      setAlertsError('')
-      setStudents([])
-      setAttendance(emptyAttendanceState)
-      setFees({ invoices: [], payments: [] })
-      setCommunication(emptyCommunicationState)
-      setLiveProfiles([])
-      setAdministration(null)
-      setAdministrationLoading(false)
-      setAdministrationError('')
-      setAuthError('This account is inactive. Please contact the administrator.')
-      setAuthLoading(false)
-      setStudentsLoading(false)
-      setAttendanceLoading(false)
-      setFeesLoading(false)
-      setCommunicationLoading(false)
-      setProfilesLoading(false)
-      await signOutSupabase()
+      await handleInactiveProfile()
       return null
     }
 
@@ -705,83 +896,27 @@ function App() {
     const loadedStudents = loadedStudentRows ?? []
     const studentLoadFailed = loadedStudentRows === null
 
-    const parallelTasks: Promise<unknown>[] = []
-
-    if (needsAttendance) {
-      parallelTasks.push(
-        fetchAttendanceState({ role: userRole, route: window.location.pathname })
-          .then((nextAttendance) => {
-            if (resolutionId === authResolutionId.current) {
-              setAttendance(nextAttendance)
-              if (studentLoadFailed) {
-                setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
-              }
-            }
-          })
-          .catch((error) => {
-            if (resolutionId === authResolutionId.current) {
-              setAttendanceError(getAttendanceErrorMessage(error))
-            }
-          })
-          .finally(() => {
-            if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
-          })
-      )
-    }
-
-    if (needsFees) {
-      if (studentLoadFailed) {
-        setFeesError('Student scope could not be loaded for fee records.')
-        setFeesLoading(false)
-      } else {
-        parallelTasks.push(
-          fetchFeeState(loadedStudents)
-            .then((nextFees) => {
-              if (resolutionId === authResolutionId.current) setFees(nextFees)
-            })
-            .catch((error) => {
-              console.error('[Supabase] Fee request failed:', error)
-              if (resolutionId === authResolutionId.current) {
-                setFeesError('Fee information could not be loaded from Supabase. Please retry.')
-              }
-            })
-            .finally(() => {
-              if (resolutionId === authResolutionId.current) setFeesLoading(false)
-            })
-        )
-      }
-    }
-
-    if (needsComms) {
-      if (studentLoadFailed) {
-        setCommunicationError('Student scope could not be loaded for communication.')
-        setCommunicationLoading(false)
-      } else {
-        parallelTasks.push(
-          fetchCommunicationState(loadedStudents)
-            .then((nextCommunication) => {
-              if (resolutionId === authResolutionId.current) {
-                window.localStorage.removeItem('edupulse_communication')
-                setCommunication(nextCommunication)
-              }
-            })
-            .catch((error) => {
-              console.error('[Supabase] Communication request failed:', error)
-              if (resolutionId === authResolutionId.current) {
-                setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
-                setCommunication(emptyCommunicationState)
-              }
-            })
-            .finally(() => {
-              if (resolutionId === authResolutionId.current) setCommunicationLoading(false)
-            })
-        )
-      }
-    }
-
-    parallelTasks.push(refreshAlerts(profile.id))
-    if (needsProfiles) parallelTasks.push(refreshProfiles(nextSession))
-    if (needsAdmin) parallelTasks.push(refreshAdministration(nextSession))
+    const parallelTasks = createUserDataTasks({
+      userRole,
+      resolutionId,
+      currentResolutionId: () => authResolutionId.current,
+      studentLoadFailed,
+      loadedStudents,
+      setAttendance,
+      setAttendanceError,
+      setAttendanceLoading,
+      setFees,
+      setFeesError,
+      setFeesLoading,
+      setCommunication,
+      setCommunicationError,
+      setCommunicationLoading,
+      refreshAlerts,
+      refreshProfiles,
+      refreshAdministration,
+      profileId: profile.id,
+      nextSession,
+    })
 
     await Promise.allSettled(parallelTasks)
     return nextSession
@@ -794,18 +929,7 @@ function App() {
       return
     }
 
-    const isPasswordSetupPath = () => {
-      if (typeof window === 'undefined') return false
-      const p = window.location.pathname
-      const h = window.location.hash
-      return (
-        p.startsWith('/set-password') ||
-        p.startsWith('/reset-password') ||
-        p.startsWith('/auth/callback') ||
-        h.includes('type=invite') ||
-        h.includes('type=recovery')
-      )
-    }
+
 
     const resolveUser = async (userId: string) => {
       if (isPasswordSetupPath()) {
@@ -895,18 +1019,20 @@ function App() {
           studentsRequestId.current += 1
           resolvingUserId.current = null
           resolvedUserId.current = null
-          setSession(null)
-          setStudents([])
-          setAttendance(emptyAttendanceState)
-          setFees({ invoices: [], payments: [] })
-          setCommunication(emptyCommunicationState)
-          setLiveProfiles([])
-          setAuthLoading(false)
-          setStudentsLoading(false)
-          setAttendanceLoading(false)
-          setFeesLoading(false)
-          setCommunicationLoading(false)
-          setProfilesLoading(false)
+          resetAppStateToSignedOut({
+            setSession,
+            setStudents,
+            setAttendance,
+            setFees,
+            setCommunication,
+            setLiveProfiles,
+            setAuthLoading,
+            setStudentsLoading,
+            setAttendanceLoading,
+            setFeesLoading,
+            setCommunicationLoading,
+            setProfilesLoading,
+          })
         }
       }, 0)
     })
@@ -959,50 +1085,131 @@ function App() {
     }
   }, [])
 
-  const handleLogin = async (email: string, password: string): Promise<{ role?: Role; error?: string; lockWaitSeconds?: number }> => {
-    if (!isSupabaseConfigured) {
-      return { error: 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before enabling login.' }
-    }
-
-    const result = await signInWithEmail(email, password)
-
-    if (!result.success || !result.profile) {
-      return { error: result.error ?? 'Unable to sign in with Supabase Auth.', lockWaitSeconds: result.lockWaitSeconds }
-    }
-
-    const role = normalizeRole(result.profile.role)
-    setActiveTourRole(role)
-    setTourOpen(!walkthroughState[role])
-    return { role }
+  const resetForSignOut = () => {
+    resolvedUserId.current = null
+    setSession(null)
+    setAdministration(null)
+    setAdministrationLoading(false)
+    setAdministrationError('')
+    setAlertSnapshot({ ownerId: null, items: [] })
+    setAlertsLoading(false)
+    setAlertsError('')
+    resetAppStateToSignedOut({
+      setSession,
+      setStudents,
+      setAttendance,
+      setFees,
+      setCommunication,
+      setLiveProfiles,
+      setAuthLoading,
+      setStudentsLoading,
+      setAttendanceLoading,
+      setFeesLoading,
+      setCommunicationLoading,
+      setProfilesLoading,
+    })
   }
 
-  const handleLogout = async () => {
-    try {
-      await signOutSupabase()
-      resolvedUserId.current = null
-      setSession(null)
-      setAdministration(null)
-      setAdministrationLoading(false)
-      setAdministrationError('')
-      setAlertSnapshot({ ownerId: null, items: [] })
-      setAlertsLoading(false)
-      setAlertsError('')
-      setLiveProfiles([])
-      setStudents([])
-      setAttendance(emptyAttendanceState)
-      setFees({ invoices: [], payments: [] })
-      setCommunication(emptyCommunicationState)
-      setToast({ type: 'info', text: 'You have been logged out.' })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to log out.'
-      setToast({ type: 'error', text: message })
-    }
+  return {
+    session,
+    setSession,
+    authLoading,
+    authError,
+    students,
+    studentsLoading,
+    studentsError,
+    liveProfiles,
+    setLiveProfiles,
+    profilesLoading,
+    profilesError,
+    attendance,
+    setAttendance,
+    attendanceLoading,
+    attendanceError,
+    fees,
+    setFees,
+    feesLoading,
+    feesError,
+    communication,
+    setCommunication,
+    communicationLoading,
+    communicationError,
+    alertSnapshot,
+    setAlertSnapshot,
+    alertsLoading,
+    alertsError,
+    administration,
+    setAdministration,
+    administrationLoading,
+    administrationError,
+    refreshAlerts,
+    refreshAdministration,
+    refreshStudents,
+    refreshProfiles,
+    resetForSignOut,
+    authResolutionId,
+    resolvedUserId,
+    setAttendanceLoading,
+    setAttendanceError,
+    setFeesLoading,
+    setFeesError,
+    setCommunicationLoading,
+    setCommunicationError,
   }
+}
+
+type AppActionsParams = {
+  session: SessionUser | null
+  setSession: React.Dispatch<React.SetStateAction<SessionUser | null>>
+  students: Student[]
+  attendance: AttendanceState
+  setAttendance: React.Dispatch<React.SetStateAction<AttendanceState>>
+  setFees: React.Dispatch<React.SetStateAction<FeeState>>
+  setCommunication: React.Dispatch<React.SetStateAction<CommunicationState>>
+  setAdministration: React.Dispatch<React.SetStateAction<AdministrationSnapshot | null>>
+  setToast: React.Dispatch<React.SetStateAction<ToastState | null>>
+  refreshStudents: (owner: SessionUser) => Promise<Student[] | null>
+  refreshProfiles: (owner: SessionUser) => Promise<void>
+  refreshAlerts: (ownerId: string) => Promise<void>
+  resolvedUserId: React.RefObject<string | null>
+  authResolutionId: React.RefObject<number>
+  attendanceRefreshInFlight: React.RefObject<boolean>
+  setAttendanceLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setAttendanceError: React.Dispatch<React.SetStateAction<string>>
+  setFeesLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setFeesError: React.Dispatch<React.SetStateAction<string>>
+  setCommunicationLoading: React.Dispatch<React.SetStateAction<boolean>>
+  setCommunicationError: React.Dispatch<React.SetStateAction<string>>
+}
+
+function useAppActions(params: AppActionsParams) {
+  const {
+    session,
+    setSession,
+    students,
+    setAttendance,
+    setFees,
+    setCommunication,
+    setAdministration,
+    setToast,
+    refreshStudents,
+    refreshProfiles,
+    refreshAlerts,
+    resolvedUserId,
+    authResolutionId,
+    attendanceRefreshInFlight,
+    setAttendanceLoading,
+    setAttendanceError,
+    setFeesLoading,
+    setFeesError,
+    setCommunicationLoading,
+    setCommunicationError,
+  } = params
 
   const handleSaveSchoolSettings = async (
     values: Pick<SchoolSettingsRecord, 'name' | 'short_name' | 'email' | 'phone' | 'address' | 'timezone'>,
   ) => {
-    if (!session || session.role !== 'admin' || !session.organizationId || !session.schoolId) {
+    if (session?.role !== 'admin' || !session.organizationId || !session.schoolId) {
       throw new Error('Only an active school administrator can update school settings.')
     }
     try {
@@ -1021,7 +1228,7 @@ function App() {
     campusId: string,
     values: Pick<CampusSettingsRecord, 'name' | 'code' | 'address' | 'status'>,
   ) => {
-    if (!session || session.role !== 'admin' || !session.organizationId || !session.schoolId) {
+    if (session?.role !== 'admin' || !session.organizationId || !session.schoolId) {
       throw new Error('Only an active school administrator can update campus settings.')
     }
     try {
@@ -1029,7 +1236,7 @@ function App() {
       setAdministration((current) => current
         ? { ...current, campuses: current.campuses.map((item) => item.id === campus.id ? campus : item) }
         : current)
-      setSession((current) => current && current.campusId === campus.id
+      setSession((current) => current?.campusId === campus.id
         ? { ...current, campusName: campus.name }
         : current)
       setToast({ type: 'success', text: 'Campus settings saved.' })
@@ -1041,7 +1248,7 @@ function App() {
   }
 
   const requireSchoolAdmin = () => {
-    if (!session || session.role !== 'admin') {
+    if (session?.role !== 'admin') {
       throw new Error('Only an active school administrator can manage user accounts.')
     }
     return session
@@ -1083,17 +1290,6 @@ function App() {
     }
   }
 
-  const handleCompleteTour = (role: Role) => {
-    setWalkthroughState((current) => ({ ...current, [role]: true }))
-    setTourOpen(false)
-    setActiveTourRole(null)
-  }
-
-  const handleRestartTour = (role: Role) => {
-    setActiveTourRole(role)
-    setTourOpen(true)
-  }
-
   const handleAddStudent = async (payload: NewStudent, campusId: string) => {
     if (!session || (session.role !== 'admin' && session.role !== 'teacher')) {
       throw new Error('Only active administrators and teachers can add students.')
@@ -1103,9 +1299,9 @@ function App() {
     try {
       const sanitizedPayload: NewStudent = session.role === 'teacher'
         ? {
-            ...payload,
-            guardian: { name: '', phone: '', email: '' },
-          }
+          ...payload,
+          guardian: { name: '', phone: '', email: '' },
+        }
         : payload
       await createLiveStudent(sanitizedPayload, campusId)
       const refreshedStudents = await refreshStudents(session)
@@ -1117,21 +1313,13 @@ function App() {
       setToast({ type: 'success', text: 'Student added successfully.' })
     } catch (error) {
       dispatchBuddyEvent('operation-error')
-      const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : undefined
-      const status = typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number'
-        ? error.status
-        : undefined
-      const errorFields = typeof error === 'object' && error !== null
-        ? error as Record<string, unknown>
-        : {}
+      const errorObj = typeof error === 'object' && error !== null ? error as Record<string, unknown> : null
       console.error('[Supabase] Student creation failed:', {
-        code,
-        status,
-        message: errorFields.message ?? (error instanceof Error ? error.message : error),
-        details: errorFields.details,
-        hint: errorFields.hint,
+        code: typeof errorObj?.code === 'string' ? errorObj.code : undefined,
+        status: typeof errorObj?.status === 'number' ? errorObj.status : undefined,
+        message: errorObj?.message ?? (error instanceof Error ? error.message : error),
+        details: errorObj?.details,
+        hint: errorObj?.hint,
       })
       throw new Error(formatRpcErrorMessage(error))
     }
@@ -1377,18 +1565,174 @@ function App() {
     }
   }
 
+
+  return {
+    handleSaveSchoolSettings,
+    handleSaveCampusSettings,
+    handleInviteSchoolUser,
+    handleUpdateSchoolUser,
+    handleDeactivateSchoolUser,
+    handleAddStudent,
+    handleImportStudents,
+    handleSaveAttendance,
+    handleRefreshAttendance,
+    handleRefreshFees,
+    handleRecordFeePayment,
+    handleCreateFeeInvoice,
+    handleRefreshCommunication,
+    handleSaveCommunicationDraft,
+    handleCommunicationOperation,
+    handleDeleteCommunicationDraft,
+    handleCorrectAttendanceSession,
+  }
+}
+
+function useAppTour() {
+  const [walkthroughState, setWalkthroughState] = useState<Record<Role, boolean>>(() =>
+    readLocalStorage<Record<Role, boolean>>(walkthroughStorageKey, defaultWalkthroughState),
+  )
+  const [tourOpen, setTourOpen] = useState(false)
+  const [activeTourRole, setActiveTourRole] = useState<Role | null>(null)
+
+  useEffect(() => {
+    window.localStorage.removeItem('edupulse_attendance')
+    window.localStorage.removeItem(legacyFeesStorageKey)
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(walkthroughStorageKey, JSON.stringify(walkthroughState))
+  }, [walkthroughState])
+
+  const handleCompleteTour = (role: Role) => {
+    setWalkthroughState((current) => ({ ...current, [role]: true }))
+    setTourOpen(false)
+    setActiveTourRole(null)
+  }
+
+  const handleRestartTour = (role: Role) => {
+    setActiveTourRole(role)
+    setTourOpen(true)
+  }
+
+  const startTourForRole = (role: Role) => {
+    setActiveTourRole(role)
+    setTourOpen(!walkthroughState[role])
+  }
+
+  const handleCloseTour = () => {
+    setTourOpen(false)
+    setActiveTourRole(null)
+  }
+
+  return {
+    tourOpen,
+    activeTourRole,
+    handleCloseTour,
+    handleCompleteTour,
+    handleRestartTour,
+    startTourForRole,
+  }
+}
+
+function useAppToast() {
+  const [toast, setToast] = useState<ToastState | null>(null)
+
+  useEffect(() => {
+    if (!toast) return
+    const timeout = window.setTimeout(() => setToast(null), 2800)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
+
+  return { toast, setToast }
+}
+
+type VisibleAlertsParams = {
+  alertSnapshot: { ownerId: string | null; items: AlertItem[] }
+  session: SessionUser | null
+  students: Student[]
+  alertsLoading: boolean
+  alertsError: string
+}
+
+function computeVisibleAlerts(params: VisibleAlertsParams) {
+  const { alertSnapshot, session, students, alertsLoading, alertsError } = params
+  const isOwner = alertSnapshot.ownerId === session?.authUserId
+  if (!isOwner) {
+    return {
+      visibleAlerts: [] as AlertItem[],
+      visibleAlertsLoading: true,
+      visibleAlertsError: '',
+    }
+  }
+
   const activeStudentIds = new Set(students.filter((student) => student.status === 'Active').map((student) => student.id))
-  const activeAttendanceClassKeys = new Set(getAttendanceClasses(students).map((attendanceClass) =>
-    `${attendanceClass.campusId}::${attendanceClass.className}::${attendanceClass.section}`,
-  ))
-  const visibleAlerts = session && alertSnapshot.ownerId === session.authUserId
-    ? alertSnapshot.items.filter((alert) => {
-      if (alert.studentId) return activeStudentIds.has(alert.studentId)
-      return alert.sourceType !== 'ATTENDANCE' || activeAttendanceClassKeys.has(alert.sourceId)
-    })
-    : []
-  const visibleAlertsLoading = !session || alertSnapshot.ownerId !== session.authUserId || alertsLoading
-  const visibleAlertsError = alertSnapshot.ownerId === session?.authUserId ? alertsError : ''
+  const activeAttendanceClassKeys = new Set(
+    getAttendanceClasses(students).map((attendanceClass) => `${attendanceClass.campusId}::${attendanceClass.className}::${attendanceClass.section}`),
+  )
+  const visibleAlerts = alertSnapshot.items.filter((alert) => {
+    if (alert.studentId) return activeStudentIds.has(alert.studentId)
+    return alert.sourceType !== 'ATTENDANCE' || activeAttendanceClassKeys.has(alert.sourceId)
+  })
+
+  return {
+    visibleAlerts,
+    visibleAlertsLoading: alertsLoading,
+    visibleAlertsError: alertsError,
+  }
+}
+
+type AppAuthHandlersParams = {
+  session: SessionUser | null
+  startTourForRole: (role: Role) => void
+  resetForSignOut: () => void
+  setToast: React.Dispatch<React.SetStateAction<ToastState | null>>
+  refreshAlerts: (ownerId: string) => Promise<void>
+  refreshStudents: (owner: SessionUser) => Promise<Student[] | null>
+  handleRefreshAttendance: () => Promise<void>
+  handleRefreshFees: () => Promise<void>
+  handleRefreshCommunication: () => Promise<void>
+}
+
+function useAppAuthHandlers(params: AppAuthHandlersParams) {
+  const {
+    session,
+    startTourForRole,
+    resetForSignOut,
+    setToast,
+    refreshAlerts,
+    refreshStudents,
+    handleRefreshAttendance,
+    handleRefreshFees,
+    handleRefreshCommunication,
+  } = params
+
+  const handleLogin = async (email: string, password: string): Promise<{ role?: Role; error?: string; lockWaitSeconds?: number }> => {
+    if (!isSupabaseConfigured) {
+      return { error: 'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before enabling login.' }
+    }
+
+    const result = await signInWithEmail(email, password)
+
+    if (!result.success || !result.profile) {
+      return { error: result.error ?? 'Unable to sign in with Supabase Auth.', lockWaitSeconds: result.lockWaitSeconds }
+    }
+
+    const role = normalizeRole(result.profile.role)
+    startTourForRole(role)
+    return { role }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await signOutSupabase()
+      resetForSignOut()
+      setToast({ type: 'info', text: 'You have been logged out.' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to log out.'
+      setToast({ type: 'error', text: message })
+    }
+  }
+
   const handleRefreshAlerts = async () => {
     if (session) await refreshAlerts(session.authUserId)
   }
@@ -1404,161 +1748,304 @@ function App() {
     ])
   }
 
+  return {
+    handleLogin,
+    handleLogout,
+    handleRefreshAlerts,
+    handleRefreshAll,
+  }
+}
+
+function RoleDefaultNavigate({ session }: Readonly<{ session: SessionUser | null }>) {
+  return <Navigate to={session ? defaultDashboardForRole(session.role) : '/login'} replace />
+}
+
+function AppToast({ toast }: Readonly<{ toast: ToastState | null }>) {
+  if (!toast) return null
+  return (
+    <output className={`toast toast-${toast.type}`} aria-live="polite">
+      {toast.text}
+    </output>
+  )
+}
+
+function App() {
+  const {
+    session,
+    setSession,
+    authLoading,
+    authError,
+    students,
+    studentsLoading,
+    studentsError,
+    liveProfiles,
+    profilesLoading,
+    attendance,
+    setAttendance,
+    attendanceLoading,
+    attendanceError,
+    fees,
+    setFees,
+    feesLoading,
+    communication,
+    setCommunication,
+    communicationLoading,
+    alertSnapshot,
+    alertsLoading,
+    administration,
+    setAdministration,
+    administrationLoading,
+    refreshAlerts,
+    refreshAdministration,
+    refreshStudents,
+    refreshProfiles,
+    resetForSignOut,
+    authResolutionId,
+    resolvedUserId,
+    setAttendanceLoading,
+    setAttendanceError,
+    setFeesLoading,
+    setFeesError,
+    setCommunicationLoading,
+    setCommunicationError,
+    feesError,
+    profilesError,
+    communicationError,
+    administrationError,
+    alertsError,
+  } = useAppSessionManager()
+
+  const {
+    tourOpen,
+    activeTourRole,
+    handleCloseTour,
+    handleCompleteTour,
+    handleRestartTour,
+    startTourForRole,
+  } = useAppTour()
+
+  const { toast, setToast } = useAppToast()
+  const attendanceRefreshInFlight = useRef(false)
+
+  const {
+    handleSaveSchoolSettings,
+    handleSaveCampusSettings,
+    handleInviteSchoolUser,
+    handleUpdateSchoolUser,
+    handleDeactivateSchoolUser,
+    handleAddStudent,
+    handleImportStudents,
+    handleSaveAttendance,
+    handleRefreshAttendance,
+    handleRefreshFees,
+    handleRecordFeePayment,
+    handleCreateFeeInvoice,
+    handleRefreshCommunication,
+    handleSaveCommunicationDraft,
+    handleCommunicationOperation,
+    handleDeleteCommunicationDraft,
+    handleCorrectAttendanceSession,
+  } = useAppActions({
+    session,
+    setSession,
+    students,
+    attendance,
+    setAttendance,
+    setFees,
+    setCommunication,
+    setAdministration,
+    setToast,
+    refreshStudents,
+    refreshProfiles,
+    refreshAlerts,
+    resolvedUserId,
+    authResolutionId,
+    attendanceRefreshInFlight,
+    setAttendanceLoading,
+    setAttendanceError,
+    setFeesLoading,
+    setFeesError,
+    setCommunicationLoading,
+    setCommunicationError,
+  })
+
+  const {
+    handleLogin,
+    handleLogout,
+    handleRefreshAlerts,
+    handleRefreshAll,
+  } = useAppAuthHandlers({
+    session,
+    startTourForRole,
+    resetForSignOut,
+    setToast,
+    refreshAlerts,
+    refreshStudents,
+    handleRefreshAttendance,
+    handleRefreshFees,
+    handleRefreshCommunication,
+  })
+
+  const {
+    visibleAlerts,
+    visibleAlertsLoading,
+    visibleAlertsError,
+  } = computeVisibleAlerts({
+    alertSnapshot,
+    session,
+    students,
+    alertsLoading,
+    alertsError,
+  })
+
   return (
     <BrowserRouter>
       <AuthRedirectHandler />
-      <Suspense fallback={<div className="app-loading-state" role="status">Loading page…</div>}>
-      <AskCamviaProvider
-        key={session?.authUserId ?? 'anonymous'}
-        user={session}
-        students={students}
-        attendance={attendance}
-        attendanceLoading={attendanceLoading}
-        attendanceError={attendanceError}
-        fees={fees}
-        communication={communication}
-        alerts={visibleAlerts}
-        alertsLoading={visibleAlertsLoading}
-        alertsError={visibleAlertsError}
-      >
-      <Routes>
-        <Route path="/login" element={<LoginPage onLogin={handleLogin} loading={authLoading} authError={authError} />} />
-        <Route path="/set-password" element={<SetPasswordPage mode="invite" />} />
-        <Route path="/reset-password" element={<SetPasswordPage mode="reset" />} />
-        <Route path="/auth/callback" element={<AuthCallbackHandler />} />
-        <Route path="/register/:token" element={<PublicRegistrationPage />} />
-
-        <Route element={<ProtectedRoute user={session} loading={authLoading} />}>
-        <Route
-          element={
-            <AppShell
-              user={session}
-              students={students}
-              profiles={liveProfiles}
-              profilesLoading={profilesLoading}
-              onLogout={handleLogout}
-              tourOpen={tourOpen}
-              activeTourRole={activeTourRole}
-              onCloseTour={() => {
-                setTourOpen(false)
-                setActiveTourRole(null)
-              }}
-              onCompleteTour={handleCompleteTour}
-              onRestartTour={handleRestartTour}
-            />
-          }
+      <Suspense fallback={<output className="app-loading-state">Loading page…</output>}>
+        <AskCamviaProvider
+          key={session?.authUserId ?? 'anonymous'}
+          user={session}
+          students={students}
+          attendance={attendance}
+          attendanceLoading={attendanceLoading}
+          attendanceError={attendanceError}
+          fees={fees}
+          communication={communication}
+          alerts={visibleAlerts}
+          alertsLoading={visibleAlertsLoading}
+          alertsError={visibleAlertsError}
         >
-          <Route path="/" element={<Navigate to={session ? defaultDashboardForRole(session.role) : '/login'} replace />} />
-            <Route path="/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
-            <Route path="/finance/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
-            <Route path="/teacher/dashboard" element={<DashboardPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
-            <Route
-              path="/students"
-              element={
-                session ? (
-                  <StudentsPage
-                    key={session.authUserId}
+          <Routes>
+            <Route path="/login" element={<LoginPage onLogin={handleLogin} loading={authLoading} authError={authError} />} />
+            <Route path="/set-password" element={<SetPasswordPage mode="invite" />} />
+            <Route path="/reset-password" element={<SetPasswordPage mode="reset" />} />
+            <Route path="/auth/callback" element={<AuthCallbackHandler />} />
+            <Route path="/register/:token" element={<PublicRegistrationPage />} />
+
+            <Route element={<ProtectedRoute user={session} loading={authLoading} />}>
+              <Route
+                element={
+                  <AppShell
                     user={session}
                     students={students}
-                    loading={studentsLoading}
-                    error={studentsError}
-                    onRetry={() => session ? refreshStudents(session) : undefined}
-                    onAddStudent={handleAddStudent}
-                    onImportStudents={handleImportStudents}
-                    onRefresh={() => session ? refreshStudents(session) : undefined}
+                    profiles={liveProfiles}
+                    profilesLoading={profilesLoading}
+                    alerts={visibleAlerts}
+                    alertsLoading={visibleAlertsLoading}
+                    onLogout={handleLogout}
+                    tourOpen={tourOpen}
+                    activeTourRole={activeTourRole}
+                    onCloseTour={handleCloseTour}
+                    onCompleteTour={handleCompleteTour}
+                    onRestartTour={handleRestartTour}
                   />
-                ) : null
-              }
-            />
-            <Route
-              path="/students/:studentId"
-              element={session ? <StudentDetailPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRefresh={() => session ? refreshStudents(session) : undefined} /> : null}
-            />
-            <Route
-              path="/attendance"
-              element={session ? <AttendanceRoute user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
-            />
-            <Route
-              path="/statements/attendance"
-              element={session ? <StatementsPage user={session} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => session ? refreshStudents(session) : undefined} kind="attendance" /> : null}
-            />
-            <Route
-              path="/attendance/take/:classId"
-              element={session ? <TakeAttendancePage user={session} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} /> : null}
-            />
-            <Route path="/fees" element={session ? <FeesPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
-            <Route
-              path="/statements/account"
-              element={session ? <StatementsPage user={session} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => session ? refreshStudents(session) : undefined} kind="account" /> : null}
-            />
-            <Route path="/fees/:studentId" element={session ? <FeeStudentDetailPage user={session} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} /> : null} />
-            <Route path="/communication" element={session ? <CommunicationPage user={session} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onRefresh={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} onDeleteDraft={handleDeleteCommunicationDraft} /> : null} />
-            <Route path="/alerts" element={session ? <AlertsPage user={session} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} /> : null} />
-            <Route path="/approvals" element={session ? <ApprovalsPage user={session} students={students} communication={communication} loading={communicationLoading} error={communicationError} onRetry={handleRefreshCommunication} onOperation={handleCommunicationOperation} /> : null} />
-            <Route path="/ask-edu" element={session ? <AskEduPage /> : null} />
-            <Route path="/reports" element={session ? <ReportsPage user={session} students={students} attendance={attendance} fees={fees} communication={communication} /> : null} />
-            <Route path="/my-classes" element={session ? <MyClassesPage user={session} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} /> : null} />
-            <Route
-              path="/administration"
-              element={
-                session?.role === 'admin' ? <AdministrationPage
-                  user={session}
-                  snapshot={administration}
-                  loading={administrationLoading}
-                  error={administrationError}
-                  profiles={liveProfiles}
-                  profilesLoading={profilesLoading}
-                  profilesError={profilesError}
-                  onRetryProfiles={() => session ? refreshProfiles(session) : undefined}
-                  onRetry={() => session ? refreshAdministration(session) : undefined}
-                  onSaveSchool={handleSaveSchoolSettings}
-                  onSaveCampus={handleSaveCampusSettings}
-                  onInviteUser={handleInviteSchoolUser}
-                  onUpdateUser={handleUpdateSchoolUser}
-                  onDeactivateUser={handleDeactivateSchoolUser}
-              /> : null
-              }
-            />
-            <Route
-              path="/users"
-              element={session?.role === 'admin' ? <ProfilesDirectoryPage
-                user={session}
-                profiles={liveProfiles}
-                campuses={administration?.campuses ?? []}
-                loading={profilesLoading}
-                error={profilesError}
-                onRetry={() => session ? refreshProfiles(session) : undefined}
-                onInviteUser={handleInviteSchoolUser}
-                onUpdateUser={handleUpdateSchoolUser}
-                onDeactivateUser={handleDeactivateSchoolUser}
-              /> : null}
-            />
-            <Route
-              path="/trash"
-              element={session?.role === 'admin' ? <TrashPage onRefreshAll={handleRefreshAll} /> : null}
-            />
-          </Route>
-        </Route>
+                }
+              >
+                <Route path="/" element={<RoleDefaultNavigate session={session} />} />
+                <Route path="/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route path="/finance/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route path="/teacher/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route
+                  path="/students"
+                  element={
+                    <StudentsPage
+                      key={session?.authUserId}
+                      user={session!}
+                      students={students}
+                      loading={studentsLoading}
+                      error={studentsError}
+                      onRetry={() => refreshStudents(session!)}
+                      onAddStudent={handleAddStudent}
+                      onImportStudents={handleImportStudents}
+                      onRefresh={() => refreshStudents(session!)}
+                    />
+                  }
+                />
+                <Route
+                  path="/students/:studentId"
+                  element={<StudentDetailPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRefresh={() => refreshStudents(session!)} />}
+                />
+                <Route
+                  path="/attendance"
+                  element={<AttendanceRoute user={session!} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} />}
+                />
+                <Route
+                  path="/statements/attendance"
+                  element={<StatementsPage user={session!} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => refreshStudents(session!)} kind="attendance" />}
+                />
+                <Route
+                  path="/attendance/take/:classId"
+                  element={<TakeAttendancePage user={session!} students={students} attendance={attendance} loading={attendanceLoading} error={attendanceError} onRetry={handleRefreshAttendance} onSave={handleSaveAttendance} onRefresh={handleRefreshAttendance} onCorrectAttendance={handleCorrectAttendanceSession} />}
+                />
+                <Route path="/fees" element={<FeesPage user={session!} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} />} />
+                <Route
+                  path="/statements/account"
+                  element={<StatementsPage user={session!} students={students} studentsLoading={studentsLoading} studentsError={studentsError} onRetryStudents={() => refreshStudents(session!)} kind="account" />}
+                />
+                <Route path="/fees/:studentId" element={<FeeStudentDetailPage user={session!} students={students} feeState={fees} feeLoading={feesLoading} feeError={feesError} onRetry={handleRefreshFees} onRefresh={handleRefreshFees} schoolUsers={liveProfiles} onRecordPayment={handleRecordFeePayment} onCreateInvoice={handleCreateFeeInvoice} />} />
+                <Route path="/communication" element={<CommunicationPage user={session!} students={students} state={communication} attendance={attendance} fees={fees} users={liveProfiles} loading={communicationLoading} loadError={communicationError} onRetry={handleRefreshCommunication} onRefresh={handleRefreshCommunication} onSaveDraft={handleSaveCommunicationDraft} onOperation={handleCommunicationOperation} onDeleteDraft={handleDeleteCommunicationDraft} />} />
+                <Route path="/alerts" element={<AlertsPage user={session!} alerts={visibleAlerts} loading={visibleAlertsLoading} error={visibleAlertsError} onRetry={handleRefreshAlerts} />} />
+                <Route path="/approvals" element={<ApprovalsPage user={session!} students={students} communication={communication} loading={communicationLoading} error={communicationError} onRetry={handleRefreshCommunication} onOperation={handleCommunicationOperation} />} />
+                <Route path="/ask-edu" element={<AskEduPage />} />
+                <Route path="/reports" element={<ReportsPage user={session!} students={students} attendance={attendance} fees={fees} communication={communication} />} />
+                <Route path="/my-classes" element={<MyClassesPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} />} />
+                <Route
+                  path="/administration"
+                  element={
+                    session?.role === 'admin' ? <AdministrationPage
+                      user={session}
+                      snapshot={administration}
+                      loading={administrationLoading}
+                      error={administrationError}
+                      profiles={liveProfiles}
+                      profilesLoading={profilesLoading}
+                      profilesError={profilesError}
+                      onRetryProfiles={() => refreshProfiles(session)}
+                      onRetry={() => refreshAdministration(session)}
+                      onSaveSchool={handleSaveSchoolSettings}
+                      onSaveCampus={handleSaveCampusSettings}
+                      onInviteUser={handleInviteSchoolUser}
+                      onUpdateUser={handleUpdateSchoolUser}
+                      onDeactivateUser={handleDeactivateSchoolUser}
+                    /> : null
+                  }
+                />
+                <Route
+                  path="/users"
+                  element={session?.role === 'admin' ? <ProfilesDirectoryPage
+                    user={session}
+                    profiles={liveProfiles}
+                    campuses={administration?.campuses ?? []}
+                    loading={profilesLoading}
+                    error={profilesError}
+                    onRetry={() => refreshProfiles(session)}
+                    onInviteUser={handleInviteSchoolUser}
+                    onUpdateUser={handleUpdateSchoolUser}
+                    onDeactivateUser={handleDeactivateSchoolUser}
+                  /> : null}
+                />
+                <Route
+                  path="/trash"
+                  element={session?.role === 'admin' ? <TrashPage onRefreshAll={handleRefreshAll} /> : null}
+                />
+              </Route>
+            </Route>
 
-        <Route path="*" element={<Navigate to={session ? defaultDashboardForRole(session.role) : '/login'} replace />} />
-      </Routes>
-      </AskCamviaProvider>
+            <Route path="*" element={<RoleDefaultNavigate session={session} />} />
+          </Routes>
+        </AskCamviaProvider>
       </Suspense>
 
-      {toast ? (
-        <div className={`toast toast-${toast.type}`} role="status" aria-live="polite">
-          {toast.text}
-        </div>
-      ) : null}
+      <AppToast toast={toast} />
     </BrowserRouter>
   )
 }
 
-function ProtectedRoute({ user, loading }: { user: SessionUser | null; loading: boolean }) {
+function ProtectedRoute({ user, loading }: Readonly<{ user: SessionUser | null; loading: boolean }>) {
   const location = useLocation()
 
   if (loading) {
-    return <div className="app-loading-state" role="status">Checking your secure session…</div>
+    return <output className="app-loading-state">Checking your secure session…</output>
   }
 
   if (!user) {
@@ -1581,60 +2068,128 @@ function ProtectedRoute({ user, loading }: { user: SessionUser | null; loading: 
   return <Outlet />
 }
 
+function handleHashAuthRedirect(hash: string, pathname: string, navigate: NavigateFunction) {
+  const params = new URLSearchParams(hash.substring(1))
+  const type = params.get('type')
+  const error = params.get('error') || params.get('error_code')
+  const errorDescription = params.get('error_description')
+
+  if (type === 'invite' && pathname !== '/set-password') {
+    void navigate({ pathname: '/set-password', hash }, { replace: true })
+    return
+  }
+
+  if (type === 'recovery' && pathname !== '/reset-password') {
+    void navigate({ pathname: '/reset-password', hash }, { replace: true })
+    return
+  }
+
+  if (error && (pathname === '/' || pathname === '/login')) {
+    if (hash.includes('invite') || (errorDescription && /invite/i.test(errorDescription))) {
+      void navigate({ pathname: '/set-password', hash }, { replace: true })
+      return
+    }
+    if (hash.includes('recovery') || (errorDescription && /password|reset|recovery/i.test(errorDescription))) {
+      void navigate({ pathname: '/reset-password', hash }, { replace: true })
+    }
+  }
+}
+
+function handleSearchAuthRedirect(search: string, pathname: string, navigate: NavigateFunction) {
+  const searchParams = new URLSearchParams(search)
+  const code = searchParams.get('code')
+  const error = searchParams.get('error')
+  const errorDescription = searchParams.get('error_description')
+
+  if (code && pathname === '/') {
+    void navigate({ pathname: '/auth/callback', search }, { replace: true })
+    return
+  }
+
+  if (error && (pathname === '/' || pathname === '/login')) {
+    if (errorDescription && /invite/i.test(errorDescription)) {
+      void navigate({ pathname: '/set-password', search }, { replace: true })
+    }
+  }
+}
+
 function AuthRedirectHandler() {
   const location = useLocation()
   const navigate = useNavigate()
 
   useEffect(() => {
     const hash = window.location.hash
-    if (hash && hash.length > 1) {
-      const params = new URLSearchParams(hash.substring(1))
-      const type = params.get('type')
-      const error = params.get('error') || params.get('error_code')
-      const errorDescription = params.get('error_description')
-
-      if (type === 'invite' && location.pathname !== '/set-password') {
-        navigate({ pathname: '/set-password', hash }, { replace: true })
-        return
-      }
-
-      if (type === 'recovery' && location.pathname !== '/reset-password') {
-        navigate({ pathname: '/reset-password', hash }, { replace: true })
-        return
-      }
-
-      if (error && (location.pathname === '/' || location.pathname === '/login')) {
-        if (hash.includes('invite') || (errorDescription && /invite/i.test(errorDescription))) {
-          navigate({ pathname: '/set-password', hash }, { replace: true })
-          return
-        }
-        if (hash.includes('recovery') || (errorDescription && /password|reset|recovery/i.test(errorDescription))) {
-          navigate({ pathname: '/reset-password', hash }, { replace: true })
-          return
-        }
-      }
+    if (hash?.length > 1) {
+      handleHashAuthRedirect(hash, location.pathname, navigate)
     }
 
     const search = window.location.search
-    if (search && search.length > 1) {
-      const searchParams = new URLSearchParams(search)
-      const code = searchParams.get('code')
-      const error = searchParams.get('error')
-      const errorDescription = searchParams.get('error_description')
-
-      if (code && location.pathname === '/') {
-        navigate({ pathname: '/auth/callback', search }, { replace: true })
-        return
-      }
-
-      if (error && (location.pathname === '/' || location.pathname === '/login')) {
-        if (errorDescription && /invite/i.test(errorDescription)) {
-          navigate({ pathname: '/set-password', search }, { replace: true })
-        }
-      }
+    if (search?.length > 1) {
+      handleSearchAuthRedirect(search, location.pathname, navigate)
     }
   }, [location.pathname, navigate])
 
+  return null
+}
+
+async function handleAuthCallbackCode(code: string): Promise<string | null> {
+  if (!supabase) return null
+  try {
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+    if (exchangeError) throw exchangeError
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : 'Unable to verify authentication link.'
+  }
+}
+
+async function handleAuthCallbackSession(): Promise<{ hasSession: boolean; error?: string }> {
+  if (!supabase) return { hasSession: false }
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    return { hasSession: Boolean(session) }
+  } catch {
+    return { hasSession: false, error: 'Unable to verify your authentication session. Please request a new link.' }
+  }
+}
+
+async function resolveAuthCallback(
+  params: URLSearchParams,
+  search: string,
+  navigate: NavigateFunction,
+): Promise<string | null> {
+  const error = params.get('error') || params.get('error_code')
+  if (error) {
+    const errorDescription = params.get('error_description')
+    return errorDescription
+      ? decodeURIComponent(errorDescription.replaceAll('+', ' '))
+      : 'Authentication link is invalid or has expired.'
+  }
+
+  const code = new URLSearchParams(search).get('code')
+  if (code) {
+    const codeError = await handleAuthCallbackCode(code)
+    if (codeError) return codeError
+  }
+
+  const type = params.get('type')
+  if (type === 'invite') {
+    void navigate({ pathname: '/set-password', hash: window.location.hash }, { replace: true })
+    return null
+  }
+  if (type === 'recovery') {
+    void navigate({ pathname: '/reset-password', hash: window.location.hash }, { replace: true })
+    return null
+  }
+
+  const { hasSession, error: sessionError } = await handleAuthCallbackSession()
+  if (sessionError) return sessionError
+  if (hasSession) {
+    void navigate('/set-password', { replace: true })
+    return null
+  }
+
+  void navigate('/login', { replace: true })
   return null
 }
 
@@ -1649,54 +2204,10 @@ function AuthCallbackHandler() {
       const hash = window.location.hash
       const search = window.location.search
       const params = new URLSearchParams(hash ? hash.substring(1) : search)
-
-      const error = params.get('error') || params.get('error_code')
-      const errorDescription = params.get('error_description')
-      if (error) {
-        if (!active) return
-        setErrorMessage(errorDescription ? decodeURIComponent(errorDescription.replace(/\+/g, ' ')) : 'Authentication link is invalid or has expired.')
-        return
+      const err = await resolveAuthCallback(params, search, navigate)
+      if (active && err) {
+        setErrorMessage(err)
       }
-
-      const type = params.get('type')
-      const code = new URLSearchParams(search).get('code')
-
-      if (code && supabase) {
-        try {
-          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-          if (exchangeError) throw exchangeError
-        } catch (err) {
-          if (!active) return
-          setErrorMessage(err instanceof Error ? err.message : 'Unable to verify authentication link.')
-          return
-        }
-      }
-
-      if (type === 'invite') {
-        navigate({ pathname: '/set-password', hash: window.location.hash }, { replace: true })
-        return
-      }
-      if (type === 'recovery') {
-        navigate({ pathname: '/reset-password', hash: window.location.hash }, { replace: true })
-        return
-      }
-
-      if (supabase) {
-        try {
-          const { data: { session } } = await supabase.auth.getSession()
-          if (!active) return
-          if (session) {
-            navigate('/set-password', { replace: true })
-            return
-          }
-        } catch {
-          if (!active) return
-          setErrorMessage('Unable to verify your authentication session. Please request a new link.')
-          return
-        }
-      }
-
-      navigate('/login', { replace: true })
     }
 
     void processAuth()
@@ -1724,62 +2235,42 @@ function AuthCallbackHandler() {
   }
 
   return (
-    <div className="app-loading-state" role="status">
+    <output className="app-loading-state">
       Verifying your security credentials…
-    </div>
+    </output>
   )
 }
 
-function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
-  const navigate = useNavigate()
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string>(() => {
-    if (typeof window === 'undefined') return ''
-    if (!supabase) return 'Supabase is not configured in this environment.'
-    const hash = window.location.hash
-    const search = window.location.search
-    const params = new URLSearchParams(hash ? hash.substring(1) : search)
-    const errorParam = params.get('error') || params.get('error_code')
-    const errorDesc = params.get('error_description')
-    if (errorParam) {
-      return errorDesc
-        ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
-        : 'This link is invalid or has expired. Please contact your administrator.'
-    }
-    return ''
-  })
-  const [status, setStatus] = useState<'checking' | 'ready' | 'success' | 'expired'>(() => {
-    if (typeof window === 'undefined') return 'checking'
-    if (!supabase) return 'expired'
-    const hash = window.location.hash
-    const search = window.location.search
-    const params = new URLSearchParams(hash ? hash.substring(1) : search)
-    const errorParam = params.get('error') || params.get('error_code')
-    if (errorParam) return 'expired'
-    return 'checking'
-  })
-  const [userEmail, setUserEmail] = useState<string | null>(null)
-  const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
-    } catch {
-      return 'light'
-    }
-  })
-
-  const toggleLoginTheme = () => {
-    const nextTheme = loginTheme === 'light' ? 'dark' : 'light'
-    setLoginTheme(nextTheme)
-    try {
-      window.localStorage.setItem('camvia_login_theme', nextTheme)
-    } catch {
-      // Theme switching still works when browser storage is unavailable.
-    }
+function getInitialPasswordSetupError(): string {
+  if (typeof window === 'undefined') return ''
+  if (!supabase) return 'Supabase is not configured in this environment.'
+  const hash = window.location.hash
+  const search = window.location.search
+  const params = new URLSearchParams(hash ? hash.substring(1) : search)
+  const errorParam = params.get('error') || params.get('error_code')
+  const errorDesc = params.get('error_description')
+  if (errorParam) {
+    return errorDesc
+      ? decodeURIComponent(errorDesc.replaceAll('+', ' '))
+      : 'This link is invalid or has expired. Please contact your administrator.'
   }
+  return ''
+}
+
+function getInitialPasswordSetupStatus(): 'checking' | 'ready' | 'success' | 'expired' {
+  if (typeof window === 'undefined') return 'checking'
+  if (!supabase) return 'expired'
+  const hash = window.location.hash
+  const search = window.location.search
+  const params = new URLSearchParams(hash ? hash.substring(1) : search)
+  const errorParam = params.get('error') || params.get('error_code')
+  return errorParam ? 'expired' : 'checking'
+}
+
+function usePasswordSetupSession(mode: 'invite' | 'reset') {
+  const [errorMessage, setErrorMessage] = useState<string>(getInitialPasswordSetupError)
+  const [status, setStatus] = useState<'checking' | 'ready' | 'success' | 'expired'>(getInitialPasswordSetupStatus)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
 
   useEffect(() => {
     if (status === 'expired' || !supabase) return
@@ -1844,14 +2335,132 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
     }
   }, [mode, status])
 
+  return { status, setStatus, userEmail, errorMessage, setErrorMessage }
+}
+
+function PasswordSetupExpiredView({
+  mode,
+  errorMessage,
+  onNavigateLogin,
+}: Readonly<{
+  mode: 'invite' | 'reset'
+  errorMessage: string
+  onNavigateLogin: () => void
+}>) {
+  const expiredTitle = mode === 'invite' ? 'Invitation Expired' : 'Link Expired'
+  const expiredIntro = errorMessage || (mode === 'invite'
+    ? 'This invitation link is invalid or has expired. Please contact your school administrator to receive a new invitation.'
+    : 'This password reset link is invalid or has expired. Please request a new password reset link.')
+
+  return (
+    <div className="status-card error">
+      <div className="login-header">
+        <p className="eyebrow" style={{ color: '#e04848' }}>Access Notice</p>
+        <h2>{expiredTitle}</h2>
+        <p className="login-intro">{expiredIntro}</p>
+      </div>
+      <div className="status-card-actions">
+        <button
+          type="button"
+          className="primary-button"
+          onClick={onNavigateLogin}
+        >
+          Return to Sign In
+          <ArrowRight size={20} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PasswordSetupSuccessView({
+  onNavigateLogin,
+}: Readonly<{
+  onNavigateLogin: () => void
+}>) {
+  return (
+    <div className="status-card success">
+      <div className="login-header">
+        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', borderRadius: '50%', background: '#eaf8f1', color: '#16834d', marginBottom: '16px' }}>
+          <CheckCircle2 size={32} />
+        </div>
+        <p className="eyebrow" style={{ color: '#16834d' }}>Setup Complete</p>
+        <h2>Password Saved</h2>
+        <p className="login-intro">
+          Your password has been configured successfully. You can now sign in to your CAMVIA account.
+        </p>
+      </div>
+      <div className="status-card-actions">
+        <button
+          type="button"
+          className="primary-button"
+          onClick={onNavigateLogin}
+        >
+          Proceed to Sign In
+          <ArrowRight size={20} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PasswordRequirementItem({ valid, label }: Readonly<{ valid: boolean; label: string }>) {
+  return (
+    <li className={valid ? 'valid' : 'invalid'}>
+      <CheckCircle2 size={14} aria-hidden="true" /> {label}
+    </li>
+  )
+}
+
+function PasswordRequirementsList({
+  hasMinLength,
+  hasUppercase,
+  hasLowercase,
+  hasNumber,
+  passwordsMatch,
+}: Readonly<{
+  hasMinLength: boolean
+  hasUppercase: boolean
+  hasLowercase: boolean
+  hasNumber: boolean
+  passwordsMatch: boolean
+}>) {
+  return (
+    <div className="password-requirements">
+      <p className="requirements-title">Password must contain:</p>
+      <ul>
+        <PasswordRequirementItem valid={hasMinLength} label="At least 8 characters" />
+        <PasswordRequirementItem valid={hasUppercase} label="At least one uppercase letter" />
+        <PasswordRequirementItem valid={hasLowercase} label="At least one lowercase letter" />
+        <PasswordRequirementItem valid={hasNumber} label="At least one number" />
+        <PasswordRequirementItem valid={passwordsMatch} label="Passwords match" />
+      </ul>
+    </div>
+  )
+}
+
+type PasswordSetupActiveFormProps = Readonly<{
+  mode: 'invite' | 'reset'
+  userEmail: string | null
+  onSuccess: () => void
+}>
+
+function PasswordSetupActiveForm({ mode, userEmail, onSuccess }: PasswordSetupActiveFormProps) {
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+
   const hasMinLength = password.length >= 8
   const hasUppercase = /[A-Z]/.test(password)
   const hasLowercase = /[a-z]/.test(password)
-  const hasNumber = /[0-9]/.test(password)
+  const hasNumber = /\d/.test(password)
   const passwordsMatch = password.length > 0 && password === confirmPassword
   const isFormValid = hasMinLength && hasUppercase && hasLowercase && hasNumber && passwordsMatch
 
-  const handleSubmit = async (event: FormEvent) => {
+  const handleSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!isFormValid || submitting) return
 
@@ -1867,216 +2476,298 @@ function SetPasswordPage({ mode }: { mode: 'invite' | 'reset' }) {
       }
 
       await signOutSupabase()
-      setStatus('success')
+      onSuccess()
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to update password. Please try again.')
       setSubmitting(false)
     }
   }
 
+  let submitLabel = 'Update Password'
+  if (submitting) {
+    submitLabel = 'Saving Password…'
+  } else if (mode === 'invite') {
+    submitLabel = 'Set Password & Continue'
+  }
+
   return (
-    <div className="login-page" data-theme={loginTheme}>
-      <div className="login-panel">
-        <div className="login-brand-panel">
-          <div className="login-logo" role="img" aria-label="CAMVIA — Smarter Schools. Brighter Futures." />
-          <p className="login-brand-eyebrow">AI-powered school management</p>
-          <h1 className="login-headline">See More.<br />Understand Better.<br /><span>Act Sooner.</span></h1>
-          <p className="login-description">CAMVIA brings intelligence to school management with AI-powered insights, helping schools operate smarter and create brighter futures for every learner.</p>
-          <div className="login-benefits">
-            <div><span className="login-benefit-icon"><Eye aria-hidden="true" /></span><p><strong>See.</strong><small>Real-time insights</small></p></div>
-            <div><span className="login-benefit-icon"><Lightbulb aria-hidden="true" /></span><p><strong>Understand.</strong><small>Smarter decisions</small></p></div>
-            <div><span className="login-benefit-icon"><ChartNoAxesColumnIncreasing aria-hidden="true" /></span><p><strong>Act.</strong><small>Better outcomes</small></p></div>
+    <>
+      <div className="login-header">
+        <p className="eyebrow">{mode === 'invite' ? 'Account Setup' : 'Password Recovery'}</p>
+        <h2>{mode === 'invite' ? 'Set Your Password' : 'Reset Password'}</h2>
+        <p className="login-intro">
+          {mode === 'invite'
+            ? 'Welcome to CAMVIA! Choose a secure password to complete your account setup.'
+            : 'Enter and confirm a new secure password for your CAMVIA account.'}
+        </p>
+      </div>
+
+      {userEmail ? (
+        <div className="verified-account-card">
+          <KeyRound size={18} aria-hidden="true" />
+          <span>Account: <strong>{userEmail}</strong></span>
+        </div>
+      ) : null}
+
+      <form onSubmit={handleSubmit} className="login-form">
+        <label>
+          <span>New Password</span>
+          <div className="password-field login-input-field">
+            <LockKeyhole aria-hidden="true" />
+            <input
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              required
+              disabled={submitting}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter new password"
+            />
+            <button
+              type="button"
+              className="password-toggle-btn"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              disabled={submitting}
+              onClick={() => setShowPassword((current) => !current)}
+            >
+              {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+            </button>
           </div>
-          <div className="login-campus" aria-hidden="true" />
+        </label>
+
+        <label>
+          <span>Confirm Password</span>
+          <div className="password-field login-input-field">
+            <LockKeyhole aria-hidden="true" />
+            <input
+              type={showConfirmPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              required
+              disabled={submitting}
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="Confirm new password"
+            />
+            <button
+              type="button"
+              className="password-toggle-btn"
+              aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+              aria-pressed={showConfirmPassword}
+              disabled={submitting}
+              onClick={() => setShowConfirmPassword((current) => !current)}
+            >
+              {showConfirmPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+            </button>
+          </div>
+        </label>
+
+        <PasswordRequirementsList
+          hasMinLength={hasMinLength}
+          hasUppercase={hasUppercase}
+          hasLowercase={hasLowercase}
+          hasNumber={hasNumber}
+          passwordsMatch={passwordsMatch}
+        />
+
+        {errorMessage ? (
+          <div className="login-error-banner" role="alert">
+            <AlertTriangle size={16} />
+            <span>{errorMessage}</span>
+          </div>
+        ) : null}
+
+        <button
+          type="submit"
+          className="primary-button login-button"
+          disabled={!isFormValid || submitting}
+        >
+          {submitLabel}
+          <ArrowRight size={20} aria-hidden="true" />
+        </button>
+      </form>
+    </>
+  )
+}
+
+function SetPasswordPage({ mode }: Readonly<{ mode: 'invite' | 'reset' }>) {
+  const navigate = useNavigate()
+  const { status, setStatus, userEmail, errorMessage } = usePasswordSetupSession(mode)
+  const { loginTheme, toggleLoginTheme } = useLoginTheme()
+
+  let formContent: ReactNode
+  if (status === 'checking') {
+    formContent = (
+      <div className="status-card checking">
+        <output className="app-loading-state" style={{ minHeight: '260px' }}>
+          Verifying your security credentials…
+        </output>
+      </div>
+    )
+  } else if (status === 'expired') {
+    formContent = (
+      <PasswordSetupExpiredView
+        mode={mode}
+        errorMessage={errorMessage}
+        onNavigateLogin={() => void navigate('/login', { replace: true })}
+      />
+    )
+  } else if (status === 'success') {
+    formContent = (
+      <PasswordSetupSuccessView
+        onNavigateLogin={() => void navigate('/login', { state: { notice: 'Password saved successfully. Please sign in.' }, replace: true })}
+      />
+    )
+  } else {
+    formContent = (
+      <PasswordSetupActiveForm
+        mode={mode}
+        userEmail={userEmail}
+        onSuccess={() => setStatus('success')}
+      />
+    )
+  }
+
+  return (
+    <div className={`login-page ${loginTheme === 'dark' ? 'dark-login' : 'light-login'}`} data-theme={loginTheme}>
+      <div className="login-theme-toggle-row">
+        <button
+          type="button"
+          className="login-theme-toggle-btn"
+          onClick={toggleLoginTheme}
+          aria-label={loginTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {loginTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+      </div>
+
+      <div className="login-panel password-setup-panel">
+        <div className="login-header-logo-row">
+          <img
+            className="login-logo"
+            src={loginTheme === 'dark' ? camviaLogo : camviaLightLogo}
+            alt="CAMVIA — AI Operating System for School Networks"
+          />
         </div>
 
-        <div className="login-form-panel">
-          <button
-            type="button"
-            className="login-theme-toggle"
-            onClick={toggleLoginTheme}
-            aria-label={`Switch to ${loginTheme === 'light' ? 'dark' : 'light'} mode`}
-          >
-            {loginTheme === 'light' ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
-            {loginTheme === 'light' ? 'Dark mode' : 'Light mode'}
-          </button>
-
-          {status === 'checking' ? (
-            <div className="status-card checking">
-              <div className="app-loading-state" style={{ minHeight: '260px' }}>
-                Verifying your security credentials…
-              </div>
-            </div>
-          ) : status === 'expired' ? (
-            <div className="status-card error">
-              <div className="login-header">
-                <p className="eyebrow" style={{ color: '#e04848' }}>Access Notice</p>
-                <h2>{mode === 'invite' ? 'Invitation Expired' : 'Link Expired'}</h2>
-                <p className="login-intro">
-                  {errorMessage || (mode === 'invite'
-                    ? 'This invitation link is invalid or has expired. Please contact your school administrator to receive a new invitation.'
-                    : 'This password reset link is invalid or has expired. Please request a new password reset link.')}
-                </p>
-              </div>
-              <div className="status-card-actions">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => navigate('/login', { replace: true })}
-                >
-                  Return to Sign In
-                  <ArrowRight size={20} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-          ) : status === 'success' ? (
-            <div className="status-card success">
-              <div className="login-header">
-                <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '56px', height: '56px', borderRadius: '50%', background: '#eaf8f1', color: '#16834d', marginBottom: '16px' }}>
-                  <CheckCircle2 size={32} />
-                </div>
-                <p className="eyebrow" style={{ color: '#16834d' }}>Setup Complete</p>
-                <h2>Password Saved</h2>
-                <p className="login-intro">
-                  Your password has been configured successfully. You can now sign in to your CAMVIA account.
-                </p>
-              </div>
-              <div className="status-card-actions">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => navigate('/login', { state: { notice: 'Password saved successfully. Please sign in.' }, replace: true })}
-                >
-                  Proceed to Sign In
-                  <ArrowRight size={20} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="login-header">
-                <p className="eyebrow">{mode === 'invite' ? 'Account Setup' : 'Password Recovery'}</p>
-                <h2>{mode === 'invite' ? 'Set Your Password' : 'Reset Password'}</h2>
-                <p className="login-intro">
-                  {mode === 'invite'
-                    ? 'Welcome to CAMVIA! Choose a secure password to complete your account setup.'
-                    : 'Enter and confirm a new secure password for your CAMVIA account.'}
-                </p>
-              </div>
-
-              {userEmail ? (
-                <div className="verified-account-card">
-                  <KeyRound size={18} aria-hidden="true" />
-                  <span>Account: <strong>{userEmail}</strong></span>
-                </div>
-              ) : null}
-
-              <form onSubmit={handleSubmit} className="login-form">
-                <label>
-                  <span>New Password</span>
-                  <div className="password-field login-input-field">
-                    <LockKeyhole aria-hidden="true" />
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      autoComplete="new-password"
-                      required
-                      disabled={submitting}
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      placeholder="Enter new password"
-                    />
-                    <button
-                      type="button"
-                      className="password-toggle-btn"
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
-                      aria-pressed={showPassword}
-                      disabled={submitting}
-                      onClick={() => setShowPassword((current) => !current)}
-                    >
-                      {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
-                    </button>
-                  </div>
-                </label>
-
-                <label>
-                  <span>Confirm Password</span>
-                  <div className="password-field login-input-field">
-                    <LockKeyhole aria-hidden="true" />
-                    <input
-                      type={showConfirmPassword ? 'text' : 'password'}
-                      autoComplete="new-password"
-                      required
-                      disabled={submitting}
-                      value={confirmPassword}
-                      onChange={(event) => setConfirmPassword(event.target.value)}
-                      placeholder="Confirm new password"
-                    />
-                    <button
-                      type="button"
-                      className="password-toggle-btn"
-                      aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
-                      aria-pressed={showConfirmPassword}
-                      disabled={submitting}
-                      onClick={() => setShowConfirmPassword((current) => !current)}
-                    >
-                      {showConfirmPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
-                    </button>
-                  </div>
-                </label>
-
-                <div className="password-rules-card">
-                  <p className="password-rules-title">Password Requirements:</p>
-                  <ul className="password-rules-list">
-                    <li className={`password-rule-item ${hasMinLength ? 'met' : ''}`}>
-                      <CheckCircle2 size={14} /> At least 8 characters
-                    </li>
-                    <li className={`password-rule-item ${hasUppercase && hasLowercase ? 'met' : ''}`}>
-                      <CheckCircle2 size={14} /> Uppercase and lowercase letters
-                    </li>
-                    <li className={`password-rule-item ${hasNumber ? 'met' : ''}`}>
-                      <CheckCircle2 size={14} /> At least one number (0-9)
-                    </li>
-                    <li className={`password-rule-item ${passwordsMatch ? 'met' : ''}`}>
-                      <CheckCircle2 size={14} /> Passwords match
-                    </li>
-                  </ul>
-                </div>
-
-                {errorMessage ? (
-                  <p className="error-message" role="alert">{errorMessage}</p>
-                ) : null}
-
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={!isFormValid || submitting}
-                >
-                  {submitting ? 'Saving Password…' : mode === 'invite' ? 'Set Password & Continue' : 'Update Password'}
-                  <ArrowRight size={22} aria-hidden="true" />
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={submitting}
-                  onClick={() => navigate('/login', { replace: true })}
-                >
-                  Cancel & Return to Sign In
-                </button>
-              </form>
-            </>
-          )}
-        </div>
+        {formContent}
       </div>
     </div>
   )
 }
 
-function LoginPage({ onLogin, loading, authError }: {
+type PasswordResetFormProps = Readonly<{
+  initialEmail: string
+  onCancel: () => void
+}>
+
+function PasswordResetForm({ initialEmail, onCancel }: PasswordResetFormProps) {
+  const [resetEmail, setResetEmail] = useState(initialEmail)
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetSuccess, setResetSuccess] = useState(false)
+  const [resetError, setResetError] = useState('')
+
+  const handleResetSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (resetSubmitting) return
+
+    setResetSubmitting(true)
+    setResetError('')
+    setResetSuccess(false)
+
+    try {
+      const result = await resetPasswordForEmail(resetEmail)
+      if (result.success) {
+        setResetSuccess(true)
+      } else {
+        setResetError(result.error ?? 'Unable to send password reset email.')
+      }
+    } catch {
+      setResetError('Unable to send password reset email. Please try again.')
+    } finally {
+      setResetSubmitting(false)
+    }
+  }
+
+  if (resetSuccess) {
+    return (
+      <div className="status-card success">
+        <div className="status-banner-success">
+          <CheckCircle2 size={18} aria-hidden="true" />
+          <span>Password reset link sent</span>
+        </div>
+        <h3>Check your inbox</h3>
+        <p className="login-intro">
+          If an account exists for <strong>{resetEmail}</strong>, instructions to reset your password have been sent. Please check your inbox and spam folder.
+        </p>
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => {
+            onCancel()
+            setResetSuccess(false)
+            setResetError('')
+          }}
+        >
+          Return to Sign In
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="login-header">
+        <p className="eyebrow">Password recovery</p>
+        <h2>Reset password</h2>
+        <p className="login-intro">Enter your registered email address and we will send you a secure link to reset your password.</p>
+      </div>
+
+      <form onSubmit={handleResetSubmit} className="login-form" aria-busy={resetSubmitting}>
+        <label>
+          <span>Email</span>
+          <div className="login-input-field">
+            <Mail aria-hidden="true" />
+            <input
+              type="email"
+              autoComplete="email"
+              required
+              disabled={resetSubmitting}
+              value={resetEmail}
+              onChange={(event) => setResetEmail(event.target.value)}
+              placeholder="name@school.edu"
+            />
+          </div>
+        </label>
+
+        {resetError ? <p className="error-message" role="alert">{resetError}</p> : null}
+
+        <button type="submit" className="primary-button" disabled={resetSubmitting}>
+          {resetSubmitting ? 'Sending instructions…' : 'Send Reset Link'}
+          <ArrowRight size={22} aria-hidden="true" />
+        </button>
+
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={resetSubmitting}
+          onClick={() => {
+            onCancel()
+            setResetError('')
+          }}
+        >
+          Back to Sign In
+        </button>
+      </form>
+    </>
+  )
+}
+
+function LoginPage({ onLogin, loading, authError }: Readonly<{
   onLogin: (email: string, password: string) => Promise<{ role?: Role; error?: string; lockWaitSeconds?: number }>
   loading: boolean
   authError: string
-}) {
+}>) {
   const navigate = useNavigate()
   const location = useLocation()
   const [email, setEmail] = useState('')
@@ -2085,7 +2776,7 @@ function LoginPage({ onLogin, loading, authError }: {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [lockSeconds, setLockSeconds] = useState<number>(() => getActiveLockout().waitSeconds)
-  const [loginNotice, setLoginNotice] = useState<string>(() => {
+  const [loginNotice] = useState<string>(() => {
     const state = location.state as { notice?: string } | null
     return state?.notice ?? ''
   })
@@ -2109,43 +2800,20 @@ function LoginPage({ onLogin, loading, authError }: {
     return () => window.clearInterval(timer)
   }, [isLocked])
 
-  // Password reset flow states
   const [forgotPasswordMode, setForgotPasswordMode] = useState(false)
-  const [resetEmail, setResetEmail] = useState('')
-  const [resetSubmitting, setResetSubmitting] = useState(false)
-  const [resetSuccess, setResetSuccess] = useState(false)
-  const [resetError, setResetError] = useState('')
+  const { loginTheme, toggleLoginTheme } = useLoginTheme()
 
-  const [loginTheme, setLoginTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      return window.localStorage.getItem('camvia_login_theme') === 'dark' ? 'dark' : 'light'
-    } catch {
-      return 'light'
-    }
-  })
-
-  const toggleLoginTheme = () => {
-    const nextTheme = loginTheme === 'light' ? 'dark' : 'light'
-    setLoginTheme(nextTheme)
-    try {
-      window.localStorage.setItem('camvia_login_theme', nextTheme)
-    } catch {
-      // Theme switching still works when browser storage is unavailable.
-    }
-  }
-
-  const handleSubmit = async (event: FormEvent) => {
+  const handleSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (submitting || loading || lockSeconds > 0) return
 
     setSubmitting(true)
     setError('')
-    setLoginNotice('')
     try {
       const result = await onLogin(email, password)
       setPassword('')
       if (result.role) {
-        navigate(defaultDashboardForRole(result.role))
+        void navigate(defaultDashboardForRole(result.role))
         return
       }
       if (result.lockWaitSeconds && result.lockWaitSeconds > 0) {
@@ -2159,33 +2827,41 @@ function LoginPage({ onLogin, loading, authError }: {
     }
   }
 
-  const handleResetSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    if (resetSubmitting) return
+  let submitButtonText = 'Sign In'
+  if (loading) {
+    submitButtonText = 'Checking session…'
+  } else if (submitting) {
+    submitButtonText = 'Signing in…'
+  } else if (lockSeconds > 0) {
+    submitButtonText = `Locked (${formatMMSS(lockSeconds)})`
+  }
 
-    setResetSubmitting(true)
-    setResetError('')
-    setResetSuccess(false)
-
-    try {
-      const result = await resetPasswordForEmail(resetEmail)
-      if (result.success) {
-        setResetSuccess(true)
-      } else {
-        setResetError(result.error ?? 'Unable to send password reset email.')
-      }
-    } catch {
-      setResetError('Unable to send password reset email. Please try again.')
-    } finally {
-      setResetSubmitting(false)
+  const renderLoginFeedback = () => {
+    if (lockSeconds > 0) {
+      return (
+        <div className="error-message lock-message" role="alert">
+          <div className="lock-message-header">
+            <LockKeyhole size={14} aria-hidden="true" />
+            <span>Too many unsuccessful login attempts.</span>
+          </div>
+          <p className="lock-countdown">
+            Please try again in <strong>{formatMMSS(lockSeconds)}</strong>
+          </p>
+        </div>
+      )
     }
+    const displayError = error || authError
+    if (displayError) {
+      return <p className="error-message" role="alert">{displayError}</p>
+    }
+    return null
   }
 
   return (
     <div className="login-page" data-theme={loginTheme}>
       <div className="login-panel">
         <div className="login-brand-panel">
-          <div className="login-logo" role="img" aria-label="CAMVIA — Smarter Schools. Brighter Futures." />
+          <img className="login-logo" src={loginTheme === 'dark' ? camviaLogo : camviaLightLogo} alt="CAMVIA — Smarter Schools. Brighter Futures." />
           <p className="login-brand-eyebrow">AI-powered school management</p>
           <h1 className="login-headline">See More.<br />Understand Better.<br /><span>Act Sooner.</span></h1>
           <p className="login-description">CAMVIA brings intelligence to school management with AI-powered insights, helping schools operate smarter and create brighter futures for every learner.</p>
@@ -2209,80 +2885,17 @@ function LoginPage({ onLogin, loading, authError }: {
           </button>
 
           {loginNotice ? (
-            <div className="status-banner-success" role="status">
+            <output className="status-banner-success">
               <CheckCircle2 size={18} />
               <span>{loginNotice}</span>
-            </div>
+            </output>
           ) : null}
 
           {forgotPasswordMode ? (
-            <>
-              <div className="login-header">
-                <p className="eyebrow">Password recovery</p>
-                <h2>Reset password</h2>
-                <p className="login-intro">Enter your registered email address and we will send you a secure link to reset your password.</p>
-              </div>
-
-              {resetSuccess ? (
-                <div className="status-card success">
-                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '52px', height: '52px', borderRadius: '50%', background: '#eaf8f1', color: '#16834d', marginBottom: '16px' }}>
-                    <CheckCircle2 size={28} />
-                  </div>
-                  <h3>Check your inbox</h3>
-                  <p className="login-intro" style={{ marginBottom: '24px' }}>
-                    If an account exists for <strong>{resetEmail}</strong>, instructions to reset your password have been sent. Please check your inbox and spam folder.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => {
-                      setForgotPasswordMode(false)
-                      setResetSuccess(false)
-                      setResetError('')
-                    }}
-                  >
-                    Return to Sign In
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={handleResetSubmit} className="login-form" aria-busy={resetSubmitting}>
-                  <label>
-                    <span>Email</span>
-                    <div className="login-input-field">
-                      <Mail aria-hidden="true" />
-                      <input
-                        type="email"
-                        autoComplete="email"
-                        required
-                        disabled={resetSubmitting}
-                        value={resetEmail}
-                        onChange={(event) => setResetEmail(event.target.value)}
-                        placeholder="name@school.edu"
-                      />
-                    </div>
-                  </label>
-
-                  {resetError ? <p className="error-message" role="alert">{resetError}</p> : null}
-
-                  <button type="submit" className="primary-button" disabled={resetSubmitting}>
-                    {resetSubmitting ? 'Sending instructions…' : 'Send Reset Link'}
-                    <ArrowRight size={22} aria-hidden="true" />
-                  </button>
-
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={resetSubmitting}
-                    onClick={() => {
-                      setForgotPasswordMode(false)
-                      setResetError('')
-                    }}
-                  >
-                    Back to Sign In
-                  </button>
-                </form>
-              )}
-            </>
+            <PasswordResetForm
+              initialEmail={email}
+              onCancel={() => setForgotPasswordMode(false)}
+            />
           ) : (
             <>
               <div className="login-header">
@@ -2334,30 +2947,10 @@ function LoginPage({ onLogin, loading, authError }: {
                   </div>
                 </label>
 
-                {lockSeconds > 0 ? (
-                  <div className="error-message lock-message" role="alert">
-                    <div className="lock-message-header">
-                      <LockKeyhole size={14} aria-hidden="true" />
-                      <span>Too many unsuccessful login attempts.</span>
-                    </div>
-                    <p className="lock-countdown">
-                      Please try again in <strong>{formatMMSS(lockSeconds)}</strong>
-                    </p>
-                  </div>
-                ) : error || authError ? (
-                  <p className="error-message" role="alert">{error || authError}</p>
-                ) : null}
+                {renderLoginFeedback()}
 
                 <button type="submit" className="primary-button" disabled={loading || submitting || lockSeconds > 0}>
-                  <span>
-                    {loading
-                      ? 'Checking session…'
-                      : submitting
-                      ? 'Signing in…'
-                      : lockSeconds > 0
-                      ? `Locked (${formatMMSS(lockSeconds)})`
-                      : 'Sign In'}
-                  </span>
+                  <span>{submitButtonText}</span>
                   {lockSeconds <= 0 && <ArrowRight size={20} aria-hidden="true" />}
                 </button>
 
@@ -2367,12 +2960,9 @@ function LoginPage({ onLogin, loading, authError }: {
                   disabled={loading || submitting}
                   onClick={() => {
                     setForgotPasswordMode(true)
-                    setResetEmail(email)
-                    setResetError('')
-                    setResetSuccess(false)
                   }}
                 >
-                  Forgot Password?
+                  Forgot password?
                 </button>
               </form>
             </>
@@ -2383,54 +2973,97 @@ function LoginPage({ onLogin, loading, authError }: {
   )
 }
 
-function AppShell({
-  user,
-  students,
-  profiles,
-  profilesLoading,
-  onLogout,
-  tourOpen,
-  activeTourRole,
-  onCloseTour,
-  onCompleteTour,
-  onRestartTour,
-}: {
-  user: SessionUser | null
-  students: Student[]
-  profiles: SchoolUser[]
-  profilesLoading: boolean
-  onLogout: () => void
-  tourOpen: boolean
-  activeTourRole: Role | null
-  onCloseTour: () => void
-  onCompleteTour: (role: Role) => void
-  onRestartTour: (role: Role) => void
-}) {
-  const location = useLocation()
-  const navigate = useNavigate()
-  const attendanceNavigationGuardRef = useRef<AttendanceNavigationGuard | null>(null)
-  const attendanceNavigationGuard = useMemo(() => ({
-    registerGuard: (guard: AttendanceNavigationGuard | null) => {
-      attendanceNavigationGuardRef.current = guard
-      return () => {
-        if (attendanceNavigationGuardRef.current === guard) {
-          attendanceNavigationGuardRef.current = null
-        }
-      }
-    },
-    shouldBlock: (destination: string, onDiscard?: () => void) =>
-      attendanceNavigationGuardRef.current?.(destination, onDiscard) ?? false,
-  }), [])
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [profileOpen, setProfileOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchFocused, setSearchFocused] = useState(false)
-  const [searchMobileOpen, setSearchMobileOpen] = useState(false)
-  const [selectedSearchResult, setSelectedSearchResult] = useState(0)
+function getPageTitle(pathname: string): string {
+  if (pathname.startsWith('/students/')) return 'Student 360'
+  if (pathname.startsWith('/attendance/take/')) return 'Attendance'
+  if (pathname.startsWith('/fees/')) return 'Fees & Collections'
+  return routeTitles[pathname] ?? 'Dashboard'
+}
+
+function getAppNav(role: Role): NavItem[] {
+  if (role !== 'admin' && role !== 'principal') {
+    return navByRole[role]
+  }
+  const roleNav = navByRole[role]
+  const base = [
+    roleNav[0],
+    roleNav[1],
+    roleNav[2],
+    ...(role === 'admin' ? [navByRole.admin[3]] : []),
+  ]
+  const remaining = roleNav.filter((item) => (
+    item.path !== '/dashboard' &&
+    item.path !== '/students' &&
+    item.path !== '/attendance' &&
+    item.path !== '/fees'
+  )).sort((left, right) => {
+    const order = ['/communication', '/alerts', '/approvals', '/ask-edu', '/reports', '/administration', '/trash']
+    const leftIndex = order.indexOf(left.path)
+    const rightIndex = order.indexOf(right.path)
+    return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex)
+  })
+  return [...base, ...remaining]
+}
+
+function getGlobalSearchResults(
+  query: string,
+  user: SessionUser,
+  students: Student[],
+  profiles: SchoolUser[],
+  profilesLoading: boolean,
+  nav: NavItem[],
+): GlobalSearchResult[] {
+  if (!query) return []
+  const q = query.trim().toLocaleLowerCase()
+  if (!q) return []
+
+  const matchingStudents: GlobalSearchResult[] = students
+    .filter((student) => (
+      `${student.firstName} ${student.lastName} ${student.studentId} ${student.rollNumber} ${student.className} ${student.section} ${student.campus}`
+        .toLocaleLowerCase()
+        .includes(q)
+    ))
+    .slice(0, 6)
+    .map((student) => ({
+      id: `student-${student.id}`,
+      title: `${student.firstName} ${student.lastName}`,
+      subtitle: `${student.studentId} · ${student.className} ${student.section}`,
+      category: 'Student' as const,
+      path: `/students/${encodeURIComponent(student.id)}`,
+    }))
+
+  const matchingStaff: GlobalSearchResult[] = user.role === 'admin' && !profilesLoading
+    ? profiles
+      .filter((profile) => `${profile.name} ${profile.email}`.toLocaleLowerCase().includes(q))
+      .slice(0, 4)
+      .map((profile) => ({
+        id: `staff-${profile.id}`,
+        title: profile.name,
+        subtitle: `${roleLabels[profile.role]} · ${profile.email}`,
+        category: 'Staff' as const,
+        path: `/users?search=${encodeURIComponent(q)}`,
+      }))
+    : []
+
+  const matchingPages: GlobalSearchResult[] = nav
+    .filter((item) => item.label.toLocaleLowerCase().includes(q))
+    .slice(0, 4)
+    .map((item) => ({
+      id: `page-${item.path}`,
+      title: item.label,
+      subtitle: 'Open page',
+      category: 'Page' as const,
+      path: item.path,
+    }))
+
+  return [...matchingStudents, ...matchingStaff, ...matchingPages].slice(0, 8)
+}
+
+function useAIBuddyLoader(user: SessionUser | null, pathname: string): boolean {
   const [buddyReady, setBuddyReady] = useState(false)
 
   useEffect(() => {
-    if (!user || location.pathname.startsWith('/statements/')) return
+    if (!user || pathname.startsWith('/statements/')) return
     let cancelled = false
     const activate = () => {
       if (!cancelled) setBuddyReady(true)
@@ -2451,25 +3084,167 @@ function AppShell({
       cancelled = true
       window.clearTimeout(timerId)
     }
-  }, [location.pathname, user])
-  const searchContainerRef = useRef<HTMLDivElement>(null)
-  const searchInputRef = useRef<HTMLInputElement>(null)
-  const pageTitle = location.pathname.startsWith('/students/')
-    ? 'Student 360'
-    : location.pathname.startsWith('/attendance/take/')
-      ? 'Attendance'
-      : location.pathname.startsWith('/fees/')
-        ? 'Fees & Collections'
-      : routeTitles[location.pathname] ?? 'Dashboard'
-  useEffect(() => {
-    if (user) document.title = `${pageTitle} | CAMVIA`
-  }, [pageTitle, user])
+  }, [pathname, user])
 
-  const [prevPath, setPrevPath] = useState(location.pathname)
-  if (prevPath !== location.pathname) {
-    setPrevPath(location.pathname)
-    setSidebarOpen(false)
-  }
+  return buddyReady
+}
+
+function getUserInitials(name: string): string {
+  return name
+    .split(' ')
+    .map((namePart) => namePart[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+}
+
+type AppSidebarProps = Readonly<{
+  user: SessionUser
+  sidebarOpen: boolean
+  setSidebarOpen: (open: boolean) => void
+  nav: Array<{ path: string; label: string; icon: LucideIcon }>
+  locationPathname: string
+  onLogout: () => void
+  attendanceNavigationGuard: { shouldBlock: (destination: string, onDiscard?: () => void) => boolean }
+  navigate: (path: string) => void
+}>
+
+function AppSidebar({
+  user,
+  sidebarOpen,
+  setSidebarOpen,
+  nav,
+  locationPathname,
+  onLogout,
+  attendanceNavigationGuard,
+  navigate,
+}: AppSidebarProps) {
+  const initials = getUserInitials(user.name)
+
+
+  return (
+    <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <div className="sidebar-brand">
+        <div className="sidebar-brand-row">
+          <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" width={580} height={290} />
+          <button
+            type="button"
+            className="icon-button sidebar-close-btn"
+            aria-label="Close sidebar"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <span className="sidebar-subtitle">School Management System</span>
+      </div>
+
+      <nav className="sidebar-nav" aria-label="Primary navigation">
+        {nav.map((item) => {
+          const Icon = item.icon
+          const label = (user.role === 'admin' || user.role === 'principal') && item.label === 'Parent Communication'
+            ? 'Communication'
+            : item.label
+          const isActive = locationPathname === item.path ||
+            (item.path === '/students' && locationPathname.startsWith('/students/')) ||
+            (item.path === '/attendance' && locationPathname.startsWith('/attendance/take/'))
+
+          return (
+            <button
+              key={item.path}
+              type="button"
+              className={`nav-item ${isActive ? 'active' : ''}`}
+              onClick={() => {
+                if (attendanceNavigationGuard.shouldBlock(item.path)) return
+                navigate(item.path)
+                setSidebarOpen(false)
+              }}
+            >
+              <span className="nav-icon-wrap"><Icon size={18} /></span>
+              <span>{label}</span>
+              {isActive ? <span className="nav-active-indicator" aria-hidden="true" /> : null}
+            </button>
+          )
+        })}
+      </nav>
+
+      <div className="sidebar-campus-selector" aria-label={`Selected campus: ${user.campusName}`}>
+        <Building2 size={20} aria-hidden="true" />
+        <span>{user.campusName}</span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </div>
+
+      <div className="sidebar-footer">
+        <div className="sidebar-profile-card">
+          <div className="sidebar-profile-avatar">{initials}</div>
+          <div className="sidebar-profile-meta">
+            <span className="sidebar-profile-name">{user.name}</span>
+            <span className="sidebar-profile-role">{roleLabels[user.role]}</span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          className="nav-item profile-item"
+          onClick={() => {
+            const destination = defaultDashboardForRole(user.role)
+            if (attendanceNavigationGuard.shouldBlock(destination)) return
+            navigate(destination)
+            setSidebarOpen(false)
+          }}
+        >
+          <span className="nav-icon-wrap"><UserCog size={18} /></span>
+          <span>Profile</span>
+        </button>
+
+        <button
+          type="button"
+          className="nav-item danger-item"
+          onClick={() => {
+            setSidebarOpen(false)
+            if (attendanceNavigationGuard.shouldBlock('/login', onLogout)) return
+            onLogout()
+          }}
+        >
+          <span className="nav-icon-wrap"><LogOut size={18} /></span>
+          <span>Logout</span>
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+type AppGlobalSearchProps = Readonly<{
+  user: SessionUser
+  students: Student[]
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  nav: Array<{ path: string; label: string; icon: LucideIcon }>
+  attendanceNavigationGuard: { shouldBlock: (destination: string, onDiscard?: () => void) => boolean }
+  navigate: (path: string) => void
+  searchMobileOpen: boolean
+  setSearchMobileOpen: React.Dispatch<React.SetStateAction<boolean>>
+  searchContainerRef: React.RefObject<HTMLDivElement | null>
+}>
+
+function AppGlobalSearch({
+  user,
+  students,
+  profiles,
+  profilesLoading,
+  nav,
+  attendanceNavigationGuard,
+  navigate,
+  searchMobileOpen,
+  setSearchMobileOpen,
+  searchContainerRef,
+}: AppGlobalSearchProps) {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [selectedSearchResult, setSelectedSearchResult] = useState(0)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  const searchResults = getGlobalSearchResults(searchQuery, user, students, profiles, profilesLoading, nav)
 
   useEffect(() => {
     if (!searchMobileOpen) return
@@ -2477,89 +3252,16 @@ function AppShell({
   }, [searchMobileOpen])
 
   useEffect(() => {
-    const closeSearchOnOutsideClick = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !searchContainerRef.current?.contains(event.target) &&
-        !(event.target instanceof Element && event.target.closest('.mobile-campus-search'))
-      ) {
-        setSearchFocused(false)
-        setSearchMobileOpen(false)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        searchInputRef.current?.focus()
+        setSearchFocused(true)
       }
     }
-    document.addEventListener('pointerdown', closeSearchOnOutsideClick)
-    return () => document.removeEventListener('pointerdown', closeSearchOnOutsideClick)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
-
-  if (!user) {
-    return null
-  }
-
-  const nav = user.role === 'admin' || user.role === 'principal'
-    ? [
-      navByRole[user.role][0],
-      navByRole[user.role][1],
-      navByRole[user.role][2],
-      ...(user.role === 'admin' ? [navByRole.admin[3]] : []),
-      ...navByRole[user.role].filter((item) => (
-        item.path !== '/dashboard' &&
-        item.path !== '/students' &&
-        item.path !== '/attendance' &&
-        item.path !== '/fees'
-      )).sort((left, right) => {
-        const order = ['/communication', '/alerts', '/approvals', '/ask-edu', '/reports', '/administration', '/trash']
-        const leftIndex = order.indexOf(left.path)
-        const rightIndex = order.indexOf(right.path)
-        return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex)
-      }),
-    ]
-    : navByRole[user.role]
-  const query = searchQuery.trim().toLocaleLowerCase()
-  const matchingStudents: GlobalSearchResult[] = query ? students
-      .filter((student) => (
-        `${student.firstName} ${student.lastName} ${student.studentId} ${student.rollNumber} ${student.className} ${student.section} ${student.campus}`
-          .toLocaleLowerCase()
-          .includes(query)
-      ))
-      .slice(0, 6)
-      .map((student) => ({
-        id: `student-${student.id}`,
-        title: `${student.firstName} ${student.lastName}`,
-        subtitle: `${student.studentId} · ${student.className} ${student.section}`,
-        category: 'Student' as const,
-        path: `/students/${encodeURIComponent(student.id)}`,
-      }))
-    : []
-  const matchingStaff: GlobalSearchResult[] = query && user.role === 'admin' && !profilesLoading
-      ? profiles
-        .filter((profile) => `${profile.name} ${profile.email}`.toLocaleLowerCase().includes(query))
-        .slice(0, 4)
-        .map((profile) => ({
-          id: `staff-${profile.id}`,
-          title: profile.name,
-          subtitle: `${roleLabels[profile.role]} · ${profile.email}`,
-          category: 'Staff' as const,
-          path: `/users?search=${encodeURIComponent(query)}`,
-        }))
-      : []
-  const matchingPages: GlobalSearchResult[] = query ? nav
-      .filter((item) => item.label.toLocaleLowerCase().includes(query))
-      .slice(0, 4)
-      .map((item) => ({
-        id: `page-${item.path}`,
-        title: item.label,
-        subtitle: 'Open page',
-        category: 'Page' as const,
-        path: item.path,
-      }))
-    : []
-  const searchResults = [...matchingStudents, ...matchingStaff, ...matchingPages].slice(0, 8)
-  const initials = user.name
-    .split(' ')
-    .map((namePart) => namePart[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase()
 
   const openSearchResult = (result: GlobalSearchResult) => {
     if (attendanceNavigationGuard.shouldBlock(result.path)) return
@@ -2570,307 +3272,554 @@ function AppShell({
     setSelectedSearchResult(0)
   }
 
+  const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown' && searchResults.length > 0) {
+      event.preventDefault()
+      setSelectedSearchResult((index) => Math.min(index + 1, searchResults.length - 1))
+    } else if (event.key === 'ArrowUp' && searchResults.length > 0) {
+      event.preventDefault()
+      setSelectedSearchResult((index) => Math.max(index - 1, 0))
+    } else if (event.key === 'Enter' && searchResults[selectedSearchResult]) {
+      event.preventDefault()
+      openSearchResult(searchResults[selectedSearchResult])
+    } else if (event.key === 'Escape') {
+      setSearchFocused(false)
+      setSearchMobileOpen(false)
+    }
+  }
+
   return (
-    <AttendanceNavigationGuardContext.Provider value={attendanceNavigationGuard}>
-    <div className={`app-shell ${user.role === 'admin' || user.role === 'principal' ? 'executive-shell' : ''}`}>
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div className="sidebar-brand">
-          <div className="sidebar-brand-row">
-            <img className="sidebar-logo" src={camviaLogo} alt="CAMVIA" width={580} height={290} />
-            <button
-              type="button"
-              className="icon-button sidebar-close-btn"
-              aria-label="Close sidebar"
-              onClick={() => setSidebarOpen(false)}
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <span className="sidebar-subtitle">School Management System</span>
-        </div>
-
-        <nav className="sidebar-nav" aria-label="Primary navigation">
-          {nav.map((item) => {
-            const Icon = item.icon
-            const label = (user.role === 'admin' || user.role === 'principal') && item.label === 'Parent Communication'
-              ? 'Communication'
-              : item.label
-            const isActive = location.pathname === item.path ||
-              (item.path === '/students' && location.pathname.startsWith('/students/')) ||
-              (item.path === '/attendance' && location.pathname.startsWith('/attendance/take/'))
-
-            return (
+    <div className={`global-search ${searchMobileOpen ? 'mobile-search-open' : ''}`} ref={searchContainerRef}>
+      <button
+        type="button"
+        className="icon-button mobile-search-toggle"
+        aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
+        aria-expanded={searchMobileOpen}
+        onClick={() => setSearchMobileOpen((open) => !open)}
+      >
+        {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
+      </button>
+      <div className={`search-box ${searchMobileOpen ? 'is-open' : ''}`}>
+        <Search size={15} aria-hidden="true" />
+        <input
+          ref={searchInputRef}
+          type="search"
+          placeholder="Search students, staff, or pages..."
+          aria-label="Search students, staff, or pages"
+          aria-autocomplete="list"
+          aria-controls="global-search-results"
+          aria-expanded={Boolean(searchFocused && searchQuery.trim())}
+          role="combobox"
+          value={searchQuery}
+          onFocus={() => setSearchFocused(true)}
+          onChange={(event) => {
+            setSearchQuery(event.target.value)
+            setSelectedSearchResult(0)
+            setSearchFocused(true)
+          }}
+          onKeyDown={handleInputKeyDown}
+        />
+        <kbd className="search-shortcut" aria-hidden="true">⌘K</kbd>
+        {searchFocused && searchQuery.trim() ? (
+          <div className="global-search-results" id="global-search-results" role="listbox" aria-label="Search results">
+            {searchResults.length > 0 ? searchResults.map((result, index) => (
               <button
-                key={item.path}
+                key={result.id}
                 type="button"
-                className={`nav-item ${isActive ? 'active' : ''}`}
+                className={`global-search-result ${index === selectedSearchResult ? 'selected' : ''}`}
+                role="option"
+                aria-selected={index === selectedSearchResult}
+                onMouseEnter={() => setSelectedSearchResult(index)}
+                onClick={() => openSearchResult(result)}
+              >
+                <span className="global-search-result-copy">
+                  <strong>{result.title}</strong>
+                  <small>{result.subtitle}</small>
+                </span>
+                <span className="global-search-category">{result.category}</span>
+              </button>
+            )) : (
+              <p className="global-search-empty">No matching students, staff, or pages found.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+type AppNotificationsMenuProps = Readonly<{
+  activeAlerts: AlertItem[]
+  notificationsOpen: boolean
+  setNotificationsOpen: React.Dispatch<React.SetStateAction<boolean>>
+  notificationMenuRef: React.RefObject<HTMLDivElement | null>
+  user: SessionUser
+  navigate: (path: string) => void
+}>
+
+function AppNotificationsMenu({
+  activeAlerts,
+  notificationsOpen,
+  setNotificationsOpen,
+  notificationMenuRef,
+  user,
+  navigate,
+}: AppNotificationsMenuProps) {
+  const activeAlertCount = activeAlerts.length
+
+  const handleAlertNavigate = (alert: AlertItem) => {
+    setNotificationsOpen(false)
+    if (alert.sourceType === 'COMMUNICATION') {
+      navigate(user.role === 'admin' || user.role === 'principal' ? '/approvals' : '/communication')
+    } else if (alert.studentId) {
+      navigate(`/students/${encodeURIComponent(alert.studentId)}`)
+    } else if (alert.classId) {
+      navigate(`/attendance/take/${encodeURIComponent(alert.classId)}`)
+    } else {
+      navigate('/alerts')
+    }
+  }
+
+  return (
+    <div className="notification-panel-wrap" ref={notificationMenuRef}>
+      <button
+        type="button"
+        className={`icon-button notification-btn ${notificationsOpen ? 'is-active' : ''}`}
+        aria-label="Notifications"
+        aria-expanded={notificationsOpen}
+        onClick={() => setNotificationsOpen((open) => !open)}
+      >
+        <Bell size={18} />
+        {activeAlertCount > 0 ? <span className="notification-dot" /> : null}
+      </button>
+
+      {notificationsOpen ? (
+        <section className="notifications-flyout" aria-label="Notifications flyout">
+          <div className="notifications-flyout-header">
+            <div className="notifications-flyout-title">
+              <strong>Notifications</strong>
+              {activeAlertCount > 0 ? (
+                <span className="notifications-badge">{activeAlertCount} active</span>
+              ) : null}
+            </div>
+            {activeAlertCount > 0 ? (
+              <button
+                type="button"
+                className="notifications-action-btn"
                 onClick={() => {
-                  if (attendanceNavigationGuard.shouldBlock(item.path)) return
-                  navigate(item.path)
-                  setSidebarOpen(false)
+                  setNotificationsOpen(false)
+                  navigate('/alerts')
                 }}
               >
-                <span className="nav-icon-wrap"><Icon size={18} /></span>
-                <span>{label}</span>
-                {isActive ? <span className="nav-active-indicator" aria-hidden="true" /> : null}
+                View all
               </button>
-            )
-          })}
-        </nav>
-
-        <div className="sidebar-campus-selector" aria-label={`Selected campus: ${user.campusName}`}>
-          <Building2 size={20} aria-hidden="true" />
-          <span>{user.campusName}</span>
-          <ChevronDown size={16} aria-hidden="true" />
-        </div>
-
-        <div className="sidebar-footer">
-          <div className="sidebar-profile-card">
-            <div className="sidebar-profile-avatar">{initials}</div>
-            <div className="sidebar-profile-meta">
-              <span className="sidebar-profile-name">{user.name}</span>
-              <span className="sidebar-profile-role">{roleLabels[user.role]}</span>
-            </div>
+            ) : null}
           </div>
 
+          <div className="notifications-flyout-body">
+            {activeAlerts.length === 0 ? (
+              <div className="notifications-empty">
+                <div className="notifications-empty-icon">
+                  <Bell size={20} />
+                </div>
+                <p className="notifications-empty-title">All caught up</p>
+                <p className="notifications-empty-desc">No active notifications or alerts at this time.</p>
+              </div>
+            ) : (
+              activeAlerts.slice(0, 6).map((alert) => (
+                <button
+                  key={alert.id}
+                  type="button"
+                  className="notification-item"
+                  onClick={() => handleAlertNavigate(alert)}
+                >
+                  <div className="notification-item-icon">
+                    <span className={`notification-item-dot priority-${alert.priority.toLowerCase()}`} />
+                  </div>
+                  <div className="notification-item-content">
+                    <div className="notification-item-head">
+                      <span className="notification-item-title">{alert.title}</span>
+                      <span className={`notification-pill priority-${alert.priority.toLowerCase()}`}>
+                        {alert.priority}
+                      </span>
+                    </div>
+                    <p className="notification-item-detail">{alert.detail}</p>
+                    <span className="notification-item-time">
+                      {formatInSchoolTimezone(new Date(alert.createdAt), user.schoolTimezone, 'en-PK', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+
+          <div className="notifications-flyout-footer">
+            <button
+              type="button"
+              className="notifications-footer-btn"
+              onClick={() => {
+                setNotificationsOpen(false)
+                navigate('/alerts')
+              }}
+            >
+              <span>Open Alerts Dashboard</span>
+              <ArrowRight size={14} />
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+type AppProfileMenuProps = Readonly<{
+  user: SessionUser
+  initials: string
+  profileOpen: boolean
+  setProfileOpen: React.Dispatch<React.SetStateAction<boolean>>
+  profileMenuRef: React.RefObject<HTMLDivElement | null>
+  attendanceNavigationGuard: { shouldBlock: (destination: string, onDiscard?: () => void) => boolean }
+  navigate: (path: string) => void
+  onLogout: () => void
+  onRestartTour: (role: Role) => void
+}>
+
+function AppProfileMenu({
+  user,
+  initials,
+  profileOpen,
+  setProfileOpen,
+  profileMenuRef,
+  attendanceNavigationGuard,
+  navigate,
+  onLogout,
+  onRestartTour,
+}: AppProfileMenuProps) {
+  return (
+    <div ref={profileMenuRef} className="profile-panel">
+      <button
+        type="button"
+        className="profile-trigger"
+        aria-label="User profile menu"
+        aria-expanded={profileOpen}
+        onClick={() => setProfileOpen((value) => !value)}
+        style={{ display: 'flex', alignItems: 'center', gap: '9px', background: 'transparent', border: 'none', padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', width: '100%' }}
+      >
+        <div className="profile-avatar">{initials}</div>
+        <div className="profile-details">
+          <strong>{user.name}</strong>
+          <span>{roleLabels[user.role]}</span>
+        </div>
+        <ChevronDown size={14} aria-hidden="true" style={{ marginLeft: 'auto' }} />
+      </button>
+
+      {profileOpen ? (
+        <div className="profile-menu" role="menu">
           <button
             type="button"
-            className="nav-item profile-item"
+            role="menuitem"
             onClick={() => {
-              const destination = defaultDashboardForRole(user.role)
-              if (attendanceNavigationGuard.shouldBlock(destination)) return
-              navigate(destination)
-              setSidebarOpen(false)
+              const target = defaultDashboardForRole(user.role)
+              setProfileOpen(false)
+              if (attendanceNavigationGuard.shouldBlock(target)) return
+              navigate(target)
             }}
           >
-            <span className="nav-icon-wrap"><UserCog size={18} /></span>
-            <span>Profile</span>
+            My Profile
           </button>
-
+          <button type="button" role="menuitem" onClick={() => { setProfileOpen(false); onRestartTour(user.role) }}>Restart Tour</button>
           <button
             type="button"
-            className="nav-item danger-item"
+            role="menuitem"
             onClick={() => {
-              setSidebarOpen(false)
+              setProfileOpen(false)
               if (attendanceNavigationGuard.shouldBlock('/login', onLogout)) return
               onLogout()
             }}
           >
-            <span className="nav-icon-wrap"><LogOut size={18} /></span>
-            <span>Logout</span>
+            Logout
           </button>
         </div>
-      </aside>
-
-      {sidebarOpen ? (
-        <div
-          className="sidebar-backdrop"
-          aria-hidden="true"
-          onClick={() => setSidebarOpen(false)}
-        />
       ) : null}
+    </div>
+  )
+}
 
-      <div className="content-shell">
-        <header className="topbar">
-          <div className="topbar-left">
-            <button
-              type="button"
-              className="icon-button mobile-menu-btn"
-              aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
-              aria-expanded={sidebarOpen}
-              onClick={() => setSidebarOpen((value) => !value)}
-            >
-              <Menu size={20} />
-            </button>
-            <span className="topbar-page-label">{pageTitle}</span>
-            <span className="topbar-crumb-sep">•</span>
-            <span className="topbar-school-name">{user.schoolName}</span>
-          </div>
+type AppTopBarProps = Readonly<{
+  user: SessionUser
+  pageTitle: string
+  sidebarOpen: boolean
+  setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>
+  activeAlerts: AlertItem[]
+  students: Student[]
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  nav: Array<{ path: string; label: string; icon: LucideIcon }>
+  onLogout: () => void
+  onRestartTour: (role: Role) => void
+  attendanceNavigationGuard: { shouldBlock: (destination: string, onDiscard?: () => void) => boolean }
+}>
 
-          <div className="topbar-actions">
-            <div className={`global-search ${searchMobileOpen ? 'mobile-search-open' : ''}`} ref={searchContainerRef}>
-              <button
-                type="button"
-                className="icon-button mobile-search-toggle"
-                aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
-                aria-expanded={searchMobileOpen}
-                onClick={() => setSearchMobileOpen((open) => !open)}
-              >
-                {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
-              </button>
-              <div className={`search-box ${searchMobileOpen ? 'is-open' : ''}`}>
-                <Search size={15} aria-hidden="true" />
-                <input
-                  ref={searchInputRef}
-                  type="search"
-                  placeholder="Search students, staff, or pages..."
-                  aria-label="Search students, staff, or pages"
-                  aria-autocomplete="list"
-                  aria-controls="global-search-results"
-                  aria-expanded={Boolean(searchFocused && searchQuery.trim())}
-                  role="combobox"
-                  value={searchQuery}
-                  onFocus={() => setSearchFocused(true)}
-                  onChange={(event) => {
-                    setSearchQuery(event.target.value)
-                    setSelectedSearchResult(0)
-                    setSearchFocused(true)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'ArrowDown' && searchResults.length > 0) {
-                      event.preventDefault()
-                      setSelectedSearchResult((index) => Math.min(index + 1, searchResults.length - 1))
-                    } else if (event.key === 'ArrowUp' && searchResults.length > 0) {
-                      event.preventDefault()
-                      setSelectedSearchResult((index) => Math.max(index - 1, 0))
-                    } else if (event.key === 'Enter' && searchResults[selectedSearchResult]) {
-                      event.preventDefault()
-                      openSearchResult(searchResults[selectedSearchResult])
-                    } else if (event.key === 'Escape') {
-                      setSearchFocused(false)
-                      setSearchMobileOpen(false)
-                    }
-                  }}
-                />
-                {searchFocused && searchQuery.trim() ? (
-                  <div className="global-search-results" id="global-search-results" role="listbox" aria-label="Search results">
-                    {searchResults.length > 0 ? searchResults.map((result, index) => (
-                      <button
-                        key={result.id}
-                        type="button"
-                        className={`global-search-result ${index === selectedSearchResult ? 'selected' : ''}`}
-                        role="option"
-                        aria-selected={index === selectedSearchResult}
-                        onMouseEnter={() => setSelectedSearchResult(index)}
-                        onClick={() => openSearchResult(result)}
-                      >
-                        <span className="global-search-result-copy">
-                          <strong>{result.title}</strong>
-                          <small>{result.subtitle}</small>
-                        </span>
-                        <span className="global-search-category">{result.category}</span>
-                      </button>
-                    )) : (
-                      <p className="global-search-empty">No matching students, staff, or pages found.</p>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            </div>
+function AppTopBar({
+  user,
+  pageTitle,
+  sidebarOpen,
+  setSidebarOpen,
+  activeAlerts,
+  students,
+  profiles,
+  profilesLoading,
+  nav,
+  onLogout,
+  onRestartTour,
+  attendanceNavigationGuard,
+}: AppTopBarProps) {
+  const navigate = useNavigate()
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [searchMobileOpen, setSearchMobileOpen] = useState(false)
 
-            <button type="button" className="icon-button notification-btn" aria-label="Notifications">
-              <Bell size={18} />
-              <span className="notification-dot" />
-            </button>
+  const searchContainerRef = useRef<HTMLDivElement>(null)
+  const notificationMenuRef = useRef<HTMLDivElement>(null)
+  const profileMenuRef = useRef<HTMLDivElement>(null)
+  const initials = getUserInitials(user.name)
 
-            <div
-              className="profile-panel"
-              role="button"
-              tabIndex={0}
-              aria-label="User profile menu"
-              aria-expanded={profileOpen}
-              onClick={() => setProfileOpen((value) => !value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setProfileOpen((value) => !value)
-                }
-              }}
-            >
-              <div className="profile-avatar">{initials}</div>
+  useEffect(() => {
+    const handleOutsideClick = (event: PointerEvent) => {
+      const target = event.target
+      if (
+        target instanceof Node &&
+        !searchContainerRef.current?.contains(target) &&
+        !(target instanceof Element && target.closest('.mobile-campus-search'))
+      ) {
+        setSearchMobileOpen(false)
+      }
+      if (
+        target instanceof Node &&
+        !notificationMenuRef.current?.contains(target)
+      ) {
+        setNotificationsOpen(false)
+      }
+      if (
+        target instanceof Node &&
+        !profileMenuRef.current?.contains(target)
+      ) {
+        setProfileOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handleOutsideClick)
+    return () => document.removeEventListener('pointerdown', handleOutsideClick)
+  }, [])
 
-              <div className="profile-details">
-                <strong>{user.name}</strong>
-                <span>{roleLabels[user.role]}</span>
-              </div>
+  return (
+    <>
+      <header className="topbar">
+      <div className="topbar-left">
+        <button
+          type="button"
+          className="icon-button mobile-menu-btn"
+          aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={sidebarOpen}
+          onClick={() => setSidebarOpen((value) => !value)}
+        >
+          <Menu size={20} />
+        </button>
+        <span className="topbar-page-label">{pageTitle}</span>
+        <span className="topbar-crumb-sep" aria-hidden="true">/</span>
+        <span className="topbar-school-name">{user.schoolName}</span>
+      </div>
 
-              <button
-                type="button"
-                className="profile-toggle"
-                aria-label="Open profile menu"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setProfileOpen((value) => !value)
-                }}
-              >
-                <ChevronDown size={14} />
-              </button>
+      <div className="topbar-actions">
+        <AppGlobalSearch
+          user={user}
+          students={students}
+          profiles={profiles}
+          profilesLoading={profilesLoading}
+          nav={nav}
+          attendanceNavigationGuard={attendanceNavigationGuard}
+          navigate={(dest) => void navigate(dest)}
+          searchMobileOpen={searchMobileOpen}
+          setSearchMobileOpen={setSearchMobileOpen}
+          searchContainerRef={searchContainerRef}
+        />
 
-              {profileOpen ? (
-                <div className="profile-menu" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const target = defaultDashboardForRole(user.role)
-                      setProfileOpen(false)
-                      if (attendanceNavigationGuard.shouldBlock(target)) return
-                      navigate(target)
-                    }}
-                  >
-                    My Profile
-                  </button>
-                  <button type="button" onClick={() => { setProfileOpen(false); onRestartTour(user.role) }}>Restart Tour</button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setProfileOpen(false)
-                      if (attendanceNavigationGuard.shouldBlock('/login', onLogout)) return
-                      onLogout()
-                    }}
-                  >
-                    Logout
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </header>
+        <AppNotificationsMenu
+          activeAlerts={activeAlerts}
+          notificationsOpen={notificationsOpen}
+          setNotificationsOpen={setNotificationsOpen}
+          notificationMenuRef={notificationMenuRef}
+          user={user}
+          navigate={(dest) => void navigate(dest)}
+        />
 
-        <div className="mobile-campus-strip">
-          <div className="campus-selector-pill mobile-campus-pill" title="Selected campus">
-            <Building2 size={13} />
-            <span className="campus-pill-name">{user.campusName}</span>
-            <span className="campus-pill-sep">•</span>
-            <span className="campus-pill-school">{user.schoolName}</span>
-            <ChevronDown size={13} className="selector-chevron" />
-          </div>
-          <button
-            type="button"
-            className="icon-button mobile-campus-search"
-            aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
-            aria-expanded={searchMobileOpen}
-            onClick={() => setSearchMobileOpen((open) => !open)}
-          >
-            {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
-          </button>
-        </div>
+        <AppProfileMenu
+          user={user}
+          initials={initials}
+          profileOpen={profileOpen}
+          setProfileOpen={setProfileOpen}
+          profileMenuRef={profileMenuRef}
+          attendanceNavigationGuard={attendanceNavigationGuard}
+          navigate={(dest) => void navigate(dest)}
+          onLogout={onLogout}
+          onRestartTour={onRestartTour}
+        />
+      </div>
+    </header>
+    <div className="mobile-campus-strip">
+      <div className="campus-selector-pill mobile-campus-pill" title="Selected campus">
+        <Building2 size={13} />
+        <span className="campus-pill-name">{user.campusName}</span>
+        <span className="campus-pill-sep" aria-hidden="true">/</span>
+        <span className="campus-pill-school">{user.schoolName}</span>
+        <ChevronDown size={13} className="selector-chevron" />
+      </div>
+      <button
+        type="button"
+        className="icon-button mobile-campus-search"
+        aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
+        aria-expanded={searchMobileOpen}
+        onClick={() => setSearchMobileOpen((open) => !open)}
+      >
+        {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
+      </button>
+    </div>
+    </>
+  )
+}
 
-        {activeTourRole && tourOpen ? (
-          <WalkthroughModal
-            steps={walkthroughStepsByRole[activeTourRole]}
-            onClose={() => {
-              onCompleteTour(activeTourRole)
-              onCloseTour()
-            }}
-            onComplete={() => onCompleteTour(activeTourRole)}
+function AppShell({
+  user,
+  students,
+  profiles,
+  profilesLoading,
+  alerts = [],
+  alertsLoading: _alertsLoading = false,
+  onLogout,
+  tourOpen,
+  activeTourRole,
+  onCloseTour,
+  onCompleteTour,
+  onRestartTour,
+}: Readonly<{
+  user: SessionUser | null
+  students: Student[]
+  profiles: SchoolUser[]
+  profilesLoading: boolean
+  alerts?: AlertItem[]
+  alertsLoading?: boolean
+  onLogout: () => void
+  tourOpen: boolean
+  activeTourRole: Role | null
+  onCloseTour: () => void
+  onCompleteTour: (role: Role) => void
+  onRestartTour: (role: Role) => void
+}>) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const attendanceNavigationGuardRef = useRef<AttendanceNavigationGuard | null>(null)
+  const attendanceNavigationGuard = useMemo(() => ({
+    registerGuard: (guard: AttendanceNavigationGuard | null) => {
+      attendanceNavigationGuardRef.current = guard
+      return () => {
+        if (attendanceNavigationGuardRef.current === guard) {
+          attendanceNavigationGuardRef.current = null
+        }
+      }
+    },
+    shouldBlock: (destination: string, onDiscard?: () => void) =>
+      attendanceNavigationGuardRef.current?.(destination, onDiscard) ?? false,
+  }), [])
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const buddyReady = useAIBuddyLoader(user, location.pathname)
+
+  const activeAlerts = useMemo(
+    () => alerts.filter((alert) => alert.status !== 'RESOLVED'),
+    [alerts],
+  )
+  const pageTitle = getPageTitle(location.pathname)
+
+  useEffect(() => {
+    if (user) document.title = `${pageTitle} | CAMVIA`
+  }, [pageTitle, user])
+
+  const [prevPath, setPrevPath] = useState(location.pathname)
+  if (prevPath !== location.pathname) {
+    setPrevPath(location.pathname)
+    setSidebarOpen(false)
+  }
+
+  if (!user) {
+    return null
+  }
+
+  const nav = getAppNav(user.role)
+
+  return (
+    <AttendanceNavigationGuardContext.Provider value={attendanceNavigationGuard}>
+      <div className={`app-shell ${user.role === 'admin' || user.role === 'principal' ? 'executive-shell' : ''}`}>
+        <AppSidebar
+          user={user}
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          nav={nav}
+          locationPathname={location.pathname}
+          onLogout={onLogout}
+          attendanceNavigationGuard={attendanceNavigationGuard}
+          navigate={(dest) => void navigate(dest)}
+        />
+
+        {sidebarOpen ? (
+          <div
+            className="sidebar-backdrop"
+            aria-hidden="true"
+            onClick={() => setSidebarOpen(false)}
           />
         ) : null}
 
-        <main className="page-content">
-          <Outlet />
-        </main>
+        <div className="content-shell">
+          <AppTopBar
+            user={user}
+            pageTitle={pageTitle}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            activeAlerts={activeAlerts}
+            students={students}
+            profiles={profiles}
+            profilesLoading={profilesLoading}
+            nav={nav}
+            onLogout={onLogout}
+            onRestartTour={onRestartTour}
+            attendanceNavigationGuard={attendanceNavigationGuard}
+          />
+
+
+
+          {activeTourRole && tourOpen ? (
+            <WalkthroughModal
+              steps={walkthroughStepsByRole[activeTourRole]}
+              onClose={() => {
+                onCompleteTour(activeTourRole)
+                onCloseTour()
+              }}
+              onComplete={() => onCompleteTour(activeTourRole)}
+            />
+          ) : null}
+
+          <main className="page-content">
+            <Outlet />
+          </main>
+        </div>
+        {buddyReady && !location.pathname.startsWith('/statements/') ? (
+          <Suspense fallback={null}>
+            <AIBuddy />
+          </Suspense>
+        ) : null}
       </div>
-      {buddyReady && !location.pathname.startsWith('/statements/') ? (
-        <Suspense fallback={null}>
-          <AIBuddy />
-        </Suspense>
-      ) : null}
-    </div>
     </AttendanceNavigationGuardContext.Provider>
   )
 }
 
-function WalkthroughModal({ steps, onClose, onComplete }: { steps: Array<{ title: string; text: string }>; onClose: () => void; onComplete: () => void }) {
+function WalkthroughModal({ steps, onClose, onComplete }: Readonly<{ steps: ReadonlyArray<{ title: string; text: string }>; onClose: () => void; onComplete: () => void }>) {
   const [stepIndex, setStepIndex] = useState(0)
   const currentStep = steps[stepIndex]
 
@@ -2881,17 +3830,17 @@ function WalkthroughModal({ steps, onClose, onComplete }: { steps: Array<{ title
   const isLastStep = stepIndex === steps.length - 1
 
   return (
-    <div className="tour-backdrop" role="dialog" aria-modal="true" aria-label="Quick tour">
+    <section className="tour-backdrop" aria-label="Quick tour">
       <div className="tour-dialog">
         <div className="tour-header">
-          <span className="eyebrow">Quick tour</span>
+          <span className="tour-badge">Quick tour</span>
           <button type="button" className="text-button" onClick={onClose}>Skip</button>
         </div>
         <h3>{currentStep.title}</h3>
         <p>{currentStep.text}</p>
         <div className="tour-progress">
-          {steps.map((_, index) => (
-            <span key={`dot-${index}`} className={index === stepIndex ? 'active' : ''} />
+          {steps.map((step, index) => (
+            <span key={step.title} className={index === stepIndex ? 'active' : ''} />
           ))}
         </div>
         <div className="tour-actions">
@@ -2905,11 +3854,11 @@ function WalkthroughModal({ steps, onClose, onComplete }: { steps: Array<{ title
           )}
         </div>
       </div>
-    </div>
+    </section>
   )
 }
 
-function DashboardPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts, profiles, profilesLoading, profilesError, academicYear }: {
+function DashboardPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts, profiles, profilesLoading, profilesError, academicYear }: Readonly<{
   user: SessionUser | null
   students: Student[]
   attendance: AttendanceState
@@ -2929,7 +3878,7 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   profilesLoading: boolean
   profilesError: string
   academicYear: string | null
-}) {
+}>) {
   const [status, setStatus] = useState<'ready' | 'error'>('ready')
 
   if (!user) {
@@ -2944,7 +3893,11 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
     return <DashboardLoadingState role={user.role} />
   }
 
-  const config = buildDashboardConfig(user, students, attendance, fees, communication, alerts, Boolean(attendanceError), Boolean(feesError), alertsLoading || Boolean(alertsError))
+  const config = buildDashboardConfig(user, students, attendance, fees, communication, alerts, {
+    attendanceUnavailable: Boolean(attendanceError),
+    feesUnavailable: Boolean(feesError),
+    alertsUnavailable: alertsLoading || Boolean(alertsError),
+  })
 
   if (!config || config.stats.length === 0) {
     return <EmptyDashboardState role={user.role} />
@@ -2971,7 +3924,7 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   } else if (user.role === 'finance') {
     dashboard = <FinanceDashboard user={user} config={config} />
   } else {
-    dashboard = <TeacherDashboard user={user} config={config} students={students} />
+    dashboard = <TeacherDashboard user={user} config={config} students={students} attendance={attendance} />
   }
   return (
     <>
@@ -2983,7 +3936,209 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   )
 }
 
-function buildDashboardConfig(user: SessionUser, students: Student[], attendance: AttendanceState, fees: FeeState, communication: CommunicationState, liveAlerts: AlertItem[], attendanceUnavailable = false, feesUnavailable = false, alertsUnavailable = false): DashboardConfig {
+interface DashboardAvailability {
+  attendanceUnavailable?: boolean
+  feesUnavailable?: boolean
+  alertsUnavailable?: boolean
+}
+
+function getFinanceBriefSummary(
+  feesUnavailable: boolean,
+  collections: number,
+  outstanding: number,
+  overdue: number,
+  awaitingApproval: number,
+): string {
+  if (feesUnavailable) {
+    return 'Live fee metrics are currently unavailable.'
+  }
+  if (collections > 0 || outstanding > 0) {
+    return `${formatFeeCurrency(collections)} collected this month. ${formatFeeCurrency(outstanding)} remains outstanding, including ${formatFeeCurrency(overdue)} overdue. ${awaitingApproval} fee reminders await review.`
+  }
+  return 'No fee invoices or payments have been recorded yet. Add students and generate invoices to begin tracking collections.'
+}
+
+function getAttendanceStatSubLabel(attendanceUnavailable: boolean, total: number, authorizedCount: number): string {
+  if (attendanceUnavailable) {
+    return 'Attendance data unavailable'
+  }
+  if (total) {
+    return `${total} of ${authorizedCount} authorized students recorded`
+  }
+  return 'No attendance recorded today'
+}
+
+function getGeneralBriefSummary(total: number, rate: string, scopeText: string, attentionCount: number): string {
+  if (total) {
+    const attentionSuffix = attentionCount ? ` ${attentionCount} attendance items meet the current attention rules.` : ''
+    return `Today's recorded attendance is ${rate} across ${total} student records in ${scopeText}.${attentionSuffix}`
+  }
+  if (attentionCount) {
+    return `No attendance has been recorded today in ${scopeText}. ${attentionCount} items meet the current attention rules based on previously recorded sessions.`
+  }
+  return `No attendance has been recorded today in ${scopeText}. Add students and mark class attendance to begin tracking daily trends.`
+}
+
+interface GeneralStatContext {
+  userRole: Role
+  authorizedStudentCount: number
+  feesUnavailable: boolean
+  currentMonthCollections: number
+  feeMetrics: { outstanding: number; overdue: number }
+  communicationSummary: { awaitingApproval: number; teacherDrafts: number }
+  attendanceUnavailable: boolean
+  rate: string
+  todayTotal: number
+  todayPresent: number
+  todayAbsent: number
+  activeAlertCount: string
+  classesCount: number
+}
+
+function buildFeeStat(stat: StatItem, ctx: GeneralStatContext): StatItem | null {
+  const { feesUnavailable, feeMetrics, currentMonthCollections } = ctx
+  switch (stat.label) {
+    case 'Collected This Month': {
+      const value = feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections)
+      const subLabel = feesUnavailable ? 'Fee data unavailable' : stat.subLabel
+      return { ...stat, value, subLabel }
+    }
+    case 'Outstanding':
+      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
+    case 'Overdue':
+      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
+    default:
+      return null
+  }
+}
+
+function buildAttendanceStat(stat: StatItem, ctx: GeneralStatContext): StatItem | null {
+  const { attendanceUnavailable, rate, todayTotal, authorizedStudentCount, todayPresent, todayAbsent } = ctx
+  switch (stat.label) {
+    case 'Attendance':
+      return {
+        ...stat,
+        value: attendanceUnavailable ? '—' : rate,
+        subLabel: getAttendanceStatSubLabel(attendanceUnavailable, todayTotal, authorizedStudentCount),
+      }
+    case 'Present':
+      return { ...stat, value: attendanceUnavailable ? '—' : String(todayPresent) }
+    case 'Absent':
+      return { ...stat, value: attendanceUnavailable ? '—' : String(todayAbsent) }
+    default:
+      return null
+  }
+}
+
+function buildGeneralStat(stat: StatItem, ctx: GeneralStatContext): StatItem {
+  const feeStat = buildFeeStat(stat, ctx)
+  if (feeStat) return feeStat
+
+  const attendanceStat = buildAttendanceStat(stat, ctx)
+  if (attendanceStat) return attendanceStat
+
+  switch (stat.label) {
+    case 'Students': {
+      const subLabel = ctx.userRole === 'teacher' ? 'Active students authorized by Supabase' : 'Active student records'
+      return { ...stat, value: String(ctx.authorizedStudentCount), subLabel }
+    }
+    case 'Parent Communications Awaiting Approval':
+      return { ...stat, value: String(ctx.communicationSummary.awaitingApproval) }
+    case 'Draft Attendance Messages':
+      return { ...stat, value: String(ctx.communicationSummary.teacherDrafts) }
+    case 'Attendance Alerts':
+    case 'Alerts':
+    case 'Open alerts':
+      return { ...stat, label: 'Alerts', value: ctx.activeAlertCount, subLabel: 'Across attendance, fees, and communication' }
+    case 'My Classes':
+      if (ctx.userRole === 'teacher') {
+        return { ...stat, value: String(ctx.classesCount), subLabel: 'Assigned classes' }
+      }
+      return stat
+    default:
+      return stat
+  }
+}
+
+type FinanceDashboardParams = Readonly<{
+  user: SessionUser
+  fixture: DashboardConfig
+  currentMonthMetrics: ReturnType<typeof getFeeMetrics>
+  currentMonthCollections: number
+  feeMetrics: ReturnType<typeof getFeeMetrics>
+  communicationSummary: ReturnType<typeof getCommunicationSummary>
+  feeAttention: AttentionItem[]
+  pendingFeeApprovals: AlertItem[]
+  feesUnavailable: boolean
+  alertsUnavailable: boolean
+  fees: FeeState
+  students: Student[]
+}>
+
+function buildFinanceDashboardConfig(params: FinanceDashboardParams): DashboardConfig {
+  const {
+    user,
+    fixture,
+    currentMonthMetrics,
+    currentMonthCollections,
+    feeMetrics,
+    communicationSummary,
+    feeAttention,
+    pendingFeeApprovals,
+    feesUnavailable,
+    alertsUnavailable,
+    fees,
+    students,
+  } = params
+  const stats = fixture.stats.map((stat) => {
+    if (stat.label === 'Expected') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthMetrics.expected) }
+    if (stat.label === 'Collected') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : 'This month' }
+    if (stat.label === 'Outstanding') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
+    if (stat.label === 'Overdue') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
+    if (stat.label === 'Fee Reminders Awaiting Review') {
+      return { ...stat, value: String(communicationSummary.feeAwaitingApproval) }
+    }
+    return stat
+  })
+  return {
+    ...fixture,
+    stats,
+    morningBrief: {
+      summary: getFinanceBriefSummary(
+        feesUnavailable,
+        currentMonthCollections,
+        feeMetrics.outstanding,
+        feeMetrics.overdue,
+        communicationSummary.feeAwaitingApproval,
+      ),
+      cta: 'View Fees',
+    },
+    attention: [
+      ...feeAttention,
+      ...(!alertsUnavailable && pendingFeeApprovals.length ? [{
+        level: 'NOTICE' as const,
+        title: 'Fee reminders awaiting review',
+        detail: `${pendingFeeApprovals.length} fee reminder${pendingFeeApprovals.length === 1 ? '' : 's'} await approval.`,
+        cta: 'Review',
+        path: '/communication',
+      }] : []),
+    ].slice(0, 5),
+    trend: feesUnavailable ? [] : getFeeCollectionTrend(fees, students, user),
+  }
+}
+
+function buildDashboardConfig(
+  user: SessionUser,
+  students: Student[],
+  attendance: AttendanceState,
+  fees: FeeState,
+  communication: CommunicationState,
+  liveAlerts: AlertItem[],
+  availability?: DashboardAvailability,
+): DashboardConfig {
+  const attendanceUnavailable = availability?.attendanceUnavailable ?? false
+  const feesUnavailable = availability?.feesUnavailable ?? false
+  const alertsUnavailable = availability?.alertsUnavailable ?? false
   const fixture = dashboardFixtures[user.role]
   const activeStudentIds = new Set(students.filter((student) => student.status === 'Active').map((student) => student.id))
   const visibleAlerts = liveAlerts.filter((alert) => !alert.studentId || activeStudentIds.has(alert.studentId))
@@ -2999,37 +4154,20 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     .slice(0, 3)).map((alert) => alertToAttention(alert, user))
 
   if (user.role === 'finance') {
-    const stats = fixture.stats.map((stat) => {
-      if (stat.label === 'Expected') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthMetrics.expected) }
-      if (stat.label === 'Collected') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : 'This month' }
-      if (stat.label === 'Outstanding') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
-      if (stat.label === 'Overdue') return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
-      if (stat.label === 'Fee Reminders Awaiting Review') {
-        return { ...stat, value: String(communicationSummary.feeAwaitingApproval) }
-      }
-      return stat
+    return buildFinanceDashboardConfig({
+      user,
+      fixture,
+      currentMonthMetrics,
+      currentMonthCollections,
+      feeMetrics,
+      communicationSummary,
+      feeAttention,
+      pendingFeeApprovals,
+      feesUnavailable,
+      alertsUnavailable,
+      fees,
+      students,
     })
-    return {
-      ...fixture,
-      stats,
-      morningBrief: {
-        summary: feesUnavailable ? 'Live fee metrics are currently unavailable.' : (currentMonthCollections > 0 || feeMetrics.outstanding > 0)
-          ? `${formatFeeCurrency(currentMonthCollections)} collected this month. ${formatFeeCurrency(feeMetrics.outstanding)} remains outstanding, including ${formatFeeCurrency(feeMetrics.overdue)} overdue. ${communicationSummary.feeAwaitingApproval} fee reminders await review.`
-          : 'No fee invoices or payments have been recorded yet. Add students and generate invoices to begin tracking collections.',
-        cta: 'View Fees',
-      },
-      attention: [
-        ...feeAttention,
-        ...(!alertsUnavailable && pendingFeeApprovals.length ? [{
-          level: 'NOTICE' as const,
-          title: 'Fee reminders awaiting review',
-          detail: `${pendingFeeApprovals.length} fee reminder${pendingFeeApprovals.length === 1 ? '' : 's'} await approval.`,
-          cta: 'Review',
-          path: '/communication',
-        }] : []),
-      ].slice(0, 5),
-      trend: feesUnavailable ? [] : getFeeCollectionTrend(fees, students, user),
-    }
   }
 
   const today = schoolDateKey(user.schoolTimezone)
@@ -3039,48 +4177,25 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
   const rate = todayCounts.rate === null ? '—' : `${todayCounts.rate}%`
   const activeAlertCount = alertsUnavailable ? '—' : String(visibleAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
   const authorizedStudentCount = classes.reduce((total, item) => total + item.students.length, 0)
-  const stats = fixture.stats.map((stat) => {
-    if (stat.label === 'Students') {
-      return {
-        ...stat,
-        value: String(authorizedStudentCount),
-        subLabel: user.role === 'teacher' ? 'Active students authorized by Supabase' : 'Active student records',
-      }
-    }
-    if (stat.label === 'Collected This Month') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(currentMonthCollections), subLabel: feesUnavailable ? 'Fee data unavailable' : stat.subLabel }
-    }
-    if (stat.label === 'Outstanding') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.outstanding) }
-    }
-    if (stat.label === 'Overdue') {
-      return { ...stat, value: feesUnavailable ? '—' : formatFeeCurrency(feeMetrics.overdue) }
-    }
-    if (stat.label === 'Parent Communications Awaiting Approval') {
-      return { ...stat, value: String(communicationSummary.awaitingApproval) }
-    }
-    if (stat.label === 'Draft Attendance Messages') {
-      return { ...stat, value: String(communicationSummary.teacherDrafts) }
-    }
-    if (stat.label === 'Attendance') {
-      return {
-        ...stat,
-        value: attendanceUnavailable ? '—' : rate,
-        subLabel: attendanceUnavailable ? 'Attendance data unavailable' : todayCounts.total
-          ? `${todayCounts.total} of ${authorizedStudentCount} authorized students recorded`
-          : 'No attendance recorded today',
-      }
-    }
-    if (stat.label === 'Present') return { ...stat, value: attendanceUnavailable ? '—' : String(todayCounts.present) }
-    if (stat.label === 'Absent') return { ...stat, value: attendanceUnavailable ? '—' : String(todayCounts.absent) }
-    if (stat.label === 'Attendance Alerts' || stat.label === 'Alerts' || stat.label === 'Open alerts') {
-      return { ...stat, label: 'Alerts', value: activeAlertCount, subLabel: 'Across attendance, fees, and communication' }
-    }
-    if (user.role === 'teacher' && stat.label === 'My Classes') {
-      return { ...stat, value: String(classes.length), subLabel: 'Assigned classes' }
-    }
-    return stat
-  })
+
+  const statContext: GeneralStatContext = {
+    userRole: user.role,
+    authorizedStudentCount,
+    feesUnavailable,
+    currentMonthCollections,
+    feeMetrics,
+    communicationSummary,
+    attendanceUnavailable,
+    rate,
+    todayTotal: todayCounts.total,
+    todayPresent: todayCounts.present,
+    todayAbsent: todayCounts.absent,
+    activeAlertCount,
+    classesCount: classes.length,
+  }
+
+  const stats = fixture.stats.map((stat) => buildGeneralStat(stat, statContext))
+
   const attendanceItems: AttentionItem[] = alertsUnavailable ? [] : visibleAlerts
     .filter((alert) => alert.sourceType === 'ATTENDANCE' && alert.status !== 'RESOLVED')
     .map((alert) => alertToAttention(alert, user))
@@ -3097,11 +4212,7 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
     attention.splice(5)
   }
   const scopeText = user.role === 'teacher' ? 'your assigned classes' : 'the authorized campus'
-  const summary = todayCounts.total
-    ? `Today's recorded attendance is ${rate} across ${todayCounts.total} student records in ${scopeText}.${attendanceAttention.length ? ` ${attendanceAttention.length} attendance items meet the current attention rules.` : ''}`
-    : attendanceAttention.length
-      ? `No attendance has been recorded today in ${scopeText}. ${attendanceAttention.length} items meet the current attention rules based on previously recorded sessions.`
-      : `No attendance has been recorded today in ${scopeText}. Add students and mark class attendance to begin tracking daily trends.`
+  const summary = getGeneralBriefSummary(todayCounts.total, rate, scopeText, attendanceAttention.length)
 
   return {
     ...fixture,
@@ -3114,6 +4225,25 @@ function buildDashboardConfig(user: SessionUser, students: Student[], attendance
 
 function formatFeeCurrency(amount: number): string {
   return `PKR ${new Intl.NumberFormat('en-PK', { maximumFractionDigits: 2 }).format(amount)}`
+}
+
+function getFeeAlertPath(alert: AlertItem, role: Role): string {
+  if (alert.studentId) {
+    return role === 'principal'
+      ? `/students/${encodeURIComponent(alert.studentId)}`
+      : `/fees/${encodeURIComponent(alert.studentId)}`
+  }
+  return role === 'principal' ? '/alerts' : '/fees'
+}
+
+function getAttendanceAlertPath(alert: AlertItem, timezone?: string | null): string {
+  if (alert.studentId) {
+    return `/students/${encodeURIComponent(alert.studentId)}`
+  }
+  if (alert.classId) {
+    return `/attendance/take/${encodeURIComponent(alert.classId)}?date=${schoolDateKey(timezone)}`
+  }
+  return '/attendance'
 }
 
 function alertToAttention(alert: AlertItem, user: SessionUser): AttentionItem {
@@ -3132,11 +4262,7 @@ function alertToAttention(alert: AlertItem, user: SessionUser): AttentionItem {
       title: alert.title,
       detail: alert.detail,
       cta: 'View Student',
-      path: alert.studentId
-        ? user.role === 'principal'
-          ? `/students/${encodeURIComponent(alert.studentId)}`
-          : `/fees/${encodeURIComponent(alert.studentId)}`
-        : user.role === 'principal' ? '/alerts' : '/fees',
+      path: getFeeAlertPath(alert, user.role),
     }
   }
   return {
@@ -3144,12 +4270,135 @@ function alertToAttention(alert: AlertItem, user: SessionUser): AttentionItem {
     title: alert.title,
     detail: alert.detail,
     cta: alert.studentId ? 'View Student' : 'View Class',
-    path: alert.studentId
-      ? `/students/${encodeURIComponent(alert.studentId)}`
-      : alert.classId
-        ? `/attendance/take/${encodeURIComponent(alert.classId)}?date=${schoolDateKey(user.schoolTimezone)}`
-        : '/attendance',
+    path: getAttendanceAlertPath(alert, user.schoolTimezone),
   }
+}
+
+function getAlertsCountBadge(loading: boolean, count: number): string {
+  if (loading) return 'Updating…'
+  const suffix = count === 1 ? 'alert' : 'alerts'
+  return `${count} ${suffix}`
+}
+
+function getAlertSourceLabel(sourceType: AlertItem['sourceType']): string {
+  if (sourceType === 'ATTENDANCE') return 'Attendance'
+  if (sourceType === 'FEE') return 'Fee'
+  return 'Communication'
+}
+
+function getAlertActionLabel(alert: AlertItem): string {
+  if (alert.sourceType === 'COMMUNICATION') return 'Review message'
+  if (alert.studentId) return 'View student'
+  if (alert.classId) return 'Take attendance'
+  return 'Open'
+}
+
+function renderAlertSourceIcon(sourceType: AlertItem['sourceType']) {
+  if (sourceType === 'ATTENDANCE') return <CalendarDays size={12} />
+  if (sourceType === 'FEE') return <CircleDollarSign size={12} />
+  return <MessageSquareText size={12} />
+}
+
+type AlertsContentOptions = Readonly<{
+  loading: boolean
+  error: string
+  filteredAlerts: AlertItem[]
+  onRetry: () => void
+  sourceFilter: string
+  priorityFilter: string
+  searchQuery: string
+  handleOpen: (alert: AlertItem) => void
+  userTimezone?: string | null
+}>
+
+function renderAlertsContent(options: AlertsContentOptions): ReactNode {
+  const {
+    loading,
+    error,
+    filteredAlerts,
+    onRetry,
+    sourceFilter,
+    priorityFilter,
+    searchQuery,
+    handleOpen,
+    userTimezone,
+  } = options
+  if (loading) {
+    return <output className="empty-state-card">Loading live alerts…</output>
+  }
+  if (error) {
+    return (
+      <div className="empty-state-card" role="alert">
+        <h2>We couldn't load alerts</h2>
+        <p>{error}</p>
+        <button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button>
+      </div>
+    )
+  }
+  if (filteredAlerts.length === 0) {
+    return (
+      <div className="empty-state-card">
+        <div className="empty-icon">
+          <BellRing size={22} />
+        </div>
+        <h2>No alerts matching criteria</h2>
+        <p>
+          {sourceFilter !== 'ALL' || priorityFilter !== 'ALL' || searchQuery.trim()
+            ? 'No alerts match your current filter settings. Try clearing the filter or search.'
+            : 'Everything is currently in a healthy state for your authorized scope.'}
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div className="alerts-grid">
+      {filteredAlerts.map((alert) => {
+        const priorityClass = alert.priority.toLowerCase()
+        const sourceLabel = getAlertSourceLabel(alert.sourceType)
+        const actionLabel = getAlertActionLabel(alert)
+
+        return (
+          <article key={alert.id} className={`alert-card priority-${priorityClass}`}>
+            <div className="alert-card-header">
+              <div className="alert-badges-group">
+                <span className={`alert-priority-badge priority-${priorityClass}`}>
+                  {alert.priority.charAt(0) + alert.priority.slice(1).toLowerCase()}
+                </span>
+                <span className="alert-source-badge">
+                  {renderAlertSourceIcon(alert.sourceType)}
+                  {sourceLabel}
+                </span>
+                <span className="alert-status-badge">
+                  {alert.status.toLowerCase().replace('_', ' ')}
+                </span>
+              </div>
+              <span className="alert-timestamp">
+                <CalendarDays size={12} />
+                {formatInSchoolTimezone(new Date(alert.createdAt), userTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}
+              </span>
+            </div>
+
+            <div className="alert-card-body">
+              <div className="alert-card-copy">
+                <h3 className="alert-card-title">{alert.title}</h3>
+                <p className="alert-card-detail">{alert.detail}</p>
+              </div>
+              <div className="alert-card-action-wrap">
+                <button
+                  type="button"
+                  className="alert-action-btn"
+                  onClick={() => handleOpen(alert)}
+                >
+                  <span>{actionLabel}</span>
+                  <ArrowRight size={14} />
+                </button>
+              </div>
+            </div>
+          </article>
+        )
+      })}
+    </div>
+  )
 }
 
 function AlertsPage({
@@ -3158,92 +4407,281 @@ function AlertsPage({
   loading,
   error,
   onRetry,
-}: {
+}: Readonly<{
   user: SessionUser
   alerts: AlertItem[]
   loading: boolean
   error: string
   onRetry: () => void
-}) {
+}>) {
   const navigate = useNavigate()
-  const visibleAttendanceAlertIds = new Set(
-    alerts
-      .filter((alert) => alert.sourceType === 'ATTENDANCE')
-      .sort((left, right) => {
-        const priority = { HIGH: 0, MEDIUM: 1, NOTICE: 2 }
-        return priority[left.priority] - priority[right.priority] || left.title.localeCompare(right.title)
-      })
-      .slice(0, 5)
-      .map((alert) => alert.id),
-  )
-  const displayedAlerts = alerts.filter((alert) =>
-    alert.sourceType !== 'ATTENDANCE' || visibleAttendanceAlertIds.has(alert.id),
-  )
+  const [sourceFilter, setSourceFilter] = useState<'ALL' | 'ATTENDANCE' | 'FEE' | 'COMMUNICATION'>('ALL')
+  const [priorityFilter, setPriorityFilter] = useState<'ALL' | 'HIGH' | 'MEDIUM' | 'NOTICE'>('ALL')
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const counts = useMemo(() => {
+    return {
+      all: alerts.length,
+      attendance: alerts.filter((a) => a.sourceType === 'ATTENDANCE').length,
+      fee: alerts.filter((a) => a.sourceType === 'FEE').length,
+      communication: alerts.filter((a) => a.sourceType === 'COMMUNICATION').length,
+      high: alerts.filter((a) => a.priority === 'HIGH').length,
+      medium: alerts.filter((a) => a.priority === 'MEDIUM').length,
+      notice: alerts.filter((a) => a.priority === 'NOTICE').length,
+    }
+  }, [alerts])
+
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((alert) => {
+      if (sourceFilter !== 'ALL' && alert.sourceType !== sourceFilter) return false
+      if (priorityFilter !== 'ALL' && alert.priority !== priorityFilter) return false
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim()
+        const matchesTitle = alert.title.toLowerCase().includes(query)
+        const matchesDetail = alert.detail.toLowerCase().includes(query)
+        if (!matchesTitle && !matchesDetail) return false
+      }
+      return true
+    })
+  }, [alerts, sourceFilter, priorityFilter, searchQuery])
 
   const handleOpen = (alert: AlertItem) => {
     if (alert.sourceType === 'COMMUNICATION') {
-      navigate(user.role === 'admin' || user.role === 'principal' ? '/approvals' : '/communication')
+      void navigate(user.role === 'admin' || user.role === 'principal' ? '/approvals' : '/communication')
       return
     }
     if (alert.studentId) {
-      navigate(`/students/${encodeURIComponent(alert.studentId)}`)
+      void navigate(`/students/${encodeURIComponent(alert.studentId)}`)
       return
     }
     if (alert.classId) {
-      navigate(`/attendance/take/${encodeURIComponent(alert.classId)}`)
+      void navigate(`/attendance/take/${encodeURIComponent(alert.classId)}`)
       return
     }
-    navigate('/alerts')
+    void navigate('/alerts')
   }
 
   return (
-    <section className="alert-page">
-      <div className="panel-header flex-header">
+    <section className="alerts-page">
+      <div className="students-heading alerts-heading">
         <div>
-          <p className="eyebrow">School oversight</p>
           <h1>Alerts</h1>
+          <p className="students-intro alerts-intro">Prioritized operational notifications requiring administrative attention.</p>
         </div>
-        <div className="status-pill">{loading ? 'Loading…' : error ? 'Unavailable' : `${displayedAlerts.length} active`}</div>
+        <div className="students-actions alerts-header-actions">
+          <span className="status-pill active">
+            <Bell size={13} />
+            {getAlertsCountBadge(loading, filteredAlerts.length)}
+          </span>
+          <button
+            type="button"
+            className="secondary-button small-button"
+            onClick={onRetry}
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="empty-state-card" role="status">Loading live alerts…</div>
-      ) : error ? (
-        <div className="empty-state-card" role="alert">
-          <h1>We couldn't load alerts.</h1>
-          <p>{error}</p>
-          <button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button>
+      <div className="alerts-toolbar">
+        <div className="alerts-tabs" role="tablist" aria-label="Filter alerts by category">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sourceFilter === 'ALL'}
+            className={`alerts-tab ${sourceFilter === 'ALL' ? 'active' : ''}`}
+            onClick={() => setSourceFilter('ALL')}
+          >
+            All <span className="alerts-tab-count">{counts.all}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sourceFilter === 'ATTENDANCE'}
+            className={`alerts-tab ${sourceFilter === 'ATTENDANCE' ? 'active' : ''}`}
+            onClick={() => setSourceFilter('ATTENDANCE')}
+          >
+            Attendance <span className="alerts-tab-count">{counts.attendance}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sourceFilter === 'FEE'}
+            className={`alerts-tab ${sourceFilter === 'FEE' ? 'active' : ''}`}
+            onClick={() => setSourceFilter('FEE')}
+          >
+            Fees <span className="alerts-tab-count">{counts.fee}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sourceFilter === 'COMMUNICATION'}
+            className={`alerts-tab ${sourceFilter === 'COMMUNICATION' ? 'active' : ''}`}
+            onClick={() => setSourceFilter('COMMUNICATION')}
+          >
+            Communication <span className="alerts-tab-count">{counts.communication}</span>
+          </button>
         </div>
-      ) : displayedAlerts.length === 0 ? (
-        <div className="empty-state-card">
-          <div className="empty-icon">
-            <BellRing size={22} />
-          </div>
-          <h1>No active alerts</h1>
-          <p>Everything is currently in a healthy state for your authorized scope.</p>
-        </div>
-      ) : (
-        <div className="alert-list">
-          {displayedAlerts.map((alert) => (
-            <article key={alert.id} className="alert-card">
-              <div className="alert-head">
-                <span className={`alert-badge ${alert.priority.toLowerCase()}`}>{alert.priority}</span>
-                <span className="alert-status">{alert.status}</span>
-              </div>
-              <h3>{alert.title}</h3>
-              <p>{alert.detail}</p>
-              <div className="alert-meta">
-                <span>{alert.sourceType}</span>
-                <span>{formatInSchoolTimezone(new Date(alert.createdAt), user.schoolTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-              </div>
-              <button type="button" className="primary-button small-button" onClick={() => handleOpen(alert)}>
-                {alert.sourceType === 'COMMUNICATION' ? 'Review' : 'Open'}
+
+        <div className="alerts-toolbar-right">
+          <div className="alerts-search-box">
+            <Search size={14} />
+            <input
+              type="search"
+              placeholder="Filter alerts..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Filter alerts by text"
+            />
+            {searchQuery ? (
+              <button
+                type="button"
+                className="alerts-search-clear"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+              >
+                <X size={12} />
               </button>
-            </article>
-          ))}
+            ) : null}
+          </div>
+
+          <select
+            className="alerts-priority-select"
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as typeof priorityFilter)}
+            aria-label="Filter by priority"
+          >
+            <option value="ALL">All priorities</option>
+            <option value="HIGH">High priority ({counts.high})</option>
+            <option value="MEDIUM">Medium priority ({counts.medium})</option>
+            <option value="NOTICE">Notice ({counts.notice})</option>
+          </select>
         </div>
-      )}
+      </div>
+
+      {renderAlertsContent({
+        loading,
+        error,
+        filteredAlerts,
+        onRetry,
+        sourceFilter,
+        priorityFilter,
+        searchQuery,
+        handleOpen,
+        userTimezone: user.schoolTimezone,
+      })}
     </section>
+  )
+}
+
+type ApprovalsContentOptions = Readonly<{
+  loading: boolean
+  error: string
+  items: CommunicationMessageView[]
+  onRetry: () => void
+  userTimezone: string | null | undefined
+  rejectReason: Record<string, string>
+  setRejectReason: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  onOperation: (operation: CommunicationOperation) => Promise<boolean>
+}>
+
+function renderApprovalsContent(options: ApprovalsContentOptions): ReactNode {
+  const {
+    loading,
+    error,
+    items,
+    onRetry,
+    userTimezone,
+    rejectReason,
+    setRejectReason,
+    onOperation,
+  } = options
+  if (loading) {
+    return <output className="empty-state-card">Loading communication approvals…</output>
+  }
+  if (error) {
+    return (
+      <div className="empty-state-card" role="alert">
+        <h2>We couldn't load approvals</h2>
+        <p>{error}</p>
+        <button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button>
+      </div>
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <div className="empty-state-card">
+        <div className="empty-icon">
+          <ShieldCheck size={22} />
+        </div>
+        <h2>No pending approvals</h2>
+        <p>Submitted parent communication will appear here for review.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="alerts-grid">
+      {items.map((message) => (
+        <article key={message.id} className="alert-card priority-notice approval-card">
+          <div className="alert-card-header">
+            <div className="alert-badges-group">
+              <span className="alert-priority-badge priority-notice">
+                Pending review
+              </span>
+              <span className="alert-source-badge">
+                <MessageSquareText size={12} />
+                {message.channel}
+              </span>
+              <span className="alert-status-badge">
+                {message.sourceType.toLowerCase()}
+              </span>
+            </div>
+            <span className="alert-timestamp">
+              <CalendarDays size={12} />
+              {formatInSchoolTimezone(new Date(message.createdAt), userTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </span>
+          </div>
+
+          <div className="alert-card-body">
+            <div className="alert-card-copy">
+              <h3 className="alert-card-title">{message.type}</h3>
+              <p className="alert-card-detail">
+                <strong>{message.student.firstName} {message.student.lastName}</strong> · Guardian: {message.guardianName}
+              </p>
+              <p className="alert-card-detail">{message.message}</p>
+            </div>
+          </div>
+
+          <div className="approval-action-box">
+            <input
+              type="text"
+              className="approval-reason-input"
+              value={rejectReason[message.id] ?? ''}
+              onChange={(event) => setRejectReason((current) => ({ ...current, [message.id]: event.target.value }))}
+              placeholder="Optional rejection reason..."
+            />
+            <div className="approval-buttons">
+              <button
+                type="button"
+                className="primary-button small-button"
+                onClick={() => onOperation({ type: 'approve', messageId: message.id })}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="secondary-button small-button danger-button"
+                onClick={() => onOperation({ type: 'reject', messageId: message.id, reason: rejectReason[message.id] || 'Please revise the communication before sending.' })}
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
   )
 }
 
@@ -3255,7 +4693,7 @@ function ApprovalsPage({
   error,
   onRetry,
   onOperation,
-}: {
+}: Readonly<{
   user: SessionUser
   students: Student[]
   communication: CommunicationState
@@ -3263,7 +4701,7 @@ function ApprovalsPage({
   error: string
   onRetry: () => void
   onOperation: (operation: CommunicationOperation) => Promise<boolean>
-}) {
+}>) {
   const items = useMemo(
     () => getAccessibleCommunication(communication, students, user).filter((message) => message.status === 'AWAITING_APPROVAL'),
     [communication, students, user],
@@ -3272,12 +4710,12 @@ function ApprovalsPage({
 
   if (user.role !== 'admin' && user.role !== 'principal') {
     return (
-      <section className="alert-page">
+      <section className="alerts-page">
         <div className="empty-state-card">
           <div className="empty-icon">
             <ShieldCheck size={22} />
           </div>
-          <h1>Approvals unavailable</h1>
+          <h2>Approvals unavailable</h2>
           <p>You do not have permission to review student communication approvals.</p>
         </div>
       </section>
@@ -3285,69 +4723,48 @@ function ApprovalsPage({
   }
 
   return (
-    <section className="alert-page">
-      <div className="panel-header flex-header">
+    <section className="alerts-page">
+      <div className="students-heading alerts-heading">
         <div>
-          <p className="eyebrow">Approval queue</p>
           <h1>Approval Center</h1>
+          <p className="students-intro alerts-intro">Review and authorize pending student communications and updates.</p>
         </div>
-        <div className="status-pill">{items.length} pending</div>
+        <div className="students-actions alerts-header-actions">
+          <span className="status-pill active">
+            <CheckCircle2 size={13} />
+            {items.length} pending
+          </span>
+          <button
+            type="button"
+            className="secondary-button small-button"
+            onClick={onRetry}
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="help-banner">
         <strong>Helpful tip:</strong> Review messages before they are marked as sent.
       </div>
 
-      {loading ? (
-        <div className="empty-state-card" role="status">Loading communication approvals…</div>
-      ) : error ? (
-        <div className="empty-state-card" role="alert">
-          <h1>We couldn't load approvals.</h1>
-          <p>{error}</p>
-          <button type="button" className="primary-button small-button" onClick={onRetry}>Try again</button>
-        </div>
-      ) : items.length === 0 ? (
-        <div className="empty-state-card">
-          <div className="empty-icon">
-            <ShieldCheck size={22} />
-          </div>
-          <h1>No pending approvals</h1>
-          <p>Submitted parent communication will appear here for review.</p>
-        </div>
-      ) : (
-        <div className="alert-list">
-          {items.map((message) => (
-            <article key={message.id} className="alert-card approval-card">
-              <div className="alert-head">
-                <span className="alert-badge notice">Review</span>
-                <span className="alert-status">{message.status}</span>
-              </div>
-              <h3>{message.type}</h3>
-              <p><strong>{message.student.firstName} {message.student.lastName}</strong> · Guardian: {message.guardianName}</p>
-              <p>{message.message}</p>
-              <div className="alert-meta">
-                <span>{message.channel}</span>
-                <span>{message.sourceType}</span>
-                <span>{formatInSchoolTimezone(new Date(message.createdAt), user.schoolTimezone, 'en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-              </div>
-              <textarea
-                value={rejectReason[message.id] ?? ''}
-                onChange={(event) => setRejectReason((current) => ({ ...current, [message.id]: event.target.value }))}
-                placeholder="Reject reason (optional)"
-              />
-              <div className="alert-actions">
-                <button type="button" className="primary-button small-button" onClick={() => onOperation({ type: 'approve', messageId: message.id })}>Approve</button>
-                <button type="button" className="secondary-button small-button" onClick={() => onOperation({ type: 'reject', messageId: message.id, reason: rejectReason[message.id] || 'Please revise the communication before sending.' })}>Reject</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
+      {renderApprovalsContent({
+        loading,
+        error,
+        items,
+        onRetry,
+        userTimezone: user.schoolTimezone,
+        rejectReason,
+        setRejectReason,
+        onOperation,
+      })}
     </section>
   )
 }
 
-function DashboardLoadingState({ role }: { role: Role }) {
+                                        function DashboardLoadingState({ role }: Readonly<{ role: Role }>) {
   const isTeacher = role === 'teacher'
 
   return (
@@ -3367,7 +4784,7 @@ function DashboardLoadingState({ role }: { role: Role }) {
   )
 }
 
-function DashboardErrorState({ onRetry }: { onRetry: () => void }) {
+function DashboardErrorState({ onRetry }: Readonly<{ onRetry: () => void }>) {
   return (
     <section className="dashboard-page">
       <div className="empty-state-card error-card">
@@ -3382,7 +4799,7 @@ function DashboardErrorState({ onRetry }: { onRetry: () => void }) {
   )
 }
 
-function EmptyDashboardState({ role }: { role: Role }) {
+function EmptyDashboardState({ role }: Readonly<{ role: Role }>) {
   const heading = role === 'teacher' ? 'No class data yet.' : 'No dashboard data yet.'
   const text =
     role === 'teacher'
@@ -3416,7 +4833,7 @@ function SchoolDashboard({
   profilesLoading,
   profilesError,
   academicYear,
-}: {
+}: Readonly<{
   user: SessionUser
   config: DashboardConfig
   students: Student[]
@@ -3429,7 +4846,7 @@ function SchoolDashboard({
   profilesLoading: boolean
   profilesError: string
   academicYear: string | null
-}) {
+}>) {
   const navigate = useNavigate()
   const activeStudents = students.filter((student) => student.status === 'Active')
   const activeStudentIds = new Set(activeStudents.map((student) => student.id))
@@ -3489,13 +4906,31 @@ function SchoolDashboard({
   )
 }
 
-function ExecutiveKpiGrid({ stats, campusId, profiles, profilesLoading, profilesError }: {
+function getTeacherSubLabel(loading: boolean, error: string): string {
+  if (loading) return 'Loading teacher records'
+  if (error) return 'Teacher data unavailable'
+  return 'Active teachers'
+}
+
+function getKpiDisplayLabel(label: string): string {
+  if (label === 'Students') return 'Total Students'
+  if (label === 'Collected This Month') return 'Fees Collected'
+  return label
+}
+
+function ExecutiveKpiGrid({
+  stats,
+  campusId,
+  profiles,
+  profilesLoading,
+  profilesError,
+}: Readonly<{
   stats: StatItem[]
   campusId: string | null
   profiles: SchoolUser[]
   profilesLoading: boolean
   profilesError: string
-}) {
+}>) {
   const labels = ['Students', 'Attendance', 'Collected This Month', 'Total Teachers']
   const selectedStats = labels.flatMap((label) => {
     if (label === 'Total Teachers') {
@@ -3507,15 +4942,14 @@ function ExecutiveKpiGrid({ stats, campusId, profiles, profilesLoading, profiles
       return [{
         label,
         value: profilesLoading || profilesError ? '—' : String(activeTeachers.length),
-        subLabel: profilesLoading ? 'Loading teacher records' : profilesError ? 'Teacher data unavailable' : 'Active teachers',
+        subLabel: getTeacherSubLabel(profilesLoading, profilesError),
         tone: 'purple' as const,
         icon: GraduationCap,
       }]
     }
     const stat = stats.find((item) => item.label === label)
     if (!stat) return []
-    const displayLabel = label === 'Students' ? 'Total Students' : label === 'Collected This Month' ? 'Fees Collected' : label
-    return [{ ...stat, label: displayLabel }]
+    return [{ ...stat, label: getKpiDisplayLabel(label) }]
   })
 
   return (
@@ -3525,104 +4959,203 @@ function ExecutiveKpiGrid({ stats, campusId, profiles, profilesLoading, profiles
   )
 }
 
-function AttendanceOverview({ data, currentRate, error }: {
-  data: TrendPoint[]
-  currentRate: string
-  error: boolean
-}) {
-  const [activePoint, setActivePoint] = useState<number | null>(null)
+function getAttendancePointAriaLabel(point: TrendPoint): string {
+  const label = point.date ?? point.day
+  const totalSuffix = point.total === undefined ? '' : `, ${point.total} students recorded`
+  return `${label}: ${point.value}% attendance${totalSuffix}`
+}
 
-  if (error || !data.length) {
-    return (
-      <div className="executive-chart-empty" role={error ? 'alert' : undefined}>
-        <span className="executive-empty-icon"><ClipboardCheck size={18} /></span>
-        <strong>{error ? 'Attendance data is unavailable' : 'No attendance data recorded yet.'}</strong>
-        <p>{error ? 'Retry attendance to refresh this overview.' : 'Recorded attendance sessions will appear here.'}</p>
-      </div>
-    )
-  }
+function calculateAttendanceStats(data: TrendPoint[]) {
+  if (!data.length) return { avg: 0, highest: 0, lowest: 0 }
+  const values = data.map((d) => d.value)
+  const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length)
+  const highest = Math.max(...values)
+  const lowest = Math.min(...values)
+  return { avg, highest, lowest }
+}
 
-  const width = 620
-  const height = 228
-  const left = 48
-  const right = 24
-  const top = 18
-  const bottom = 46
-  const plotWidth = width - left - right
-  const plotHeight = height - top - bottom
-  const edgeInset = data.length <= 3 ? plotWidth * 0.28 : plotWidth * 0.04
-  const xStart = left + edgeInset
-  const xEnd = width - right - edgeInset
-  const points = data.map((point, index) => ({
+function AttendanceOverviewEmpty({ error }: Readonly<{ error: boolean }>) {
+  const title = error ? 'Attendance data is unavailable' : 'No attendance data recorded yet.'
+  const message = error ? 'Retry attendance to refresh this overview.' : 'Recorded attendance sessions will appear here.'
+  return (
+    <div className="executive-chart-empty" role={error ? 'alert' : undefined}>
+      <span className="executive-empty-icon"><ClipboardCheck size={18} /></span>
+      <strong>{title}</strong>
+      <p>{message}</p>
+    </div>
+  )
+}
+
+function calculateAttendanceChartPoints(
+  data: TrendPoint[],
+  plotWidth: number,
+  plotHeight: number,
+  left: number,
+  top: number,
+  xStart: number,
+  xEnd: number,
+) {
+  return data.map((point, index) => ({
     ...point,
     x: data.length === 1
       ? left + plotWidth / 2
       : xStart + (index * (xEnd - xStart)) / (data.length - 1),
     y: top + ((100 - point.value) / 100) * plotHeight,
   }))
+}
+
+function formatAttendanceSelectedDate(point: { date?: string; day?: string } | null | undefined): string | undefined {
+  if (!point) return undefined
+  if (point.date) {
+    return new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${point.date}T00:00:00Z`))
+  }
+  return point.day
+}
+
+function AttendanceOverview({
+  data,
+  currentRate,
+  error,
+}: Readonly<{
+  data: TrendPoint[]
+  currentRate: string
+  error: boolean
+}>) {
+  const [activePoint, setActivePoint] = useState<number | null>(null)
+
+  const stats = useMemo(() => calculateAttendanceStats(data), [data])
+
+  if (error || !data.length) {
+    return <AttendanceOverviewEmpty error={error} />
+  }
+
+  const width = 620
+  const height = 196
+  const left = 48
+  const right = 20
+  const top = 22
+  const bottom = 32
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const xStart = left + 14
+  const xEnd = width - right - 14
+  const points = calculateAttendanceChartPoints(data, plotWidth, plotHeight, left, top, xStart, xEnd)
   const line = points.map((point) => `${point.x},${point.y}`).join(' ')
   const area = `${xStart},${top + plotHeight} ${line} ${xEnd},${top + plotHeight}`
   const selectedPoint = activePoint === null ? null : points[activePoint]
-  const selectedDate = selectedPoint?.date
-    ? new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${selectedPoint.date}T00:00:00Z`))
-    : selectedPoint?.day
+  const selectedDate = formatAttendanceSelectedDate(selectedPoint)
 
   return (
     <div className="attendance-overview">
       <div className="attendance-chart-summary">
-        <div>
-          <span>Today&apos;s attendance</span>
-          <strong>{currentRate}</strong>
+        <div className="attendance-summary-primary">
+          <span className="attendance-summary-label">Today&apos;s attendance</span>
+          <div className="attendance-summary-rate-row">
+            <strong className="attendance-summary-rate">{currentRate}</strong>
+            {stats.avg > 0 ? (
+              <span className="attendance-avg-badge">
+                7-day avg: {stats.avg}%
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="attendance-summary-meta">
+          <div className="attendance-meta-item">
+            <span className="attendance-meta-label">Highest</span>
+            <strong className="attendance-meta-val">{stats.highest}%</strong>
+          </div>
+          <div className="attendance-meta-item">
+            <span className="attendance-meta-label">Lowest</span>
+            <strong className="attendance-meta-val">{stats.lowest}%</strong>
+          </div>
         </div>
       </div>
-      {selectedPoint ? (
-        <div className="attendance-chart-tooltip" role="status">
-          <strong>{selectedDate}</strong>
-          <span>{selectedPoint.value}% attendance</span>
-          {selectedPoint.total !== undefined ? <span>{selectedPoint.total} recorded students</span> : null}
-        </div>
-      ) : null}
-      <svg className="attendance-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Attendance percentage over the last seven recorded days">
-        {[0, 50, 100].map((tick) => {
-          const y = top + ((100 - tick) / 100) * plotHeight
-          return (
-            <g key={tick}>
-              <line x1={left} y1={y} x2={width - right} y2={y} />
-              <text x={left - 10} y={y + 4} textAnchor="end">{tick}%</text>
+
+      <div className="attendance-chart-wrap">
+        {selectedPoint ? (
+          <output className="attendance-chart-tooltip">
+            <strong>{selectedDate}</strong>
+            <span>{selectedPoint.value}% attendance</span>
+            {selectedPoint.total !== undefined ? <span>{selectedPoint.total} recorded students</span> : null}
+          </output>
+        ) : null}
+        <svg
+          className="attendance-chart"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Attendance percentage over the last seven recorded days"
+        >
+          <defs>
+            <linearGradient id="attendanceAreaGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.18" />
+              <stop offset="85%" stopColor="#3B82F6" stopOpacity="0.02" />
+              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {[0, 50, 100].map((tick) => {
+            const y = top + ((100 - tick) / 100) * plotHeight
+            return (
+              <g key={tick}>
+                <line
+                  x1={left}
+                  y1={y}
+                  x2={width - right}
+                  y2={y}
+                  strokeDasharray={tick === 0 ? undefined : '4 4'}
+                />
+                <text x={left - 10} y={y + 4} textAnchor="end">{tick}%</text>
+              </g>
+            )
+          })}
+          {points.length > 1 ? (
+            <polygon
+              className="attendance-chart-area"
+              points={area}
+              fill="url(#attendanceAreaGrad)"
+            />
+          ) : null}
+          {points.length > 1 ? <polyline className="attendance-chart-line" points={line} /> : null}
+          {points.map((point, index) => (
+            <g
+              key={`${point.day}-${point.date ?? point.x}`}
+              className="attendance-chart-point-group"
+              onMouseEnter={() => setActivePoint(index)}
+              onMouseLeave={() => setActivePoint(null)}
+              onFocus={() => setActivePoint(index)}
+              onBlur={() => setActivePoint(null)}
+              onTouchStart={() => setActivePoint(index)}
+              tabIndex={0}
+              role="button"
+              aria-label={getAttendancePointAriaLabel(point)}
+            >
+              <circle className="attendance-chart-point-hit-area" cx={point.x} cy={point.y} r="14" />
+              <circle className="attendance-chart-point" cx={point.x} cy={point.y} r={activePoint === index ? '5.5' : '4'} />
+              <text className="attendance-chart-day" x={point.x} y={height - 8} textAnchor="middle">{point.day}</text>
             </g>
-          )
-        })}
-        {points.length > 1 ? <polygon className="attendance-chart-area" points={area} /> : null}
-        {points.length > 1 ? <polyline className="attendance-chart-line" points={line} /> : null}
-        {points.map((point, index) => (
-          <g
-            key={`${point.day}-${point.date ?? point.x}`}
-            className="attendance-chart-point-group"
-            onMouseEnter={() => setActivePoint(index)}
-            onMouseLeave={() => setActivePoint(null)}
-            onFocus={() => setActivePoint(index)}
-            onBlur={() => setActivePoint(null)}
-            onTouchStart={() => setActivePoint(index)}
-            tabIndex={0}
-            role="button"
-            aria-label={`${point.date ?? point.day}: ${point.value}% attendance${point.total === undefined ? '' : `, ${point.total} students recorded`}`}
-          >
-            <circle className="attendance-chart-point-hit-area" cx={point.x} cy={point.y} r="12" />
-            <circle className="attendance-chart-point" cx={point.x} cy={point.y} r={activePoint === index ? '5.5' : '4'} />
-            <text className="attendance-chart-day" x={point.x} y={height - 12} textAnchor="middle">{point.day}</text>
-          </g>
-        ))}
-      </svg>
+          ))}
+        </svg>
+      </div>
       {points.length === 1 ? <p className="attendance-chart-note">Only 1 recorded day available.</p> : null}
     </div>
   )
 }
 
-function StudentDistribution({ students }: { students: Student[] }) {
-  const groups = useMemo(() => {
+function formatClassName(name: string): string {
+  const trimmed = (name || '').trim()
+  if (!trimmed) return 'Unassigned'
+  if (/^\d+$/.test(trimmed)) {
+    return `Class ${trimmed}`
+  }
+  return trimmed
+}
+
+function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
+  const { groups, totalClasses, avgClassSize, topClassName } = useMemo(() => {
     const counts = new Map<string, number>()
     for (const student of students) {
-      const className = student.className.trim() || 'Unassigned class'
+      const className = formatClassName(student.className)
       counts.set(className, (counts.get(className) ?? 0) + 1)
     }
     const sorted = [...counts.entries()]
@@ -3630,7 +5163,17 @@ function StudentDistribution({ students }: { students: Student[] }) {
     const visible = sorted.slice(0, 4).map(([label, count]) => ({ label, count }))
     const remaining = sorted.slice(4).reduce((total, [, count]) => total + count, 0)
     if (remaining) visible.push({ label: 'Other classes', count: remaining })
-    return visible
+
+    const totalCls = counts.size
+    const avg = totalCls > 0 ? Math.round(students.length / totalCls) : 0
+    const top = sorted.length > 0 ? sorted[0][0] : '—'
+
+    return {
+      groups: visible,
+      totalClasses: totalCls,
+      avgClassSize: avg,
+      topClassName: top,
+    }
   }, [students])
 
   if (!students.length) {
@@ -3643,7 +5186,7 @@ function StudentDistribution({ students }: { students: Student[] }) {
     )
   }
 
-  const colors = ['#3B82F6', '#14B8A6', '#A78BFA', '#1E2A78', '#E5E7EB']
+  const colors = ['#3B82F6', '#14B8A6', '#A78BFA', '#1E2A78', '#94A3B8']
   const radius = 48
   const circumference = 2 * Math.PI * radius
   const segments = groups.map((group, index) => ({
@@ -3654,58 +5197,84 @@ function StudentDistribution({ students }: { students: Student[] }) {
 
   return (
     <div className="student-distribution">
-      <div className="distribution-donut">
-        <svg viewBox="0 0 120 120" role="img" aria-label={`Student distribution across ${groups.length} class groups`}>
-          <circle className="distribution-track" cx="60" cy="60" r={radius} />
-          {segments.map(({ group, length, offset }, index) => (
-            <circle
-              key={group.label}
-              className="distribution-segment"
-              cx="60"
-              cy="60"
-              r={radius}
-              stroke={colors[index % colors.length]}
-              strokeDasharray={`${length} ${circumference - length}`}
-              strokeDashoffset={-offset}
-            >
-              <title>{`${group.label}: ${group.count} students`}</title>
-            </circle>
-          ))}
-        </svg>
-        <div className="distribution-total">
-          <strong>{students.length}</strong>
-          <span>students</span>
+      <div className="distribution-body">
+        <div className="distribution-donut">
+          <svg viewBox="0 0 120 120" role="img" aria-label={`Student distribution across ${groups.length} class groups`}>
+            <circle className="distribution-track" cx="60" cy="60" r={radius} />
+            {segments.map(({ group, length, offset }, index) => (
+              <circle
+                key={group.label}
+                className="distribution-segment"
+                cx="60"
+                cy="60"
+                r={radius}
+                stroke={colors[index % colors.length]}
+                strokeDasharray={`${length} ${circumference - length}`}
+                strokeDashoffset={-offset}
+              >
+                <title>{`${group.label}: ${group.count} students`}</title>
+              </circle>
+            ))}
+          </svg>
+          <div className="distribution-total">
+            <strong>{students.length}</strong>
+            <span>students</span>
+          </div>
+        </div>
+        <ul className="distribution-legend">
+          {groups.map((group, index) => {
+            const pct = Math.round((group.count / students.length) * 100)
+            const color = colors[index % colors.length]
+            return (
+              <li key={group.label} className="distribution-legend-item">
+                <div className="distribution-legend-header">
+                  <span className="distribution-label">
+                    <i style={{ backgroundColor: color }} />
+                    <span title={group.label}>{group.label}</span>
+                  </span>
+                  <span className="distribution-count">
+                    <strong>{group.count}</strong>
+                    <small>{pct}%</small>
+                  </span>
+                </div>
+                <div className="distribution-bar-track">
+                  <div
+                    className="distribution-bar-fill"
+                    style={{
+                      width: `${Math.max(pct, group.count > 0 ? 2 : 0)}%`,
+                      backgroundColor: color,
+                    }}
+                  />
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      <div className="distribution-footer">
+        <div className="distribution-summary-item">
+          <span className="distribution-summary-label">Total classes</span>
+          <strong className="distribution-summary-val">{totalClasses}</strong>
+        </div>
+        <div className="distribution-summary-item">
+          <span className="distribution-summary-label">Avg class size</span>
+          <strong className="distribution-summary-val">{avgClassSize}</strong>
+        </div>
+        <div className="distribution-summary-item">
+          <span className="distribution-summary-label">Largest class</span>
+          <strong className="distribution-summary-val" title={topClassName}>{topClassName}</strong>
         </div>
       </div>
-      <ul className="distribution-legend">
-        {groups.map((group, index) => (
-          <li key={group.label}>
-            <span className="distribution-label">
-              <i style={{ backgroundColor: colors[index % colors.length] }} />
-              <span>{group.label}</span>
-            </span>
-            <span className="distribution-count">
-              {group.count}
-              <small>{Math.round((group.count / students.length) * 100)}%</small>
-            </span>
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
 
-function getDashboardActivities(
-  user: SessionUser,
-  students: Student[],
+function getAttendanceActivities(
   attendance: AttendanceState,
-  fees: FeeState,
-  communication: CommunicationState,
-  alerts: AlertItem[],
+  classesById: Map<string, AttendanceClass>,
 ): DashboardActivity[] {
   const activities: DashboardActivity[] = []
-  const classesById = new Map(getAttendanceClasses(students).map((attendanceClass) => [attendanceClass.id, attendanceClass]))
-
   for (const session of attendance.sessions) {
     const attendanceClass = classesById.get(session.classId)
     if (!attendanceClass || session.status !== 'COMPLETED' || session.studentCount === 0) continue
@@ -3719,7 +5288,15 @@ function getDashboardActivities(
       tone: 'teal',
     })
   }
+  return activities
+}
 
+function getFeeActivities(
+  fees: FeeState,
+  students: Student[],
+  user: SessionUser,
+): DashboardActivity[] {
+  const activities: DashboardActivity[] = []
   const accessibleInvoices = getFeeInvoices(fees, students, user)
   const invoiceById = new Map(accessibleInvoices.map((invoice) => [invoice.id, invoice]))
   for (const payment of fees.payments) {
@@ -3737,32 +5314,66 @@ function getDashboardActivities(
       tone: 'purple',
     })
   }
+  return activities
+}
 
+function getCommunicationActivities(
+  communication: CommunicationState,
+  students: Student[],
+  user: SessionUser,
+): DashboardActivity[] {
+  const activities: DashboardActivity[] = []
   for (const message of getAccessibleCommunication(communication, students, user)) {
     const isSent = message.status === 'SENT'
     const isApproved = message.status === 'APPROVED'
-    const label = isSent
-      ? 'Parent communication sent'
-      : isApproved
-        ? 'Communication approved'
-        : message.status === 'AWAITING_APPROVAL'
-          ? 'Communication submitted for review'
-          : message.status === 'REJECTED'
-            ? 'Communication returned for revision'
-            : 'Communication draft created'
+    let label = 'Communication draft created'
+    if (isSent) {
+      label = 'Parent communication sent'
+    } else if (isApproved) {
+      label = 'Communication approved'
+    } else if (message.status === 'AWAITING_APPROVAL') {
+      label = 'Communication submitted for review'
+    } else if (message.status === 'REJECTED') {
+      label = 'Communication returned for revision'
+    }
+
+    let occurredAt = message.createdAt
+    if (isSent) {
+      occurredAt = message.sentAt ?? message.updatedAt
+    } else if (isApproved) {
+      occurredAt = message.approvedAt ?? message.updatedAt
+    }
+
     activities.push({
       id: `communication-${message.id}`,
       title: label,
       detail: `${message.student.firstName} ${message.student.lastName} · ${message.type}`,
-      occurredAt: isSent ? message.sentAt ?? message.updatedAt : isApproved ? message.approvedAt ?? message.updatedAt : message.createdAt,
+      occurredAt,
       path: '/communication',
       icon: MessageSquareText,
       tone: 'blue',
     })
   }
+  return activities
+}
+
+function getDashboardActivities(
+  user: SessionUser,
+  students: Student[],
+  attendance: AttendanceState,
+  fees: FeeState,
+  communication: CommunicationState,
+  alerts: AlertItem[],
+): DashboardActivity[] {
+  const classesById = new Map(getAttendanceClasses(students).map((attendanceClass) => [attendanceClass.id, attendanceClass]))
+  const activities: DashboardActivity[] = [
+    ...getAttendanceActivities(attendance, classesById),
+    ...getFeeActivities(fees, students, user),
+    ...getCommunicationActivities(communication, students, user),
+  ]
 
   for (const alert of alerts) {
-    if (alert.status === 'RESOLVED') continue
+    if (alert.status === 'RESOLVED') { continue }
     const item = alertToAttention(alert, user)
     activities.push({
       id: `alert-${alert.id}`,
@@ -3781,11 +5392,15 @@ function getDashboardActivities(
     .slice(0, 5)
 }
 
-function RecentActivities({ activities, navigate, timeZone }: {
+function RecentActivities({
+  activities,
+  navigate,
+  timeZone,
+}: Readonly<{
   activities: DashboardActivity[]
   navigate: (path: string) => void
   timeZone?: string | null
-}) {
+}>) {
   const [now] = useState(() => Date.now())
   if (!activities.length) {
     return (
@@ -3832,7 +5447,7 @@ function formatRelativeActivityTime(value: string, now: number, timeZone?: strin
   return days < 7 ? `${days}d ago` : formatInSchoolTimezone(new Date(timestamp), timeZone, 'en-PK', { day: 'numeric', month: 'short' })
 }
 
-function FinanceDashboard({ user, config }: { user: SessionUser; config: DashboardConfig }) {
+function FinanceDashboard({ user, config }: Readonly<{ user: SessionUser; config: DashboardConfig }>) {
   const navigate = useNavigate()
 
   return (
@@ -3866,10 +5481,130 @@ function FinanceDashboard({ user, config }: { user: SessionUser; config: Dashboa
   )
 }
 
-function TeacherDashboard({ user, config, students }: { user: SessionUser; config: DashboardConfig; students: Student[] }) {
+function renderTeacherClasses(
+  sortedClasses: AttendanceClass[],
+  filteredClasses: Array<{ cls: AttendanceClass; isRecorded: boolean }>,
+  navigate: (to: string) => void,
+  today: string,
+): ReactNode {
+  if (!sortedClasses.length) {
+    return <p className="student-muted empty-classes-note">No classes are assigned to you.</p>
+  }
+  if (!filteredClasses.length) {
+    return (
+      <div className="empty-state-card">
+        <p>No classes match your search or filter.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="teacher-classes-grid">
+      {filteredClasses.map(({ cls, isRecorded }) => (
+        <article className={`teacher-class-card ${isRecorded ? 'is-recorded' : 'is-pending'}`} key={cls.id}>
+          <div className="teacher-class-card-top">
+            <div className="teacher-class-badge-row">
+              <span className="teacher-class-code">{cls.className}-{cls.section}</span>
+              <span className={`status-pill ${isRecorded ? 'success' : 'pending'}`}>
+                {isRecorded ? <CheckCircle2 size={12} /> : null}
+                {isRecorded ? 'Recorded' : 'Pending'}
+              </span>
+            </div>
+            <h4 className="teacher-class-label">Grade {cls.className} · Section {cls.section}</h4>
+          </div>
+
+          <div className="teacher-class-meta">
+            <span className="teacher-class-meta-item">
+              <Users size={13} />
+              <span>{cls.students.length} students</span>
+            </span>
+            <span className="teacher-class-meta-item">
+              <CalendarDays size={13} />
+              <span>Daily session</span>
+            </span>
+          </div>
+
+          <div className="teacher-class-action">
+            <button
+              type="button"
+              className={isRecorded ? 'secondary-button small-button' : 'primary-button small-button'}
+              onClick={() => navigate(`/attendance/take/${encodeURIComponent(cls.id)}?date=${today}`)}
+            >
+              {isRecorded ? (
+                <>
+                  <span>Review Attendance</span>
+                  <ArrowRight size={13} />
+                </>
+              ) : (
+                <>
+                  <ClipboardCheck size={13} />
+                  <span>Take Attendance</span>
+                </>
+              )}
+            </button>
+          </div>
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function TeacherDashboard({
+  user,
+  config,
+  students,
+  attendance,
+}: Readonly<{
+  user: SessionUser
+  config: DashboardConfig
+  students: Student[]
+  attendance?: AttendanceState
+}>) {
   const navigate = useNavigate()
-  const classes = getAttendanceClasses(students)
   const today = schoolDateKey(user.schoolTimezone)
+  const [filter, setFilter] = useState<'all' | 'pending' | 'recorded'>('all')
+  const [query, setQuery] = useState('')
+
+  const sortedClasses = useMemo(() => {
+    return [...getAttendanceClasses(students)].sort((a, b) => {
+      const classCmp = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' })
+      if (classCmp !== 0) return classCmp
+      return a.section.localeCompare(b.section)
+    })
+  }, [students])
+
+  const classStatusList = useMemo(() => {
+    return sortedClasses.map((cls) => {
+      const isRecorded = attendance ? Boolean(getSessionForClass(attendance, today, cls)) : false
+      return {
+        cls,
+        isRecorded,
+      }
+    })
+  }, [sortedClasses, attendance, today])
+
+  const counts = useMemo(() => {
+    const recorded = classStatusList.filter((item) => item.isRecorded).length
+    return {
+      all: classStatusList.length,
+      recorded,
+      pending: classStatusList.length - recorded,
+    }
+  }, [classStatusList])
+
+  const filteredClasses = useMemo(() => {
+    return classStatusList.filter(({ cls, isRecorded }) => {
+      if (filter === 'pending' && isRecorded) return false
+      if (filter === 'recorded' && !isRecorded) return false
+      if (query.trim()) {
+        const q = query.toLowerCase().trim()
+        const matchName = cls.className.toLowerCase().includes(q)
+        const matchSec = cls.section.toLowerCase().includes(q)
+        const matchCombined = `${cls.className}-${cls.section}`.toLowerCase().includes(q)
+        if (!matchName && !matchSec && !matchCombined) return false
+      }
+      return true
+    })
+  }, [classStatusList, filter, query])
 
   return (
     <section className="dashboard-page">
@@ -3885,20 +5620,62 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
         />
       ) : null}
 
-      <DashboardSection title="Today's Classes">
-        <div className="class-list">
-          {classes.map((attendanceClass) => (
-            <div className="class-row" key={attendanceClass.id}>
-              <div>
-                <strong>{attendanceClass.className}-{attendanceClass.section}</strong>
-                <span>{attendanceClass.students.length} Students</span>
-              </div>
-              <button type="button" className="primary-button small-button" onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${today}`)}>
-                Take Attendance
+      <DashboardSection title="Today's Classes" badgeText={`${counts.recorded} of ${counts.all} Recorded`}>
+        <div className="teacher-classes-wrapper">
+          <div className="teacher-classes-toolbar">
+            <div className="teacher-classes-tabs" role="tablist" aria-label="Filter classes by status">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === 'all'}
+                className={`teacher-classes-tab ${filter === 'all' ? 'active' : ''}`}
+                onClick={() => setFilter('all')}
+              >
+                All Classes <span className="tab-pill">{counts.all}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === 'pending'}
+                className={`teacher-classes-tab ${filter === 'pending' ? 'active' : ''}`}
+                onClick={() => setFilter('pending')}
+              >
+                Pending <span className="tab-pill warning-pill">{counts.pending}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={filter === 'recorded'}
+                className={`teacher-classes-tab ${filter === 'recorded' ? 'active' : ''}`}
+                onClick={() => setFilter('recorded')}
+              >
+                Recorded <span className="tab-pill success-pill">{counts.recorded}</span>
               </button>
             </div>
-          ))}
-          {!classes.length ? <p className="student-muted">No classes are assigned to you.</p> : null}
+
+            <div className="teacher-classes-search">
+              <Search size={14} />
+              <input
+                type="search"
+                placeholder="Find class or section..."
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="Find class"
+              />
+              {query ? (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setQuery('')}
+                  aria-label="Clear filter"
+                >
+                  <X size={12} />
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {renderTeacherClasses(sortedClasses, filteredClasses, navigate, today)}
         </div>
       </DashboardSection>
 
@@ -3915,7 +5692,7 @@ function TeacherDashboard({ user, config, students }: { user: SessionUser; confi
   )
 }
 
-function PageHeader({ user, title, academicYear }: { user: SessionUser; title: string; academicYear?: string | null }) {
+function PageHeader({ user, title, academicYear }: Readonly<{ user: SessionUser; title: string; academicYear?: string | null }>) {
   const firstName = user.name.split(' ')[0]
   const greetingName = academicYear !== undefined ? user.name : firstName
   const [dateContext] = useState(() => {
@@ -3931,19 +5708,29 @@ function PageHeader({ user, title, academicYear }: { user: SessionUser; title: s
       }),
     }
   })
-  const greeting = dateContext.hour < 12 ? 'Good Morning' : dateContext.hour < 17 ? 'Good Afternoon' : 'Good Evening'
+  let greeting = 'Good Evening'
+  if (dateContext.hour < 12) {
+    greeting = 'Good Morning'
+  } else if (dateContext.hour < 17) {
+    greeting = 'Good Afternoon'
+  }
+
   const academicYearValue = academicYear?.trim() ?? ''
-  const academicYearRange = academicYearValue.match(/^(\d{4})-(\d{4})$/)
-  const academicYearLabel = academicYearRange
-    ? `Academic Year ${academicYearRange[1]} – ${academicYearRange[2].slice(-2)}`
-    : academicYearValue
-      ? `Academic Year ${academicYearValue}`
-      : 'Academic year unavailable'
-  const badgeLabel = title.toUpperCase().includes('FINANCE')
-    ? 'FINANCE DASHBOARD'
-    : title.toUpperCase().includes('TEACHER')
-      ? 'TEACHER DASHBOARD'
-      : 'EXECUTIVE DASHBOARD'
+  const academicYearRange = /^(\d{4})-(\d{4})$/.exec(academicYearValue)
+  let academicYearLabel = 'Academic year unavailable'
+  if (academicYearRange) {
+    academicYearLabel = `Academic Year ${academicYearRange[1]} – ${academicYearRange[2].slice(-2)}`
+  } else if (academicYearValue) {
+    academicYearLabel = `Academic Year ${academicYearValue}`
+  }
+
+  const upperTitle = title.toUpperCase()
+  let badgeLabel = 'EXECUTIVE DASHBOARD'
+  if (upperTitle.includes('FINANCE')) {
+    badgeLabel = 'FINANCE DASHBOARD'
+  } else if (upperTitle.includes('TEACHER')) {
+    badgeLabel = 'TEACHER DASHBOARD'
+  }
 
   return (
     <div className="hero-panel">
@@ -3979,11 +5766,11 @@ function PageHeader({ user, title, academicYear }: { user: SessionUser; title: s
   )
 }
 
-function DashboardHeader({ user, title, academicYear }: { user: SessionUser; title: string; academicYear?: string | null }) {
+function DashboardHeader({ user, title, academicYear }: Readonly<{ user: SessionUser; title: string; academicYear?: string | null }>) {
   return <PageHeader user={user} title={title} academicYear={academicYear} />
 }
 
-function DashboardKpiGrid({ stats }: { stats: StatItem[] }) {
+function DashboardKpiGrid({ stats }: Readonly<{ stats: StatItem[] }>) {
   if (stats.length === 7) {
     return (
       <div className="stats-kpi-container">
@@ -4029,36 +5816,50 @@ function DashboardKpiGrid({ stats }: { stats: StatItem[] }) {
   )
 }
 
-function MetricCard({ stat }: { stat: StatItem }) {
+function getMetricAccent(rawLabel: string): string {
+  const label = rawLabel.toLowerCase()
+  if (label.includes('student')) {
+    return 'students'
+  }
+  if (label.includes('alert')) {
+    return 'alerts'
+  }
+  if (label.includes('attendance') || label === 'present') {
+    return 'attendance'
+  }
+  if (label.includes('collected')) {
+    return 'collected'
+  }
+  if (label.includes('outstanding')) {
+    return 'outstanding'
+  }
+  if (label.includes('overdue') || label === 'absent') {
+    return 'overdue'
+  }
+  if (label.includes('teacher')) {
+    return 'teachers'
+  }
+  if (label.includes('communication') || label.includes('reminder')) {
+    return 'communications'
+  }
+  return 'default'
+}
+
+function MetricCard({ stat }: Readonly<{ stat: StatItem }>) {
   const Icon = stat.icon
-  const label = stat.label.toLowerCase()
-  const accent = label.includes('student')
-    ? 'students'
-    : label.includes('alert')
-      ? 'alerts'
-      : label.includes('attendance') || label === 'present'
-      ? 'attendance'
-      : label.includes('collected')
-        ? 'collected'
-        : label.includes('outstanding')
-          ? 'outstanding'
-          : label.includes('overdue') || label === 'absent'
-            ? 'overdue'
-            : label.includes('communication') || label.includes('reminder')
-              ? 'communications'
-              : 'default'
+  const accent = getMetricAccent(stat.label)
 
   return (
     <article className={`stat-card ${stat.tone} metric-${accent}`}>
-      <div className="stat-card-main">
+      <div className="stat-card-header">
+        <span className="stat-label">{stat.label}</span>
         <span className="stat-icon-box">
-          <Icon size={19} strokeWidth={2.2} />
+          <Icon size={18} strokeWidth={2.2} />
         </span>
-        <div className="stat-card-text">
-          <span className="stat-label">{stat.label}</span>
-          <strong className="stat-value">{stat.value}</strong>
-          <small className="stat-sublabel">{stat.subLabel}</small>
-        </div>
+      </div>
+      <div className="stat-card-body">
+        <strong className="stat-value">{stat.value}</strong>
+        {stat.subLabel ? <small className="stat-sublabel">{stat.subLabel}</small> : null}
       </div>
       {stat.trendLabel ? (
         <span className="stat-trend">
@@ -4066,23 +5867,15 @@ function MetricCard({ stat }: { stat: StatItem }) {
           {stat.trendLabel}
         </span>
       ) : null}
-      <span className="stat-spark" aria-hidden="true" />
-      <span className="stat-decoration" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-        <i />
-        <i />
-      </span>
     </article>
   )
 }
 
-function StatCard({ stat }: { stat: StatItem }) {
+function StatCard({ stat }: Readonly<{ stat: StatItem }>) {
   return <MetricCard stat={stat} />
 }
 
-function MorningBrief({ summary, cta, onAction }: { summary: string; cta: string; onAction?: () => void }) {
+function MorningBrief({ summary, cta, onAction }: Readonly<{ summary: string; cta: string; onAction?: () => void }>) {
   return (
     <div className="morning-brief">
       <div className="brief-ai-avatar">
@@ -4103,28 +5896,35 @@ function MorningBrief({ summary, cta, onAction }: { summary: string; cta: string
   )
 }
 
+function getSectionCardDefaultIcon(title: string): ReactNode {
+  const lower = title.toLowerCase()
+  if (lower.includes('attention')) {
+    return <AlertTriangle size={18} className="panel-title-icon text-amber" />
+  }
+  if (lower.includes('quick')) {
+    return <Zap size={18} className="panel-title-icon text-blue" />
+  }
+  if (lower.includes('attendance') || lower.includes('trend') || lower.includes('collection')) {
+    return <TrendingUp size={18} className="panel-title-icon text-blue" />
+  }
+  if (lower.includes('classes')) {
+    return <BookCheck size={18} className="panel-title-icon text-blue" />
+  }
+  return null
+}
+
 function SectionCard({
   title,
   icon,
   badgeText = 'Updated',
   children,
-}: {
+}: Readonly<{
   title: string
   icon?: ReactNode
   badgeText?: string
   children: ReactNode
-}) {
-  const renderedIcon = icon ?? (
-    title.toLowerCase().includes('attention') ? (
-      <AlertTriangle size={18} className="panel-title-icon text-amber" />
-    ) : title.toLowerCase().includes('quick') ? (
-      <Zap size={18} className="panel-title-icon text-blue" />
-    ) : title.toLowerCase().includes('attendance') || title.toLowerCase().includes('trend') || title.toLowerCase().includes('collection') ? (
-      <TrendingUp size={18} className="panel-title-icon text-blue" />
-    ) : title.toLowerCase().includes('classes') ? (
-      <BookCheck size={18} className="panel-title-icon text-blue" />
-    ) : null
-  )
+}>) {
+  const renderedIcon = icon ?? getSectionCardDefaultIcon(title)
 
   return (
     <section className="panel-card">
@@ -4145,12 +5945,12 @@ function DashboardSection({
   icon,
   badgeText = 'Updated',
   children,
-}: {
+}: Readonly<{
   title: string
   icon?: ReactNode
   badgeText?: string
   children: ReactNode
-}) {
+}>) {
   return (
     <SectionCard title={title} icon={icon} badgeText={badgeText}>
       {children}
@@ -4158,7 +5958,7 @@ function DashboardSection({
   )
 }
 
-function AttentionItemCard({ item, onNavigate }: { item: AttentionItem; onNavigate?: (path: string) => void }) {
+function AttentionItemCard({ item, onNavigate }: Readonly<{ item: AttentionItem; onNavigate?: (path: string) => void }>) {
   return (
     <li className={`attention-row attention-${item.level.toLowerCase()}`} key={`${item.level}-${item.title}`}>
       <div className="attention-copy">
@@ -4182,7 +5982,7 @@ function AttentionItemCard({ item, onNavigate }: { item: AttentionItem; onNaviga
   )
 }
 
-function AttentionList({ items, onNavigate }: { items: AttentionItem[]; onNavigate?: (path: string) => void }) {
+function AttentionList({ items, onNavigate }: Readonly<{ items: AttentionItem[]; onNavigate?: (path: string) => void }>) {
   if (!items.length) {
     return (
       <div className="executive-no-attention">
@@ -4200,18 +6000,18 @@ function AttentionList({ items, onNavigate }: { items: AttentionItem[]; onNaviga
   )
 }
 
-function QuickActionCard({ action, navigate }: { action: QuickAction; navigate: (path: string) => void }) {
+function getQuickActionTone(rawLabel: string): string {
+  const label = rawLabel.toLowerCase()
+  if (label.includes('alert')) return 'alerts'
+  if (label.includes('attendance')) return 'attendance'
+  if (label.includes('student') || label.includes('user')) return 'students'
+  if (label.includes('fee') || label.includes('collection')) return 'finance'
+  return 'communication'
+}
+
+function QuickActionCard({ action, navigate }: Readonly<{ action: QuickAction; navigate: (path: string) => void }>) {
   const Icon = action.icon
-  const label = action.label.toLowerCase()
-  const tone = label.includes('alert')
-    ? 'alerts'
-    : label.includes('attendance')
-      ? 'attendance'
-      : label.includes('student') || label.includes('user')
-        ? 'students'
-        : label.includes('fee') || label.includes('collection')
-          ? 'finance'
-          : 'communication'
+  const tone = getQuickActionTone(action.label)
 
   return (
     <button key={action.label} type="button" className={`action-chip action-${tone}`} onClick={() => navigate(action.path)}>
@@ -4227,7 +6027,7 @@ function QuickActionCard({ action, navigate }: { action: QuickAction; navigate: 
   )
 }
 
-function QuickActions({ actions, navigate }: { actions: QuickAction[]; navigate: (path: string) => void }) {
+function QuickActions({ actions, navigate }: Readonly<{ actions: QuickAction[]; navigate: (path: string) => void }>) {
   return (
     <div className="action-list">
       {actions.map((action) => (
@@ -4237,7 +6037,13 @@ function QuickActions({ actions, navigate }: { actions: QuickAction[]; navigate:
   )
 }
 
-function SimpleTrendChart({ data, emptyMessage = 'Trend data will appear after attendance has been recorded.' }: { data: TrendPoint[]; emptyMessage?: string }) {
+function SimpleTrendChart({
+  data,
+  emptyMessage = 'Trend data will appear after attendance has been recorded.',
+}: Readonly<{
+  data: TrendPoint[]
+  emptyMessage?: string
+}>) {
   if (!data.length) {
     return (
       <div className="chart-empty-state">
@@ -4259,7 +6065,11 @@ function SimpleTrendChart({ data, emptyMessage = 'Trend data will appear after a
   })
 
   const points = coords.map(({ x, y }) => `${x},${y}`).join(' ')
-  const areaPath = `${coords.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ')} L ${coords.at(-1)?.x ?? width - padding} ${height - padding} L ${coords[0]?.x ?? padding} ${height - padding} Z`
+  const pathCommands = coords.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ')
+  const lastX = coords.at(-1)?.x ?? width - padding
+  const firstX = coords[0]?.x ?? padding
+  const groundY = height - padding
+  const areaPath = `${pathCommands} L ${lastX} ${groundY} L ${firstX} ${groundY} Z`
 
   return (
     <div className="chart-shell">
@@ -4308,14 +6118,28 @@ function SimpleTrendChart({ data, emptyMessage = 'Trend data will appear after a
   )
 }
 
-function MyClassesPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry }: {
+function getMyClassesAttendanceStatus(loading: boolean, error: string, hasSession: boolean): string {
+  if (loading) return 'Loading…'
+  if (error) return 'Unavailable'
+  if (hasSession) return 'Recorded today'
+  return 'Not marked yet'
+}
+
+function MyClassesPage({
+  user,
+  students,
+  attendance,
+  attendanceLoading,
+  attendanceError,
+  onRetry,
+}: Readonly<{
   user: SessionUser
   students: Student[]
   attendance: AttendanceState
   attendanceLoading: boolean
   attendanceError: string
   onRetry: () => void
-}) {
+}>) {
   const navigate = useNavigate()
   const classes = user.teacherAssignments
     .filter((assignment) => assignment.active)
@@ -4337,31 +6161,36 @@ function MyClassesPage({ user, students, attendance, attendanceLoading, attendan
     <section className="dashboard-page">
       <div className="panel-header flex-header">
         <div>
-          <p className="eyebrow">My schedule</p>
           <h1>My Classes</h1>
+          <p className="student-muted">Authorized class schedules and assigned teaching sections.</p>
         </div>
       </div>
 
       {attendanceError ? <div className="attendance-empty-notice" role="alert">{attendanceError} <button type="button" className="student-link" onClick={onRetry}>Try again</button></div> : null}
       <div className="dashboard-grid">
-        {classes.length ? classes.map((attendanceClass) => (
-          <div key={attendanceClass.id} className="panel-card">
-            <h3>{attendanceClass.className}</h3>
-            <p className="student-muted">Section {attendanceClass.section}</p>
-            <ul className="list-stack">
-              <li><span>Students</span><strong>{attendanceClass.students.length}</strong></li>
-              <li><span>Attendance status</span><strong>{attendanceLoading ? 'Loading…' : attendanceError ? 'Unavailable' : getSessionForClass(attendance, schoolDateKey(user.schoolTimezone), attendanceClass) ? 'Recorded today' : 'Not marked yet'}</strong></li>
-            </ul>
-            <button
-              type="button"
-              className="primary-button small-button"
-              disabled={attendanceLoading || Boolean(attendanceError)}
-              onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${schoolDateKey(user.schoolTimezone)}`)}
-            >
-              Open Attendance
-            </button>
-          </div>
-        )) : (
+        {classes.length ? classes.map((attendanceClass) => {
+          const hasSession = Boolean(getSessionForClass(attendance, schoolDateKey(user.schoolTimezone), attendanceClass))
+          const statusText = getMyClassesAttendanceStatus(attendanceLoading, attendanceError, hasSession)
+
+          return (
+            <div key={attendanceClass.id} className="panel-card">
+              <h3>{attendanceClass.className}</h3>
+              <p className="student-muted">Section {attendanceClass.section}</p>
+              <ul className="list-stack">
+                <li><span>Students</span><strong>{attendanceClass.students.length}</strong></li>
+                <li><span>Attendance status</span><strong>{statusText}</strong></li>
+              </ul>
+              <button
+                type="button"
+                className="primary-button small-button"
+                disabled={attendanceLoading || Boolean(attendanceError)}
+                onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${schoolDateKey(user.schoolTimezone)}`)}
+              >
+                Open Attendance
+              </button>
+            </div>
+          )
+        }) : (
           <div className="empty-state-card">
             <div className="empty-icon"><BookOpenText size={22} /></div>
             <h1>No assigned classes</h1>

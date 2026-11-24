@@ -11,8 +11,8 @@ export function AskEduPage() {
     <section className="ask-edu-page">
       <div className="panel-header flex-header">
         <div>
-          <p className="eyebrow">School Intelligence</p>
           <h1>Ask CAMVIA</h1>
+          <p className="student-muted">Ask questions and analyze performance across your authorized scope.</p>
         </div>
         <div className="status-pill updated-pill">Role-scoped live data</div>
       </div>

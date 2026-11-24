@@ -53,7 +53,7 @@ function requireSupabase() {
 
 function displayId(uuid: string | null | undefined): number {
   if (!uuid) return 0
-  return uuid.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
+  return uuid.split('').reduce((value, char) => (value * 31 + (char.codePointAt(0) ?? 0)) >>> 0, 0)
 }
 
 async function fetchByIds<T>(table: string, columns: string, key: string, ids: string[]): Promise<T[]> {

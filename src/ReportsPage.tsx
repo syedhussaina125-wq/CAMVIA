@@ -43,24 +43,16 @@ function StatCard({ stat }: { stat: StatItem }) {
 
   return (
     <article className={`stat-card ${stat.tone} metric-${accent}`}>
-      <div className="stat-card-main">
+      <div className="stat-card-header">
+        <span className="stat-label">{stat.label}</span>
         <span className="stat-icon-box">
-          <Icon size={19} strokeWidth={2.2} />
+          <Icon size={18} strokeWidth={2.2} />
         </span>
-        <div className="stat-card-text">
-          <span className="stat-label">{stat.label}</span>
-          <strong className="stat-value">{stat.value}</strong>
-          <small className="stat-sublabel">{stat.subLabel}</small>
-        </div>
       </div>
-      <span className="stat-spark" aria-hidden="true" />
-      <span className="stat-decoration" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-        <i />
-        <i />
-      </span>
+      <div className="stat-card-body">
+        <strong className="stat-value">{stat.value}</strong>
+        {stat.subLabel ? <small className="stat-sublabel">{stat.subLabel}</small> : null}
+      </div>
     </article>
   )
 }
@@ -91,8 +83,8 @@ export function ReportsPage({
     <section className="dashboard-page">
       <div className="panel-header flex-header">
         <div>
-          <p className="eyebrow">Operational overview</p>
           <h1>Reports</h1>
+          <p className="student-muted">Generate, filter, and review school operations and performance metrics.</p>
         </div>
       </div>
 

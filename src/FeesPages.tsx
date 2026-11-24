@@ -103,7 +103,6 @@ export function FeesPage(props: FeesPagesProps) {
     <section className="fees-page">
       <div className="fees-page-heading">
         <div>
-          <p className="eyebrow">SEE · COLLECT · FOLLOW UP</p>
           <h1>Fees &amp; Collections</h1>
           <p>Track collections, outstanding balances, and follow-up priorities.</p>
         </div>
@@ -299,7 +298,7 @@ export function FeeStudentDetailPage(props: FeesPagesProps) {
       <button type="button" className="back-link" onClick={() => navigate('/fees')}><ArrowLeft size={16} /> Fees &amp; Collections</button>
       {actionError ? <p className="fee-form-error" role="alert" style={{ marginBottom: '12px' }}>{actionError}</p> : null}
       <div className="fees-page-heading detail-heading">
-        <div><p className="eyebrow">Student fee account</p><h1>{student.firstName} {student.lastName}</h1><p>{student.studentId} <span>·</span> {student.className}-{student.section}</p></div>
+        <div><h1>{student.firstName} {student.lastName}</h1><p>{student.studentId} <span>·</span> {student.className}-{student.section}</p></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span className="fee-role-note">{principalReadOnly ? 'Read-only overview' : 'Authorized fee record'}</span>
           {canMutate && props.onCreateInvoice ? (

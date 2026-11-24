@@ -415,7 +415,6 @@ export function StatementsPage({
           >
             <ArrowLeft size={16} /> {kind === 'account' ? (user.role === 'principal' ? 'Dashboard' : 'Fees & Collections') : 'Attendance'}
           </button>
-          <p className="eyebrow">CAMVIA · STUDENT RECORDS</p>
           <h1>{kind === 'account' ? 'Account Statement' : 'Attendance Statement'}</h1>
           <p>Choose a student and date range to view a print-ready statement.</p>
         </div>

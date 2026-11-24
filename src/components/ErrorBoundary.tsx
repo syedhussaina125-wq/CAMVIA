@@ -66,9 +66,21 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             <h1 style={{ margin: '0 0 8px', fontSize: '20px', fontWeight: 600 }}>
               Something went wrong
             </h1>
-            <p style={{ margin: '0 0 20px', fontSize: '14px', color: '#475569', lineHeight: 1.5 }}>
+            <p style={{ margin: '0 0 16px', fontSize: '14px', color: '#475569', lineHeight: 1.5 }}>
               An unexpected error occurred while rendering this view. Reloading the page usually resolves temporary network or update issues.
             </p>
+            {this.state.error ? (
+              <details style={{ margin: '0 0 20px', padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px', color: '#334155' }}>
+                <summary style={{ fontWeight: 600, color: '#dc2626', cursor: 'pointer' }}>
+                  {this.state.error.message || 'View error details'}
+                </summary>
+                {this.state.error.stack ? (
+                  <pre style={{ marginTop: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'monospace', fontSize: '11px', color: '#64748b', maxHeight: '160px', overflowY: 'auto' }}>
+                    {this.state.error.stack}
+                  </pre>
+                ) : null}
+              </details>
+            ) : null}
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
               <button
                 type="button"

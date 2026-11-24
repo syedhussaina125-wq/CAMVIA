@@ -34,7 +34,7 @@ type QueryResult<Row> = {
 }
 
 function numericId(uuid: string): number {
-  return uuid.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
+  return uuid.split('').reduce((value, char) => (value * 31 + (char.codePointAt(0) ?? 0)) >>> 0, 0)
 }
 
 function batches<T>(items: T[], size: number): T[][] {

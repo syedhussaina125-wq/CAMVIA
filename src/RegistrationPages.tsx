@@ -379,7 +379,7 @@ export function ParentRegistrationLinkModal({ onClose }: { onClose: () => void }
     <div className="registration-modal-backdrop" role="presentation">
       <section className="registration-link-modal" role="dialog" aria-modal="true" aria-labelledby="registration-link-title">
         <header className="registration-modal-heading">
-          <div><p className="eyebrow">Parent admissions</p><h2 id="registration-link-title">Parent Registration Link</h2></div>
+          <div><h2 id="registration-link-title">Parent Registration Link</h2></div>
           <button type="button" className="icon-button" aria-label="Close registration link" onClick={onClose}><X size={18} /></button>
         </header>
         {loading ? <p role="status">Loading registration link...</p> : registration ? (
@@ -669,7 +669,7 @@ export function PendingAdmissionsPanel({
   return (
     <section className="pending-admissions-panel">
       <div className="pending-admissions-heading">
-        <div><p className="eyebrow">Admissions review</p><h2>Pending Admissions</h2><p>{pendingCount} application{pendingCount === 1 ? '' : 's'} awaiting review</p></div>
+        <div><h2>Pending Admissions</h2><p>{pendingCount} application{pendingCount === 1 ? '' : 's'} awaiting review</p></div>
         <button type="button" className="secondary-button small-button" onClick={() => void refresh()}>Refresh</button>
       </div>
       {loadError ? <p className="communication-feedback error" role="alert">{loadError}</p> : null}

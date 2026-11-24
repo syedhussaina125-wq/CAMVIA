@@ -387,7 +387,6 @@ export function TrashPage({ onRefreshAll }: TrashPageProps) {
     <section className="students-page">
       <div className="students-heading">
         <div>
-          <p className="eyebrow">Recovery &amp; Retention</p>
           <h1>Trash</h1>
           <p className="students-intro">
             Removed records can be restored within 30 days. Rejected admissions and cancelled fees are retained for history.

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
-import { ArrowLeft, CalendarDays, FileText, FileUp, Link2, Search, UserRound, Users } from 'lucide-react'
+import { ArrowLeft, CalendarDays, FileText, FileUp, Link2, Search, UserRound, Users, X } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Role, SchoolUser } from './mockData'
 import type { AlertItem } from './alertsData'
@@ -414,7 +414,6 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     <section className="students-page">
       <div className="students-heading">
         <div>
-          <p className="eyebrow">Student directory</p>
           <h1>Students</h1>
           <p className="students-intro">Find a student and open their school overview.</p>
           {actionError ? <p className="communication-feedback error" role="alert">{actionError}</p> : null}
@@ -634,10 +633,25 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       ) : (
       <>
       <div className="student-filters">
-        <label className="student-search">
-          <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, ID, class or roll number" aria-label="Search students" />
-        </label>
+        <div className="student-search" role="search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search name, ID, class or roll number"
+            aria-label="Search students"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="search-clear-btn"
+              onClick={() => setQuery('')}
+              aria-label="Clear student search"
+            >
+              <X size={13} />
+            </button>
+          ) : null}
+        </div>
         <select value={classFilter} onChange={(event) => { setClassFilter(event.target.value); setSectionFilter('') }} aria-label="Filter by class">
           <option value="">All classes</option>
           {classOptions.map((className) => <option key={className}>{className}</option>)}
@@ -671,9 +685,11 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
                       <td><strong>{student.firstName} {student.lastName}</strong></td>
                       <td>{student.studentId}</td><td>{student.className}</td><td>{student.section}</td><td>{student.rollNumber}</td>
                       <td><span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span></td>
-                      <td style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <button type="button" className="student-link" onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>View profile</button>
-                        {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                      <td>
+                        <div className="table-actions">
+                          <button type="button" className="student-link" onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>View profile</button>
+                          {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -842,7 +858,6 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     return (
       <section className="student-not-found">
         <div className="empty-icon"><UserRound size={22} /></div>
-        <p className="eyebrow">Student record</p>
         <h1>Student not found</h1>
         <p>This student may not exist or may not be included in your authorized student access.</p>
         <button type="button" className="primary-button small-button" onClick={() => navigate('/students')}><ArrowLeft size={15} /> Back to Students</button>
@@ -854,8 +869,8 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     assignment.active &&
     assignment.school_id === authorizedStudent.schoolId &&
     assignment.campus_id === authorizedStudent.campusId &&
-    assignment.class_name.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.className.trim().replace(/\s+/g, ' ').toLowerCase() &&
-    assignment.section.trim().replace(/\s+/g, ' ').toLowerCase() === authorizedStudent.section.trim().replace(/\s+/g, ' ').toLowerCase(),
+    (assignment.class_name ?? '').trim().replace(/\s+/g, ' ').toLowerCase() === (authorizedStudent.className ?? '').trim().replace(/\s+/g, ' ').toLowerCase() &&
+    (assignment.section ?? '').trim().replace(/\s+/g, ' ').toLowerCase() === (authorizedStudent.section ?? '').trim().replace(/\s+/g, ' ').toLowerCase(),
   )
   const studentAttendanceSummary = getStudentAttendance(authorizedStudent, attendance)
   const latestAttendance = studentAttendanceSummary.recent[0]
@@ -982,7 +997,6 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div className="student-avatar student-avatar-large"><UserRound size={24} /></div>
           <div className="student-detail-name">
-            <p className="eyebrow">Student 360</p>
             <h1>{authorizedStudent.firstName} {authorizedStudent.lastName}</h1>
             <p>{authorizedStudent.studentId} <span>·</span> {authorizedStudent.className}-{authorizedStudent.section}</p>
           </div>

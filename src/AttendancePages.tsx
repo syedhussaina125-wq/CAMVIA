@@ -129,7 +129,6 @@ export function AttendancePage({ user, students, attendance, loading, error, onR
     <section className="attendance-page">
       <header className="attendance-heading">
         <div>
-          <p className="eyebrow">Daily operations</p>
           <h1>Attendance</h1>
           <p>Track today&apos;s attendance and identify students who need attention.</p>
         </div>
@@ -511,7 +510,6 @@ export function TakeAttendancePage(props: TakeAttendancePageProps) {
         <button type="button" className="back-link" onClick={() => requestNavigation('/attendance')}><ArrowLeft size={16} /> Attendance</button>
         <header className="take-attendance-heading">
           <div>
-            <p className="eyebrow">{existingSession ? 'Edit attendance' : 'Take attendance'}</p>
             <h1>{attendanceClass.className}-{attendanceClass.section}</h1>
             <p><Users size={15} /> {attendanceClass.students.length} Students <span>·</span> <CalendarDays size={15} /> {formatAttendanceDate(date)}</p>
           </div>

@@ -53,7 +53,7 @@ function requireSupabase() {
 
 function profileDisplayId(authUserId: string | null | undefined): number {
   if (!authUserId) return 0
-  return authUserId.split('').reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0)
+  return authUserId.split('').reduce((value, char) => (value * 31 + (char.codePointAt(0) ?? 0)) >>> 0, 0)
 }
 
 async function fetchAllRows<T>(

@@ -59,7 +59,15 @@ export function AskCamviaProvider({
     setGenerating(true)
 
     try {
-      const response = await askCamvia(normalized)
+      const response = await askCamvia(normalized, {
+        user,
+        students,
+        attendance,
+        fees,
+        communication,
+        alerts,
+        history: messages,
+      })
       if (requestId === requestIdRef.current) {
         setMessages((current) => [...current, {
           role: 'assistant',
@@ -78,8 +86,14 @@ export function AskCamviaProvider({
       if (requestId === requestIdRef.current) setGenerating(false)
     }
   }, [
+    alerts,
+    attendance,
+    communication,
+    fees,
     generating,
+    messages,
     requestIdRef,
+    students,
     user,
   ])
 

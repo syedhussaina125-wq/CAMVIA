@@ -152,8 +152,10 @@ export function getAttendanceClasses(students: Student[]): AttendanceClass[] {
     }
   }
 
-  return [...groups.values()].sort((left, right) =>
-    left.className.localeCompare(right.className) || left.section.localeCompare(right.section),
+  return [...groups.values()].sort(
+    (left, right) =>
+      left.className.localeCompare(right.className, undefined, { numeric: true, sensitivity: 'base' }) ||
+      left.section.localeCompare(right.section, undefined, { numeric: true, sensitivity: 'base' }),
   )
 }
 

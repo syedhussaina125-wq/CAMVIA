@@ -258,7 +258,7 @@ export function CommunicationPage(props: CommunicationPageProps) {
   return (
     <section className="communication-page">
       <header className="communication-heading">
-        <div><p className="eyebrow">School to home</p><h1>Parent Communication</h1><p>Prepare, review and track parent messages.</p></div>
+        <div><h1>Parent Communication</h1><p>Prepare, review and track parent messages.</p></div>
         {canCreate ? <button type="button" className="primary-button small-button" onClick={openNewDraft}><FilePlus2 size={16} /> New Message</button> : null}
       </header>
 
