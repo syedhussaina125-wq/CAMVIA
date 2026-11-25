@@ -1044,8 +1044,8 @@ function useAppSessionManager() {
         return
       }
       if (error) {
-        console.error('[Supabase] Session restore failed:', error.message)
-        setAuthError('Your session could not be restored. Please sign in again.')
+        void client.auth.signOut({ scope: 'local' })
+        setAuthError('Your session expired. Please sign in again.')
         setAuthLoading(false)
         setStudentsLoading(false)
         setAttendanceLoading(false)
@@ -1780,11 +1780,11 @@ function AppToast({ toast }: Readonly<{ toast: ToastState | null }>) {
 
 function PageLoadingState({ message, compact = false }: Readonly<{ message: string; compact?: boolean }>) {
   return (
-    <div className={`page-loading-state${compact ? ' page-loading-state--compact' : ''}`} role="status" aria-busy="true">
+    <output className={`page-loading-state${compact ? ' page-loading-state--compact' : ''}`} aria-busy="true">
       <img className="page-loading-logo" src={camviaLightLogo} alt="" />
       <span className="page-loading-spinner" aria-hidden="true" />
       <span className="page-loading-message">{message}</span>
-    </div>
+    </output>
   )
 }
 
