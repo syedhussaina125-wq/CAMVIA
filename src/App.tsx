@@ -2779,7 +2779,7 @@ function PasswordResetForm({ initialEmail, onCancel }: PasswordResetFormProps) {
               disabled={resetSubmitting}
               value={resetEmail}
               onChange={(event) => setResetEmail(event.target.value)}
-              placeholder="name@school.edu"
+              placeholder="Enter email"
             />
           </div>
         </label>
@@ -2960,7 +2960,7 @@ function LoginPage({ onLogin, loading, authError }: Readonly<{
                       disabled={loading || submitting}
                       value={email}
                       onChange={(event) => setEmail(event.target.value)}
-                      placeholder="name@school.edu"
+                      placeholder="Enter email"
                     />
                   </div>
                 </label>
