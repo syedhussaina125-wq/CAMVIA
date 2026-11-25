@@ -19,9 +19,8 @@ import {
   type SchoolRegistrationLink,
 } from './services/admissions'
 import { normalizeWhatsAppPhone } from './utils/whatsapp'
-import type { Student } from './studentData'
 import { fetchSchoolStudentsForDuplicateCheck, type StudentCampusOption } from './services/students'
-import { checkStudentDuplicate, studentToCandidate, type StudentCandidate } from './utils/studentDuplicates'
+import { checkStudentDuplicate, type StudentCandidate } from './utils/studentDuplicates'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 
 const emptyDetails: PublicRegistrationDetails = {
@@ -447,11 +446,9 @@ export function ParentRegistrationLinkModal({ onClose }: { onClose: () => void }
 }
 
 export function PendingAdmissionsPanel({
-  students,
   campuses,
   onRefreshStudents,
 }: {
-  students: Student[]
   campuses: StudentCampusOption[]
   onRefreshStudents: () => void
 }) {
@@ -585,12 +582,17 @@ export function PendingAdmissionsPanel({
     setActionError('')
     setMessage('')
 
-    let existingCandidates: StudentCandidate[] = students.map(studentToCandidate)
+    if (!selectedCampusId || !section.trim()) {
+      setActionError('Select a campus and section before approving this student.')
+      return
+    }
+
+    let existingCandidates: StudentCandidate[]
     try {
-      const fullList = await fetchSchoolStudentsForDuplicateCheck()
-      if (fullList.length > 0) existingCandidates = fullList
-    } catch {
-      // fallback to in-memory students
+      existingCandidates = await fetchSchoolStudentsForDuplicateCheck()
+    } catch (error) {
+      setActionError(formatRpcErrorMessage(error))
+      return
     }
 
     const nameParts = selected.student_name.trim().split(/\s+/)
@@ -610,10 +612,6 @@ export function PendingAdmissionsPanel({
       return
     }
 
-    if (!selectedCampusId || !section.trim()) {
-      setActionError('Select a campus and section before approving this student.')
-      return
-    }
     setWorking(true)
     try {
       await approveAdmissionApplication(selected.id, selectedCampusId, rollNumber.trim(), section.trim())

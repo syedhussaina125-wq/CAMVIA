@@ -796,7 +796,7 @@ function useAppSessionManager() {
       }
       return null
     } finally {
-      if (!silent && requestId === studentsRequestId.current) setStudentsLoading(false)
+      if (requestId === studentsRequestId.current) setStudentsLoading(false)
     }
   }
 
@@ -1918,16 +1918,21 @@ function App() {
   useEffect(() => {
     if (!session?.authUserId) return
 
-    const intervalId = window.setInterval(() => {
-      if (document.visibilityState !== 'visible' || backgroundRefreshInFlight.current) return
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== 'visible' || studentsLoading || backgroundRefreshInFlight.current) return
       backgroundRefreshInFlight.current = true
       void refreshAllRef.current(true).finally(() => {
         backgroundRefreshInFlight.current = false
       })
-    }, 3000)
+    }
 
-    return () => window.clearInterval(intervalId)
-  }, [session?.authUserId])
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [session?.authUserId, studentsLoading])
 
   const {
     visibleAlerts,

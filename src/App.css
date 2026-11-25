@@ -106,7 +106,7 @@
     radial-gradient(ellipse 65% 45% at 80% 12%, rgba(200, 228, 255, 0.5) 0%, transparent 60%),
     radial-gradient(ellipse 55% 55% at 15% 75%, rgba(213, 204, 255, 0.28) 0%, transparent 55%),
     radial-gradient(ellipse 70% 60% at 45% 40%, rgba(228, 239, 255, 0.5) 0%, rgba(246, 251, 255, 0.85) 100%);
-  background-attachment: fixed;
+  background-attachment: scroll;
   position: relative;
 }
 
@@ -3707,6 +3707,97 @@ table tbody tr:last-child td,
   margin-bottom: 14px;
 }
 
+.import-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.import-progress li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #e3ebf7;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: #647694;
+}
+
+.import-progress-indicator {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid #cbd6e6;
+  border-radius: 50%;
+  background: #fff;
+  color: #71819a;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.import-progress-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-progress-copy strong {
+  color: #405572;
+  font-size: 0.82rem;
+}
+
+.import-progress-copy small {
+  color: #75849a;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.import-progress li.is-complete {
+  border-color: #b7ead2;
+  background: #f2fbf6;
+}
+
+.import-progress li.is-complete .import-progress-indicator {
+  border-color: #10a36a;
+  background: #10a36a;
+  color: #fff;
+}
+
+.import-progress li.is-active {
+  border-color: #9dc0ff;
+  background: #f2f7ff;
+}
+
+.import-progress li.is-active .import-progress-indicator {
+  border-color: #3b82f6;
+  color: #2563eb;
+  animation: import-step-pulse 1.15s ease-in-out infinite;
+}
+
+.import-progress li.is-failed {
+  border-color: #f3c5ce;
+  background: #fff6f7;
+}
+
+.import-progress li.is-failed .import-progress-indicator {
+  border-color: #cf4058;
+  color: #b4233b;
+}
+
+@keyframes import-step-pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(59, 130, 246, 0.13);
+  }
+}
+
 .import-preview-list {
   display: flex;
   flex-direction: column;
@@ -3726,6 +3817,12 @@ table tbody tr:last-child td,
 
 .import-preview-list span {
   color: #667b9a;
+}
+
+@media (max-width: 640px) {
+  .import-progress {
+    grid-template-columns: 1fr;
+  }
 }
 
 .student-filters {

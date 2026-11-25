@@ -111,7 +111,7 @@ body {
     radial-gradient(ellipse 65% 45% at 80% 12%, rgba(200, 228, 255, 0.5) 0%, transparent 60%),
     radial-gradient(ellipse 55% 55% at 15% 75%, rgba(213, 204, 255, 0.28) 0%, transparent 55%),
     radial-gradient(ellipse 70% 60% at 45% 40%, rgba(228, 239, 255, 0.5) 0%, rgba(246, 251, 255, 0.85) 100%);
-  background-attachment: fixed;
+  background-attachment: scroll;
   overflow-x: clip;
 }
 

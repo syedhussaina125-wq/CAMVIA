@@ -29,9 +29,7 @@ import {
   unlinkStudentGuardian,
 } from './services/students'
 import {
-  checkStudentDuplicate,
   evaluateCsvDuplicates,
-  studentToCandidate,
   type CsvSkippedRow,
   type StudentCandidate,
 } from './utils/studentDuplicates'
@@ -141,6 +139,8 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [importSkipped, setImportSkipped] = useState<CsvSkippedRow[]>([])
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
+  const [importStage, setImportStage] = useState<'idle' | 'reading' | 'checking' | 'ready' | 'importing' | 'complete' | 'failed'>('idle')
+  const [importTotalRows, setImportTotalRows] = useState(0)
   const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort()
   const sectionOptions = [...new Set(
     accessibleStudents
@@ -151,6 +151,49 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const activeTeacherScopes = teacherScopes.filter((scope) =>
     scope.active && scope.school_id === user.schoolId,
   )
+  const importBusy = ['reading', 'checking', 'importing'].includes(importStage)
+  const importHasNoNewRows = importStage === 'ready' && importTotalRows > 0 && !importPreview && importSkipped.length === importTotalRows
+  const importProgressSteps = [
+    {
+      label: 'Read CSV file',
+      complete: ['checking', 'ready', 'importing', 'complete'].includes(importStage),
+      active: importStage === 'reading',
+      failed: importStage === 'failed' && importTotalRows === 0,
+      detail: importStage === 'failed' && importTotalRows === 0
+        ? 'Could not read the selected CSV'
+        : importTotalRows > 0 ? `${importTotalRows} student rows found` : 'Reading the selected CSV',
+    },
+    {
+      label: 'Remove duplicates',
+      complete: ['ready', 'importing', 'complete'].includes(importStage),
+      active: importStage === 'checking',
+      failed: importStage === 'failed' && importTotalRows > 0 && !importPreview,
+      detail: importStage === 'checking'
+        ? 'Checking existing students and CSV rows'
+        : importStage === 'reading'
+          ? 'Waiting for the CSV to load'
+          : importStage === 'failed' && importTotalRows > 0 && !importPreview
+            ? 'Duplicate check did not finish'
+            : importSkipped.length > 0
+              ? `${importSkipped.length} duplicates skipped automatically`
+              : 'No duplicates found',
+    },
+    {
+      label: importHasNoNewRows ? 'Nothing left to import' : 'Import remaining students',
+      complete: importStage === 'complete' || importHasNoNewRows,
+      active: importStage === 'importing',
+      failed: importStage === 'failed' && Boolean(importPreview?.length),
+      detail: importHasNoNewRows
+        ? 'All rows were duplicates'
+        : importStage === 'complete'
+          ? 'Import finished; check the result notification'
+          : importStage === 'importing'
+            ? `Importing ${importPreview?.length ?? 0} students`
+            : importStage === 'reading' || importStage === 'checking'
+              ? 'Waiting for duplicate check'
+              : `${importPreview?.length ?? 0} students ready`,
+    },
+  ]
 
   useEffect(() => {
     if (!canCreateStudents) return
@@ -208,31 +251,6 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     event.preventDefault()
     setStudentSaveError('')
 
-    let existingCandidates: StudentCandidate[] = students.map(studentToCandidate)
-    try {
-      const fullList = await fetchSchoolStudentsForDuplicateCheck()
-      if (fullList.length > 0) existingCandidates = fullList
-    } catch {
-      // fallback to in-memory students
-    }
-
-    const duplicate = checkStudentDuplicate(
-      {
-        studentId: form.studentId,
-        firstName: form.firstName,
-        lastName: form.lastName,
-        className: form.className,
-        section: form.section,
-        rollNumber: form.rollNumber,
-        dateOfBirth: form.dateOfBirth,
-      },
-      existingCandidates,
-    )
-    if (duplicate.isDuplicate && duplicate.message) {
-      setStudentSaveError(duplicate.message)
-      return
-    }
-
     if (user.role === 'teacher' && !activeTeacherScopes.some((scope) =>
       scope.campus_id === campusId &&
       scope.class_name === form.className.trim() &&
@@ -263,11 +281,15 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     const file = event.target.files?.[0]
     setImportError('')
     setImportPreview(null)
+    setImportSkipped([])
+    setImportTotalRows(0)
+    setImportStage(file ? 'reading' : 'idle')
     if (!file) return
 
     const MAX_CSV_SIZE_BYTES = 2 * 1024 * 1024 // 2MB
     if (file.size > MAX_CSV_SIZE_BYTES) {
       setImportError('The selected file exceeds the 2MB size limit.')
+      setImportStage('failed')
       event.target.value = ''
       return
     }
@@ -275,6 +297,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     const lowerName = file.name.toLowerCase()
     if (!lowerName.endsWith('.csv')) {
       setImportError('Excel preview is not enabled yet. Save the worksheet as CSV and upload it here.')
+      setImportStage('failed')
       event.target.value = ''
       return
     }
@@ -282,23 +305,18 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     const dangerousMimes = ['application/x-msdownload', 'application/javascript', 'text/html', 'application/x-sh']
     if (file.type && dangerousMimes.includes(file.type.toLowerCase())) {
       setImportError('Invalid file format. Upload a valid CSV file.')
+      setImportStage('failed')
       event.target.value = ''
       return
     }
 
     try {
       setImportError('')
-      setImportPreview(null)
-      setImportSkipped([])
       const parsed = parseStudentCsv(await file.text())
+      setImportTotalRows(parsed.length)
+      setImportStage('checking')
 
-      let existingCandidates: StudentCandidate[] = students.map(studentToCandidate)
-      try {
-        const fullList = await fetchSchoolStudentsForDuplicateCheck()
-        if (fullList.length > 0) existingCandidates = fullList
-      } catch {
-        // fallback to in-memory students
-      }
+      const existingCandidates: StudentCandidate[] = await fetchSchoolStudentsForDuplicateCheck()
 
       const { validRows, skippedRows } = evaluateCsvDuplicates(parsed, existingCandidates)
       setImportSkipped(skippedRows)
@@ -309,8 +327,10 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       } else {
         setImportPreview(validRows)
       }
+      setImportStage('ready')
     } catch (error) {
       setImportError(error instanceof Error ? error.message : 'Unable to read this CSV file.')
+      setImportStage('failed')
     }
   }
 
@@ -322,17 +342,20 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     }
     setImporting(true)
     setImportError('')
+    setImportStage('importing')
     try {
       const ok = await onImportStudents(importPreview, campusId)
       if (ok) {
-        setImportPreview(null)
-        setImportSkipped([])
-        setImportError('')
+        setImportStage('complete')
         const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
         if (fileInput) fileInput.value = ''
+      } else {
+        setImportError('The import did not complete. Please retry.')
+        setImportStage('failed')
       }
     } catch (error) {
       setImportError(error instanceof Error ? error.message : 'Unable to complete student import.')
+      setImportStage('failed')
     } finally {
       setImporting(false)
     }
@@ -420,7 +443,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         </div>
         {canCreateStudents ? (
           <div className="students-actions">
-            {user.role === 'admin' ? <button type="button" className="secondary-button small-button" onClick={() => document.getElementById('student-import-file')?.click()}>
+            {user.role === 'admin' ? <button type="button" className="secondary-button small-button" disabled={importBusy} onClick={() => document.getElementById('student-import-file')?.click()}>
               <FileUp size={16} /> Import Students
             </button> : null}
             <button type="button" className="primary-button small-button" onClick={() => { setStudentSaveError(''); setShowAddForm((current) => !current) }}>
@@ -434,6 +457,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
               className="visually-hidden"
               type="file"
               accept=".csv,.xlsx,.xls"
+              disabled={importBusy}
               onChange={handleImportFile}
             /> : null}
           </div>
@@ -493,8 +517,27 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         </form>
       ) : null}
 
-      {user.role === 'admin' && (importError || importPreview) ? (
+      {user.role === 'admin' && (importError || importPreview || importStage !== 'idle') ? (
         <section className={`import-panel ${importError ? 'import-error' : ''}`} aria-live="polite">
+          {importStage !== 'idle' && (
+            <ol className="import-progress" aria-label="Student import progress">
+              {importProgressSteps.map((step, index) => (
+                <li
+                  key={step.label}
+                  className={`${step.complete ? 'is-complete' : ''} ${step.active ? 'is-active' : ''} ${step.failed ? 'is-failed' : ''}`}
+                  aria-current={step.active ? 'step' : undefined}
+                >
+                  <span className="import-progress-indicator" aria-hidden="true">
+                    {step.complete ? '✓' : index + 1}
+                  </span>
+                  <span className="import-progress-copy">
+                    <strong>{step.label}</strong>
+                    <small>{step.detail}</small>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
           {importError ? (
             <>
               <h2>Import needs attention</h2>
@@ -519,7 +562,10 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
                   className="secondary-button small-button"
                   onClick={() => {
                     setImportError('')
+                    setImportPreview(null)
                     setImportSkipped([])
+                    setImportTotalRows(0)
+                    setImportStage('idle')
                     const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
                     if (fileInput) fileInput.value = ''
                   }}
@@ -542,8 +588,12 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
             <>
               <div className="panel-header">
                 <div>
-                  <h2>Preview import</h2>
-                  <p>{importPreview.length} student records are ready to confirm.</p>
+                  <h2>{importStage === 'complete' ? 'Import finished' : 'Preview import'}</h2>
+                  <p>
+                    {importStage === 'complete'
+                      ? 'The import request completed. Check the result notification for the exact count.'
+                      : `${importPreview.length} student records are ready to confirm.`}
+                  </p>
                 </div>
                 {campuses.length > 0 && (
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem', color: '#183252' }}>
@@ -573,20 +623,24 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
                     onClick={() => {
                       setImportPreview(null)
                       setImportSkipped([])
+                      setImportTotalRows(0)
+                      setImportStage('idle')
                       const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
                       if (fileInput) fileInput.value = ''
                     }}
                   >
-                    Cancel
+                    {importStage === 'complete' ? 'Done' : 'Cancel'}
                   </button>
-                  <button
-                    type="button"
-                    className="primary-button small-button"
-                    disabled={importing || !campusId}
-                    onClick={() => void confirmImport()}
-                  >
-                    {importing ? `Importing ${importPreview.length} students…` : `Confirm Import (${importPreview.length} students)`}
-                  </button>
+                  {importStage !== 'complete' && (
+                    <button
+                      type="button"
+                      className="primary-button small-button"
+                      disabled={importing || !campusId}
+                      onClick={() => void confirmImport()}
+                    >
+                      {importing ? `Importing ${importPreview.length} students…` : `Confirm Import (${importPreview.length} students)`}
+                    </button>
+                  )}
                 </div>
               </div>
               {importSkipped.length > 0 && (
@@ -626,7 +680,6 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
 
       {user.role === 'admin' && adminStudentView === 'admissions' ? (
         <PendingAdmissionsPanel
-          students={accessibleStudents}
           campuses={campuses}
           onRefreshStudents={() => onRefresh?.()}
         />
@@ -1531,7 +1584,7 @@ function parseStudentCsv(content: string): NewStudent[] {
   const rows = parseCsvRows(content)
   if (rows.length < 2) throw new Error('The CSV must include a header row and at least one student.')
 
-  const MAX_IMPORT_ROWS = 500
+  const MAX_IMPORT_ROWS = 1500
   const dataRows = rows.slice(1).filter((row) => row.some((value) => value.trim()))
   if (dataRows.length > MAX_IMPORT_ROWS) {
     throw new Error(`The CSV contains ${dataRows.length} rows, which exceeds the maximum limit of ${MAX_IMPORT_ROWS} students per import.`)

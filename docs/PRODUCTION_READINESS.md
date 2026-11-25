@@ -42,12 +42,26 @@ The repository currently contains these migration files:
 30. `031_unified_trash.sql`
 31. `032_attendance_school_timezone.sql`
 32. `033_individual_attendance_drafts.sql`
+33. `034_parent_registration.sql`
+34. `035_admission_recycle_bin.sql`
+35. `036_trash_directory_read_parity.sql`
+36. `037_direct_attendance_saves.sql`
+37. `038_trash_permanent_delete.sql`
+38. `039_fix_approve_admission_student_id_ambiguity.sql`
+39. `040_student_permanent_delete.sql`
+40. `041_optional_attendance_trash_audit.sql`
+41. `042_school_timezone_normalization.sql`
+42. `043_ensure_get_unified_trash_records.sql`
+43. `044_student_duplicate_prevention.sql`
+44. `045_student_batch_import.sql`
 
 There is no `021` migration file. Do not replay this list against a live project. Migration `010_fix_student_school_scope.sql` was historically superseded and must not be applied blindly. Prior phase verification records migrations `017` and `018` as applied; the live ledger for later migrations has not been verified. This workspace is not linked to Supabase, so the CLI cannot independently read the remote migration ledger; confirm the target project's history before applying only outstanding migrations, in order. Migrations `029` and `030` must be reviewed and applied in sequence if they are still outstanding. Do not apply controlled test-data SQL to production. Take a verified backup before any future migration, and do not edit migrations already applied to a live project.
 
 Migration `032` makes attendance's no-future-date rule follow the configured school timezone, and reports invalid date/submission values separately from unauthorized attendance scope. Apply it only when confirmed outstanding.
 
 Migration `033` allows attendance to be saved by changed student IDs while a session is in progress, completes a session once all active students have records, and prevents normal saves from modifying finalized sessions. Finalized attendance remains editable only through the audited correction RPC. Review and apply it only if outstanding in the target project's migration ledger.
+
+Migration `045` adds the authenticated, 500-row `create_students_batch` RPC used by CSV imports. Apply and verify it before deploying frontend code that calls the RPC. It processes rows independently and returns a result for each row; it does not change the existing school-wide duplicate rules.
 
 ## Environment variables
 
@@ -116,7 +130,7 @@ Legacy `edupulse_*` settings and user cache keys must stay absent and must not b
 
 ## Known warnings and release gate
 
-The latest build emitted a Vite advisory for the 581.81 kB initial JavaScript chunk (164.78 kB gzip), despite separate lazy-loaded Attendance, Fees, Communication, and Student page chunks. Oxlint completed successfully with four React warnings. Review both warnings before release and continue bundle splitting only where it does not compromise behavior. Several live services still fetch unpaginated student/profile lists or full visible attendance, fee, and communication histories; monitor query volume and add bounded, RLS-preserving pagination/filtering before those datasets grow substantially.
+The latest build emitted a Vite advisory for the 581.81 kB initial JavaScript chunk (164.78 kB gzip), despite separate lazy-loaded Attendance, Fees, Communication, and Student page chunks. Oxlint completed successfully with four React warnings. Review both warnings before release and continue bundle splitting only where it does not compromise behavior. Student directory and related data still load broad rosters or historical records; complete RLS-preserving server-side pagination and bounded history queries before those datasets grow substantially.
 
 **Phase 17 status:** complete. Migration `018_harden_guardian_school_scope.sql` was applied and verified; School A accounts returned zero School B `student_guardians` rows. The authenticated full-reload `/students` 503 flow now shows an explicit error and retry, and retry restores live data for Admin, Principal, Finance, and Teacher A. The source uses a single Supabase client; development HMR reuses it.
 
