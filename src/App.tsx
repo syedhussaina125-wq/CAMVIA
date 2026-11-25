@@ -554,9 +554,9 @@ type UserDataLoaders = Readonly<{
   setCommunication: React.Dispatch<React.SetStateAction<CommunicationState>>
   setCommunicationError: React.Dispatch<React.SetStateAction<string>>
   setCommunicationLoading: React.Dispatch<React.SetStateAction<boolean>>
-  refreshAlerts: (ownerId: string) => Promise<void>
-  refreshProfiles: (user: SessionUser) => Promise<void>
-  refreshAdministration: (user: SessionUser) => Promise<void>
+  refreshAlerts: (ownerId: string, silent?: boolean) => Promise<void>
+  refreshProfiles: (user: SessionUser, silent?: boolean) => Promise<void>
+  refreshAdministration: (user: SessionUser, silent?: boolean) => Promise<void>
   profileId: string
   nextSession: SessionUser
 }>
@@ -729,8 +729,8 @@ function useAppSessionManager() {
   const resolvingUserId = useRef<string | null>(null)
   const resolvedUserId = useRef<string | null>(null)
 
-  const refreshAlerts = async (ownerId: string) => {
-    setAlertsLoading(true)
+  const refreshAlerts = async (ownerId: string, silent = false) => {
+    if (!silent) setAlertsLoading(true)
     setAlertsError('')
     try {
       const nextAlerts = await fetchLiveAlerts()
@@ -745,11 +745,11 @@ function useAppSessionManager() {
         setAlertsError('Alerts could not be loaded from Supabase. Please retry.')
       }
     } finally {
-      if (resolvedUserId.current === ownerId) setAlertsLoading(false)
+      if (!silent && resolvedUserId.current === ownerId) setAlertsLoading(false)
     }
   }
 
-  const refreshAdministration = async (owner: SessionUser) => {
+  const refreshAdministration = async (owner: SessionUser, silent = false) => {
     if (owner.role !== 'admin' || !owner.organizationId || !owner.schoolId) {
       setAdministration(null)
       setAdministrationLoading(false)
@@ -757,7 +757,7 @@ function useAppSessionManager() {
       return
     }
 
-    setAdministrationLoading(true)
+    if (!silent) setAdministrationLoading(true)
     setAdministrationError('')
     try {
       const nextSnapshot = await fetchAdministrationSnapshot(owner.organizationId, owner.schoolId)
@@ -773,13 +773,13 @@ function useAppSessionManager() {
         setAdministrationError('School settings could not be loaded from Supabase. Please retry.')
       }
     } finally {
-      if (resolvedUserId.current === owner.authUserId) setAdministrationLoading(false)
+      if (!silent && resolvedUserId.current === owner.authUserId) setAdministrationLoading(false)
     }
   }
 
-  const refreshStudents = async (owner: SessionUser): Promise<Student[] | null> => {
+  const refreshStudents = async (owner: SessionUser, silent = false): Promise<Student[] | null> => {
     const requestId = ++studentsRequestId.current
-    setStudentsLoading(true)
+    if (!silent) setStudentsLoading(true)
     setStudentsError('')
     try {
       const nextStudents = await fetchStudents()
@@ -796,11 +796,11 @@ function useAppSessionManager() {
       }
       return null
     } finally {
-      if (requestId === studentsRequestId.current) setStudentsLoading(false)
+      if (!silent && requestId === studentsRequestId.current) setStudentsLoading(false)
     }
   }
 
-  const refreshProfiles = async (owner: SessionUser) => {
+  const refreshProfiles = async (owner: SessionUser, silent = false) => {
     if (owner.role !== 'admin' && owner.role !== 'principal') {
       setLiveProfiles([])
       setProfilesLoading(false)
@@ -808,7 +808,7 @@ function useAppSessionManager() {
       return
     }
 
-    setProfilesLoading(true)
+    if (!silent) setProfilesLoading(true)
     setProfilesError('')
     try {
       const nextProfiles = await fetchProfiles()
@@ -823,7 +823,7 @@ function useAppSessionManager() {
         setProfilesError('Profiles could not be loaded from Supabase. Please retry.')
       }
     } finally {
-      if (resolvedUserId.current === owner.authUserId) setProfilesLoading(false)
+      if (!silent && resolvedUserId.current === owner.authUserId) setProfilesLoading(false)
     }
   }
 
@@ -1168,9 +1168,9 @@ type AppActionsParams = {
   setCommunication: React.Dispatch<React.SetStateAction<CommunicationState>>
   setAdministration: React.Dispatch<React.SetStateAction<AdministrationSnapshot | null>>
   setToast: React.Dispatch<React.SetStateAction<ToastState | null>>
-  refreshStudents: (owner: SessionUser) => Promise<Student[] | null>
-  refreshProfiles: (owner: SessionUser) => Promise<void>
-  refreshAlerts: (ownerId: string) => Promise<void>
+  refreshStudents: (owner: SessionUser, silent?: boolean) => Promise<Student[] | null>
+  refreshProfiles: (owner: SessionUser, silent?: boolean) => Promise<void>
+  refreshAlerts: (ownerId: string, silent?: boolean) => Promise<void>
   resolvedUserId: React.RefObject<string | null>
   authResolutionId: React.RefObject<number>
   attendanceRefreshInFlight: React.RefObject<boolean>
@@ -1385,15 +1385,15 @@ function useAppActions(params: AppActionsParams) {
     }
   }
 
-  const handleRefreshAttendance = async () => {
+  const handleRefreshAttendance = async (silent = false, refreshStudentRoster = true) => {
     if (attendanceRefreshInFlight.current) return
     attendanceRefreshInFlight.current = true
     const resolutionId = authResolutionId.current
-    setAttendanceLoading(true)
+    if (!silent) setAttendanceLoading(true)
     setAttendanceError('')
     try {
       const [loadedStudents, nextAttendance] = await Promise.all([
-        session ? refreshStudents(session) : Promise.resolve(null),
+        session && refreshStudentRoster ? refreshStudents(session, silent) : Promise.resolve(students),
         fetchAttendanceState({ role: session?.role, route: window.location.pathname }),
       ])
       if (resolutionId === authResolutionId.current) {
@@ -1408,23 +1408,23 @@ function useAppActions(params: AppActionsParams) {
       }
     } finally {
       attendanceRefreshInFlight.current = false
-      if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
+      if (!silent && resolutionId === authResolutionId.current) setAttendanceLoading(false)
     }
   }
 
-  const handleRefreshFees = async () => {
-    setFeesLoading(true)
+  const handleRefreshFees = async (silent = false, studentRows = students, updateAlerts = true) => {
+    if (!silent) setFeesLoading(true)
     setFeesError('')
     try {
-      setFees(await fetchFeeState(students))
+      setFees(await fetchFeeState(studentRows))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load fees from Supabase.'
       console.error('[Supabase] Fee retry failed:', message)
       setFeesError('Fee information could not be loaded from Supabase. Please retry.')
     } finally {
-      setFeesLoading(false)
+      if (!silent) setFeesLoading(false)
     }
-    if (session) await refreshAlerts(session.authUserId)
+    if (session && updateAlerts) await refreshAlerts(session.authUserId, silent)
   }
 
   const handleRecordFeePayment = async (submission: FeePaymentSubmission): Promise<boolean> => {
@@ -1468,19 +1468,19 @@ function useAppActions(params: AppActionsParams) {
     }
   }
 
-  const handleRefreshCommunication = async () => {
-    setCommunicationLoading(true)
+  const handleRefreshCommunication = async (silent = false, studentRows = students, updateAlerts = true) => {
+    if (!silent) setCommunicationLoading(true)
     setCommunicationError('')
     try {
-      setCommunication(await fetchCommunicationState(students))
+      setCommunication(await fetchCommunicationState(studentRows))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load parent communication from Supabase.'
       console.error('[Supabase] Communication retry failed:', message)
       setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
     } finally {
-      setCommunicationLoading(false)
+      if (!silent) setCommunicationLoading(false)
     }
-    if (session) await refreshAlerts(session.authUserId)
+    if (session && updateAlerts) await refreshAlerts(session.authUserId, silent)
   }
 
   const handleSaveCommunicationDraft = async (submission: CommunicationDraftSubmission, submit: boolean): Promise<{ messageId?: string; error?: string }> => {
@@ -1683,24 +1683,30 @@ function computeVisibleAlerts(params: VisibleAlertsParams) {
 
 type AppAuthHandlersParams = {
   session: SessionUser | null
+  students: Student[]
   startTourForRole: (role: Role) => void
   resetForSignOut: () => void
   setToast: React.Dispatch<React.SetStateAction<ToastState | null>>
-  refreshAlerts: (ownerId: string) => Promise<void>
-  refreshStudents: (owner: SessionUser) => Promise<Student[] | null>
-  handleRefreshAttendance: () => Promise<void>
-  handleRefreshFees: () => Promise<void>
-  handleRefreshCommunication: () => Promise<void>
+  refreshAlerts: (ownerId: string, silent?: boolean) => Promise<void>
+  refreshStudents: (owner: SessionUser, silent?: boolean) => Promise<Student[] | null>
+  refreshProfiles: (owner: SessionUser, silent?: boolean) => Promise<void>
+  refreshAdministration: (owner: SessionUser, silent?: boolean) => Promise<void>
+  handleRefreshAttendance: (silent?: boolean, refreshStudentRoster?: boolean) => Promise<void>
+  handleRefreshFees: (silent?: boolean, studentRows?: Student[], updateAlerts?: boolean) => Promise<void>
+  handleRefreshCommunication: (silent?: boolean, studentRows?: Student[], updateAlerts?: boolean) => Promise<void>
 }
 
 function useAppAuthHandlers(params: AppAuthHandlersParams) {
   const {
     session,
+    students,
     startTourForRole,
     resetForSignOut,
     setToast,
     refreshAlerts,
     refreshStudents,
+    refreshProfiles,
+    refreshAdministration,
     handleRefreshAttendance,
     handleRefreshFees,
     handleRefreshCommunication,
@@ -1737,14 +1743,17 @@ function useAppAuthHandlers(params: AppAuthHandlersParams) {
     if (session) await refreshAlerts(session.authUserId)
   }
 
-  const handleRefreshAll = async () => {
+  const handleRefreshAll = async (silent = false) => {
     if (!session) return
+    const refreshedStudents = await refreshStudents(session, silent)
+    const studentsForRefresh = refreshedStudents ?? students
     await Promise.allSettled([
-      refreshStudents(session),
-      handleRefreshAttendance(),
-      handleRefreshFees(),
-      handleRefreshCommunication(),
-      handleRefreshAlerts(),
+      handleRefreshAttendance(silent, false),
+      handleRefreshFees(silent, studentsForRefresh, false),
+      handleRefreshCommunication(silent, studentsForRefresh, false),
+      refreshAlerts(session.authUserId, silent),
+      refreshProfiles(session, silent),
+      refreshAdministration(session, silent),
     ])
   }
 
@@ -1766,6 +1775,16 @@ function AppToast({ toast }: Readonly<{ toast: ToastState | null }>) {
     <output className={`toast toast-${toast.type}`} aria-live="polite">
       {toast.text}
     </output>
+  )
+}
+
+function PageLoadingState({ message, compact = false }: Readonly<{ message: string; compact?: boolean }>) {
+  return (
+    <div className={`page-loading-state${compact ? ' page-loading-state--compact' : ''}`} role="status" aria-busy="true">
+      <img className="page-loading-logo" src={camviaLightLogo} alt="" />
+      <span className="page-loading-spinner" aria-hidden="true" />
+      <span className="page-loading-message">{message}</span>
+    </div>
   )
 }
 
@@ -1876,15 +1895,39 @@ function App() {
     handleRefreshAll,
   } = useAppAuthHandlers({
     session,
+    students,
     startTourForRole,
     resetForSignOut,
     setToast,
     refreshAlerts,
     refreshStudents,
+    refreshProfiles,
+    refreshAdministration,
     handleRefreshAttendance,
     handleRefreshFees,
     handleRefreshCommunication,
   })
+
+  const refreshAllRef = useRef(handleRefreshAll)
+  const backgroundRefreshInFlight = useRef(false)
+
+  useEffect(() => {
+    refreshAllRef.current = handleRefreshAll
+  }, [handleRefreshAll])
+
+  useEffect(() => {
+    if (!session?.authUserId) return
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || backgroundRefreshInFlight.current) return
+      backgroundRefreshInFlight.current = true
+      void refreshAllRef.current(true).finally(() => {
+        backgroundRefreshInFlight.current = false
+      })
+    }, 3000)
+
+    return () => window.clearInterval(intervalId)
+  }, [session?.authUserId])
 
   const {
     visibleAlerts,
@@ -1901,7 +1944,7 @@ function App() {
   return (
     <BrowserRouter>
       <AuthRedirectHandler />
-      <Suspense fallback={<output className="app-loading-state">Loading page…</output>}>
+      <Suspense fallback={<PageLoadingState message="Loading page…" />}>
         <AskCamviaProvider
           key={session?.authUserId ?? 'anonymous'}
           user={session}
@@ -2045,7 +2088,7 @@ function ProtectedRoute({ user, loading }: Readonly<{ user: SessionUser | null; 
   const location = useLocation()
 
   if (loading) {
-    return <output className="app-loading-state">Checking your secure session…</output>
+    return <PageLoadingState message="Checking your secure session…" />
   }
 
   if (!user) {
@@ -2235,9 +2278,7 @@ function AuthCallbackHandler() {
   }
 
   return (
-    <output className="app-loading-state">
-      Verifying your security credentials…
-    </output>
+    <PageLoadingState message="Verifying your security credentials…" />
   )
 }
 
@@ -2599,9 +2640,7 @@ function SetPasswordPage({ mode }: Readonly<{ mode: 'invite' | 'reset' }>) {
   if (status === 'checking') {
     formContent = (
       <div className="status-card checking">
-        <output className="app-loading-state" style={{ minHeight: '260px' }}>
-          Verifying your security credentials…
-        </output>
+        <PageLoadingState message="Verifying your security credentials…" compact />
       </div>
     )
   } else if (status === 'expired') {

@@ -98,6 +98,7 @@ html {
   background: #f6fbff;
   -webkit-text-size-adjust: 100%;
   overflow-x: clip;
+  scroll-behavior: auto;
 }
 
 body {

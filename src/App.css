@@ -1955,6 +1955,68 @@ table tbody tr:last-child td,
 /* ==========================================================================
    Loading Shimmers & Empty States
    ========================================================================== */
+.page-loading-state {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 28px;
+  color: var(--camvia-text-secondary);
+  text-align: center;
+  background:
+    radial-gradient(ellipse 42% 34% at 50% 42%, rgba(255, 255, 255, 0.96), transparent 100%),
+    var(--camvia-bg);
+}
+
+.page-loading-logo {
+  width: clamp(124px, 17vw, 164px);
+  height: auto;
+  animation: page-loader-breathe 2.2s ease-in-out infinite;
+}
+
+.page-loading-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(59, 130, 246, 0.16);
+  border-top-color: var(--camvia-blue);
+  border-right-color: var(--camvia-cyan);
+  border-radius: 50%;
+  animation: page-loader-spin 0.85s linear infinite;
+}
+
+.page-loading-message {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.page-loading-state--compact {
+  min-height: 260px;
+  gap: 12px;
+  padding: 20px;
+  background: transparent;
+}
+
+.page-loading-state--compact .page-loading-logo {
+  width: 112px;
+}
+
+.page-loading-state--compact .page-loading-spinner {
+  width: 28px;
+  height: 28px;
+}
+
+@keyframes page-loader-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes page-loader-breathe {
+  50% { opacity: 0.72; transform: scale(0.97); }
+}
+
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
