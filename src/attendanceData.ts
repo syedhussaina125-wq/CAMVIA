@@ -1,6 +1,7 @@
 import type { Role } from './mockData'
 import type { Student } from './studentData'
 import { normalizeSchoolTimezone, schoolDateKey } from './utils/schoolTimezone'
+import { compareClassNames, compareNaturalText } from './utils/sortOrder'
 
 export type AttendanceStatus = 'PRESENT' | 'ABSENT' | 'LATE'
 export type AttendanceSessionStatus = 'IN_PROGRESS' | 'COMPLETED'
@@ -24,6 +25,7 @@ export type AttendanceSession = {
   markedByUserId: string
   completedAt: string | null
   studentCount: number
+  hasTrashedRecords?: boolean
 }
 
 export type AttendanceRecord = {
@@ -152,11 +154,19 @@ export function getAttendanceClasses(students: Student[]): AttendanceClass[] {
     }
   }
 
-  return [...groups.values()].sort(
-    (left, right) =>
-      left.className.localeCompare(right.className, undefined, { numeric: true, sensitivity: 'base' }) ||
-      left.section.localeCompare(right.section, undefined, { numeric: true, sensitivity: 'base' }),
-  )
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      students: [...group.students].sort((left, right) =>
+        compareNaturalText(left.studentId, right.studentId) ||
+        compareNaturalText(left.firstName, right.firstName),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        compareClassNames(left.className, right.className) ||
+        compareNaturalText(left.section, right.section),
+    )
 }
 
 export function canAccessAttendanceClass(
@@ -242,7 +252,7 @@ export function getStudentAttendance(
   }))
   const dates = [...new Set(studentRecords.map((record) => sessionsById.get(record.sessionId)?.date ?? ''))]
     .filter(Boolean)
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
   const trend = dates.map((date) => {
     const recordsForDate = studentRecords.filter((record) => sessionsById.get(record.sessionId)?.date === date)
     return { date, value: getAttendanceCounts(recordsForDate).rate ?? 0 }
@@ -272,6 +282,78 @@ export function getAttendanceForScope(
     studentIdsBySession.get(record.sessionId)?.has(record.studentId),
   )
   return { counts: getAttendanceCounts(records), records, sessions }
+}
+
+function collectStudentAttentionAlerts(
+  recordsByStudent: Map<string, AttendanceRecord[]>,
+  studentsById: Map<string, Student>,
+  sessionsById: Map<string, AttendanceSession>,
+): AttendanceAttention[] {
+  const alerts: AttendanceAttention[] = []
+  for (const [studentId, records] of recordsByStudent) {
+    const student = studentsById.get(studentId)
+    if (!student) continue
+    const orderedRecords = [...records].sort((left, right) => {
+      const leftDate = sessionsById.get(left.sessionId)?.date ?? ''
+      const rightDate = sessionsById.get(right.sessionId)?.date ?? ''
+      return rightDate.localeCompare(leftDate)
+    })
+    let consecutiveAbsences = 0
+    for (const record of orderedRecords) {
+      if (record.status !== 'ABSENT') break
+      consecutiveAbsences += 1
+    }
+    const counts = getAttendanceCounts(orderedRecords)
+    if (consecutiveAbsences >= attendanceRules.consecutiveAbsences) {
+      alerts.push({
+        level: 'HIGH',
+        kind: 'student',
+        studentId,
+        title: `${student.firstName} ${student.lastName}`,
+        detail: `Absent for ${consecutiveAbsences} consecutive recorded school days.`,
+      })
+    }
+    if (counts.rate !== null && counts.rate < attendanceRules.lowAttendanceRate) {
+      alerts.push({
+        level: 'MEDIUM',
+        kind: 'student',
+        studentId,
+        title: `${student.firstName} ${student.lastName}`,
+        detail: `Attendance is ${counts.rate}%.`,
+      })
+    }
+  }
+  return alerts
+}
+
+function collectClassDropAttentionAlerts(
+  classes: AttendanceClass[],
+  sessions: AttendanceSession[],
+  recordsBySession: Map<string, AttendanceRecord[]>,
+): AttendanceAttention[] {
+  const alerts: AttendanceAttention[] = []
+  for (const attendanceClass of classes) {
+    const classSessions = sessions.filter((session) => session.classId === attendanceClass.id)
+    if (classSessions.length < 2) continue
+    const latest = getAttendanceCounts(recordsBySession.get(classSessions[0].id) ?? []).rate
+    const comparisonRates = classSessions
+      .slice(1, 4)
+      .map((session) => getAttendanceCounts(recordsBySession.get(session.id) ?? []).rate)
+      .filter((rate): rate is number => rate !== null)
+    if (latest === null || comparisonRates.length === 0) continue
+    const recentAverage = comparisonRates.reduce((sum, rate) => sum + rate, 0) / comparisonRates.length
+    const drop = Math.round(recentAverage - latest)
+    if (drop >= attendanceRules.significantClassDrop) {
+      alerts.push({
+        level: 'NOTICE',
+        kind: 'class',
+        classId: attendanceClass.id,
+        title: `${attendanceClass.className}-${attendanceClass.section}`,
+        detail: `Attendance is ${drop}% below its recent average.`,
+      })
+    }
+  }
+  return alerts
 }
 
 export function getAttendanceAttention(
@@ -304,77 +386,307 @@ export function getAttendanceAttention(
 
   const recordsByStudent = new Map<string, AttendanceRecord[]>()
   for (const record of state.records) {
-    if (record.trashedAt) continue
-    if (!scopedSessionIds.has(record.sessionId)) continue
+    if (record.trashedAt || !scopedSessionIds.has(record.sessionId)) continue
     const student = studentsById.get(record.studentId)
     const session = sessionsById.get(record.sessionId)
-    if (!student?.campusId || !session || session.classId !== getAttendanceClassId(student.className, student.section, student.campusId)) continue
+    if (!student?.campusId || session?.classId !== getAttendanceClassId(student.className, student.section, student.campusId)) continue
     const list = recordsByStudent.get(record.studentId)
     if (list) list.push(record)
     else recordsByStudent.set(record.studentId, [record])
   }
 
-  const attention: AttendanceAttention[] = []
-  for (const [studentId, records] of recordsByStudent) {
-    const student = studentsById.get(studentId)
-    if (!student) continue
-    const orderedRecords = records.sort((left, right) => {
-      const leftDate = sessionsById.get(left.sessionId)?.date ?? ''
-      const rightDate = sessionsById.get(right.sessionId)?.date ?? ''
-      return rightDate.localeCompare(leftDate)
-    })
-    let consecutiveAbsences = 0
-    for (const record of orderedRecords) {
-      if (record.status !== 'ABSENT') break
-      consecutiveAbsences += 1
-    }
-    const counts = getAttendanceCounts(orderedRecords)
-    if (consecutiveAbsences >= attendanceRules.consecutiveAbsences) {
-      attention.push({
-        level: 'HIGH',
-        kind: 'student',
-        studentId,
-        title: `${student.firstName} ${student.lastName}`,
-        detail: `Absent for ${consecutiveAbsences} consecutive recorded school days.`,
-      })
-    }
-    if (counts.rate !== null && counts.rate < attendanceRules.lowAttendanceRate) {
-      attention.push({
-        level: 'MEDIUM',
-        kind: 'student',
-        studentId,
-        title: `${student.firstName} ${student.lastName}`,
-        detail: `Attendance is ${counts.rate}%.`,
-      })
-    }
-  }
-
-  for (const attendanceClass of classes) {
-    const classSessions = sessions.filter((session) => session.classId === attendanceClass.id)
-    if (classSessions.length < 2) continue
-    const latest = getAttendanceCounts(recordsBySession.get(classSessions[0].id) ?? []).rate
-    const comparisonSessions = classSessions.slice(1, 4)
-    const comparisonRates = comparisonSessions
-      .map((session) => getAttendanceCounts(recordsBySession.get(session.id) ?? []).rate)
-      .filter((rate): rate is number => rate !== null)
-    if (latest === null || comparisonRates.length === 0) continue
-    const recentAverage = comparisonRates.reduce((sum, rate) => sum + rate, 0) / comparisonRates.length
-    const drop = Math.round(recentAverage - latest)
-    if (drop >= attendanceRules.significantClassDrop) {
-      attention.push({
-        level: 'NOTICE',
-        kind: 'class',
-        classId: attendanceClass.id,
-        title: `${attendanceClass.className}-${attendanceClass.section}`,
-        detail: `Attendance is ${drop}% below its recent average.`,
-      })
-    }
-  }
+  const attention = [
+    ...collectStudentAttentionAlerts(recordsByStudent, studentsById, sessionsById),
+    ...collectClassDropAttentionAlerts(classes, sessions, recordsBySession),
+  ]
 
   const rank = { HIGH: 0, MEDIUM: 1, NOTICE: 2 }
-  return attention
-    .sort((left, right) => rank[left.level] - rank[right.level] || left.title.localeCompare(right.title))
-    .slice(0, attendanceRules.maxAttentionItems)
+  attention.sort((left, right) => rank[left.level] - rank[right.level] || left.title.localeCompare(right.title))
+  return attention.slice(0, attendanceRules.maxAttentionItems)
+}
+
+export type AttendanceOverviewTimeframe = 'today' | 'weekly' | 'monthly' | 'yearly'
+
+export type GroupedAttendanceSeries = {
+  key: string
+  label: string
+  averageRate: number | null
+}
+
+export type GroupedAttendanceCell = {
+  rate: number | null
+  present: number
+  late: number
+  total: number
+}
+
+export type GroupedAttendanceBucket = {
+  key: string
+  label: string
+  fullLabel: string
+  values: Record<string, GroupedAttendanceCell>
+}
+
+export type GroupedAttendanceChartData = {
+  timeframe: AttendanceOverviewTimeframe
+  periodLabel: string
+  avgLabel: string
+  series: GroupedAttendanceSeries[]
+  buckets: GroupedAttendanceBucket[]
+  averageRate: number
+  highestRate: number
+  lowestRate: number
+  lowSeriesLabels: string[]
+}
+
+function formatGroupedClassLabel(className: string): string {
+  const trimmed = className.trim()
+  if (!trimmed) return 'Unassigned'
+  return /^\d+$/.test(trimmed) ? `Class ${trimmed}` : trimmed
+}
+
+function formatShortDateLabel(dateKey: string): string {
+  return new Intl.DateTimeFormat('en-PK', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+    .format(new Date(`${dateKey}T00:00:00Z`))
+}
+
+type BucketDescriptorResult = {
+  periodLabel: string
+  avgLabel: string
+  buckets: Array<{ key: string; label: string; fullLabel: string; dates: Set<string> }>
+}
+
+function getMonthlyBucketDescriptors(recordedDates: string[]): BucketDescriptorResult {
+  const latestDate = recordedDates.at(-1) ?? ''
+  const latestMs = Date.parse(`${latestDate}T00:00:00Z`)
+  const cutoffMs = latestMs - 29 * 86_400_000
+  const monthlyDates = recordedDates.filter((date) => Date.parse(`${date}T00:00:00Z`) >= cutoffMs)
+  if (monthlyDates.length <= 7) {
+    return {
+      periodLabel: 'Last 30 days',
+      avgLabel: '30-day avg',
+      buckets: monthlyDates.map((date) => ({
+        key: date,
+        label: formatShortDateLabel(date),
+        fullLabel: new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`)),
+        dates: new Set([date]),
+      })),
+    }
+  }
+  const weekMap = new Map<string, string[]>()
+  for (const date of monthlyDates) {
+    const parsed = new Date(`${date}T00:00:00Z`)
+    const dayOfWeek = (parsed.getUTCDay() + 6) % 7
+    const weekStart = new Date(parsed.getTime() - dayOfWeek * 86_400_000).toISOString().slice(0, 10)
+    const list = weekMap.get(weekStart)
+    if (list) list.push(date)
+    else weekMap.set(weekStart, [date])
+  }
+  const weekEntries = [...weekMap.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-6)
+  return {
+    periodLabel: 'Last 30 days',
+    avgLabel: '30-day avg',
+    buckets: weekEntries.map(([weekStart, dates]) => ({
+      key: weekStart,
+      label: formatShortDateLabel(weekStart),
+      fullLabel: `Week of ${formatShortDateLabel(weekStart)}`,
+      dates: new Set(dates),
+    })),
+  }
+}
+
+function getYearlyBucketDescriptors(recordedDates: string[]): BucketDescriptorResult {
+  const monthMap = new Map<string, string[]>()
+  for (const date of recordedDates) {
+    const monthKey = date.slice(0, 7)
+    const list = monthMap.get(monthKey)
+    if (list) list.push(date)
+    else monthMap.set(monthKey, [date])
+  }
+  const monthEntries = [...monthMap.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-12)
+  return {
+    periodLabel: 'Last 12 months',
+    avgLabel: 'Yearly avg',
+    buckets: monthEntries.map(([monthKey, dates]) => {
+      const parsed = new Date(`${monthKey}-01T00:00:00Z`)
+      return {
+        key: monthKey,
+        label: new Intl.DateTimeFormat('en', { month: 'short', timeZone: 'UTC' }).format(parsed),
+        fullLabel: new Intl.DateTimeFormat('en-PK', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(parsed),
+        dates: new Set(dates),
+      }
+    }),
+  }
+}
+
+function getBucketDescriptors(
+  recordedDates: string[],
+  timeframe: AttendanceOverviewTimeframe,
+  schoolTimezone?: string | null,
+): BucketDescriptorResult {
+  if (!recordedDates.length) {
+    return { periodLabel: 'No recorded days', avgLabel: 'Avg', buckets: [] }
+  }
+
+  if (timeframe === 'today') {
+    const todayKey = attendanceDateKey(schoolTimezone)
+    const targetDate = recordedDates.includes(todayKey) ? todayKey : (recordedDates.at(-1) ?? '')
+    const label = targetDate === todayKey ? 'Today' : formatShortDateLabel(targetDate)
+    return {
+      periodLabel: targetDate === todayKey ? 'Today' : 'Latest recorded day',
+      avgLabel: 'Today avg',
+      buckets: [{
+        key: targetDate,
+        label,
+        fullLabel: new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' })
+          .format(new Date(`${targetDate}T00:00:00Z`)),
+        dates: new Set([targetDate]),
+      }],
+    }
+  }
+
+  if (timeframe === 'weekly') {
+    const weeklyDates = recordedDates.slice(-7)
+    return {
+      periodLabel: 'Last 7 recorded days',
+      avgLabel: '7-day avg',
+      buckets: weeklyDates.map((date) => ({
+        key: date,
+        label: new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`)),
+        fullLabel: new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`)),
+        dates: new Set([date]),
+      })),
+    }
+  }
+
+  if (timeframe === 'monthly') {
+    return getMonthlyBucketDescriptors(recordedDates)
+  }
+
+  return getYearlyBucketDescriptors(recordedDates)
+}
+
+export function getGroupedAttendanceChartData(
+  state: AttendanceState,
+  students: Student[],
+  timeframe: AttendanceOverviewTimeframe,
+  schoolTimezone?: string | null,
+): GroupedAttendanceChartData {
+  const classes = getAttendanceClasses(students)
+  const classIds = new Set(classes.map((item) => item.id))
+  const sessionsWithRecords = new Set(state.records.filter((record) => !record.trashedAt).map((record) => record.sessionId))
+  const recordedDates = [...new Set(
+    state.sessions
+      .filter((session) => classIds.has(session.classId) && sessionsWithRecords.has(session.id))
+      .map((session) => session.date),
+  )].sort((left, right) => left.localeCompare(right))
+
+  const { periodLabel, avgLabel, buckets: descriptors } = getBucketDescriptors(recordedDates, timeframe, schoolTimezone)
+  if (!classes.length || !descriptors.length) {
+    return {
+      timeframe,
+      periodLabel,
+      avgLabel,
+      series: [],
+      buckets: [],
+      averageRate: 0,
+      highestRate: 0,
+      lowestRate: 0,
+      lowSeriesLabels: [],
+    }
+  }
+
+  const classGroupsMap = new Map<string, { key: string; label: string; classIds: Set<string>; studentIds: Set<string> }>()
+  for (const item of classes) {
+    const label = formatGroupedClassLabel(item.className)
+    const key = label.toLowerCase()
+    const existing = classGroupsMap.get(key)
+    if (existing) {
+      existing.classIds.add(item.id)
+      for (const student of item.students) existing.studentIds.add(student.id)
+    } else {
+      classGroupsMap.set(key, {
+        key,
+        label,
+        classIds: new Set([item.id]),
+        studentIds: new Set(item.students.map((student) => student.id)),
+      })
+    }
+  }
+
+  const allSeriesGroups = [...classGroupsMap.values()].sort((a, b) =>
+    compareClassNames(a.label, b.label),
+  )
+
+  const computeCell = (dates: Set<string>, classIdsSet: Set<string>, studentIdsSet: Set<string>): GroupedAttendanceCell => {
+    const sessionIds = new Set(
+      state.sessions
+        .filter((session) => classIdsSet.has(session.classId) && dates.has(session.date))
+        .map((session) => session.id),
+    )
+    if (!sessionIds.size) {
+      return { rate: null, present: 0, late: 0, total: 0 }
+    }
+    const matchingRecords = state.records.filter((record) =>
+      !record.trashedAt && sessionIds.has(record.sessionId) && studentIdsSet.has(record.studentId),
+    )
+    const counts = getAttendanceCounts(matchingRecords)
+    return {
+      rate: counts.rate,
+      present: counts.present,
+      late: counts.late,
+      total: counts.total,
+    }
+  }
+
+  const allPeriodDates = new Set(descriptors.flatMap((descriptor) => [...descriptor.dates]))
+  const seriesWithAvg = allSeriesGroups.map((group) => {
+    const summary = computeCell(allPeriodDates, group.classIds, group.studentIds)
+    return { ...group, averageRate: summary.rate }
+  })
+
+  const selectedGroups = seriesWithAvg
+
+  const series: GroupedAttendanceSeries[] = selectedGroups.map(({ key, label, averageRate }) => ({
+    key,
+    label,
+    averageRate,
+  }))
+
+  const rates: number[] = []
+  const buckets: GroupedAttendanceBucket[] = descriptors.map((descriptor) => {
+    const values: Record<string, GroupedAttendanceCell> = {}
+    for (const group of selectedGroups) {
+      const cell = computeCell(descriptor.dates, group.classIds, group.studentIds)
+      values[group.key] = cell
+      if (cell.rate !== null) rates.push(cell.rate)
+    }
+    return {
+      key: descriptor.key,
+      label: descriptor.label,
+      fullLabel: descriptor.fullLabel,
+      values,
+    }
+  })
+
+  const averageRate = rates.length ? Math.round(rates.reduce((sum, r) => sum + r, 0) / rates.length) : 0
+  const highestRate = rates.length ? Math.max(...rates) : 0
+  const lowestRate = rates.length ? Math.min(...rates) : 0
+  const lowSeriesLabels = series
+    .filter((item) => item.averageRate !== null && item.averageRate < attendanceRules.lowAttendanceRate)
+    .map((item) => item.label)
+
+  return {
+    timeframe,
+    periodLabel,
+    avgLabel,
+    series,
+    buckets,
+    averageRate,
+    highestRate,
+    lowestRate,
+    lowSeriesLabels,
+  }
 }
 
 export function getAttendanceTrend(
@@ -389,7 +701,7 @@ export function getAttendanceTrend(
       classIds.has(session.classId) && sessionsWithRecords.has(session.id),
     )
     .map((session) => session.date),
-  )].sort().slice(-7)
+  )].sort((left, right) => left.localeCompare(right)).slice(-7)
   return dates.map((date) => {
     const daily = getAttendanceForScope(state, classes, date).counts
     return {
@@ -420,6 +732,6 @@ export function getLastRecordedAttendanceDate(state: AttendanceState, students: 
       sessionsWithRecords.has(session.id),
     ))
     .map((session) => session.date)
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
     .at(-1) ?? null
 }

@@ -85,11 +85,14 @@ const ROLE_CAPABILITIES: Record<Role, { allowed: string[]; restricted: string[] 
 }
 
 const ROMAN_URDU_WORDS = new Set([
-  'aaj', 'hai', 'hain', 'ha', 'ho', 'kya', 'kia', 'kis', 'kisi', 'kaun', 'kon',
-  'kitne', 'kitni', 'kitna', 'batao', 'btao', 'dikhao', 'dikha', 'hamari', 'hmari',
-  'humari', 'meri', 'mere', 'mera', 'apne', 'apni', 'apna', 'ka', 'ki', 'ke', 'ko',
-  'mein', 'me', 'se', 'par', 'nahi', 'nhi', 'chahiye', 'pooch', 'pochoo', 'ma',
-  'mai', 'hum', 'mahine', 'mahin', 'hajri',
+  'aaj', 'kal', 'parso', 'hai', 'hain', 'hun', 'hoon', 'tha', 'thi',
+  'kya', 'kia', 'kis', 'kisi', 'kaun', 'kon', 'konsa', 'konsi', 'konse', 'kahan', 'kab',
+  'kitne', 'kitni', 'kitna', 'kitny', 'batao', 'btao', 'bata', 'btaye', 'bataye',
+  'dikhao', 'dikha', 'dikhaye', 'hamari', 'hmari', 'humari', 'meri', 'mere',
+  'apne', 'apni', 'apna', 'mein',
+  'nahi', 'nhi', 'chahiye', 'pooch', 'pochoo', 'hum', 'mahine', 'mahin',
+  'mahina', 'hafta', 'hafte', 'hajri', 'hazir', 'gair', 'chutti', 'chuti', 'sabse',
+  'zyada', 'baqi', 'baki', 'jama', 'naam', 'walid', 'sarparast',
 ])
 
 const MUTATION_VERBS = new Set([
@@ -281,7 +284,7 @@ function buildAttendanceSnapshot(
   const currentMonth = today.slice(0, 7)
   const studentAttMap = accumulateStudentAttendance(attendance, currentMonth, today)
 
-  const perStudentAttendance: PerStudentAttendanceItem[] = activeStudents.slice(0, 120).map((s) => {
+  const perStudentAttendance: PerStudentAttendanceItem[] = activeStudents.map((s) => {
     const stats = studentAttMap.get(s.id) ?? emptyStudentAttendanceStats()
     const mTotal = stats.monthPresent + stats.monthLate + stats.monthAbsent
     const oTotal = stats.overallPresent + stats.overallLate + stats.overallAbsent
@@ -522,14 +525,137 @@ function formatStudentAttendanceStats(
     : `${name} (${classLabel}) attendance ${periodLabelEn}: ${stats.ratePercent}% — Present: ${stats.present}, Late: ${stats.late}, Absent: ${stats.absent} (${stats.totalSessions} recorded days).`
 }
 
+function shiftIsoDate(isoDate: string, deltaDays: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays))
+  return dt.toISOString().slice(0, 10)
+}
+
+function normalizeClassToken(value: string): string {
+  return value.trim().replace(/^(?:class|grade)\s+/i, '').toLowerCase()
+}
+
+type ClassScopeFilter = {
+  className: string
+  section: string | null
+}
+
+function extractClassScopeFilter(prompt: string): ClassScopeFilter | null {
+  const withKeyword = prompt.match(/\b(?:class|grade)\s+([a-z0-9]+)(?:\s*[-/\s]+(?:section\s+)?([a-z]))?\b/i)
+  if (withKeyword) {
+    const reserved = new Set(['a', 'in', 'is', 'ki', 'ka', 'ke', 'me', 'mein', 'ko', 'se', 'par'])
+    const rawSection = withKeyword[2]
+    const section = rawSection && !reserved.has(rawSection.toLowerCase()) ? rawSection.toUpperCase() : null
+    return { className: withKeyword[1], section }
+  }
+  const hyphenated = prompt.match(/\b(\d{1,2})\s*[-/]\s*([a-z])\b/i)
+  if (hyphenated) {
+    return { className: hyphenated[1], section: hyphenated[2].toUpperCase() }
+  }
+  return null
+}
+
+function matchesClassScopeFilter(student: Pick<Student, 'className' | 'section'>, scope: ClassScopeFilter): boolean {
+  if (normalizeClassToken(student.className) !== normalizeClassToken(scope.className)) return false
+  if (scope.section && student.section.trim().toUpperCase() !== scope.section.toUpperCase()) return false
+  return true
+}
+
+type AttendancePeriod = {
+  start: string
+  end: string
+  isToday: boolean
+  labelEn: string
+  labelUr: string
+}
+
+function getIsoDayOfWeek(isoDate: string): number {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+}
+
+function resolveAttendancePeriod(lower: string, today: string): AttendancePeriod {
+  if (/\b(yesterday|kal)\b/.test(lower)) {
+    const yesterday = shiftIsoDate(today, -1)
+    return { start: yesterday, end: yesterday, isToday: false, labelEn: `yesterday (${yesterday})`, labelUr: `kal (${yesterday})` }
+  }
+
+  const dayOfWeek = getIsoDayOfWeek(today)
+  const daysSinceSunday = dayOfWeek === 0 ? 7 : dayOfWeek
+
+  if (/\b(last\s+weekend|weekend)\b/.test(lower)) {
+    const sunday = shiftIsoDate(today, -daysSinceSunday)
+    const saturday = shiftIsoDate(sunday, -1)
+    return { start: saturday, end: sunday, isToday: false, labelEn: `last weekend (${saturday} to ${sunday})`, labelUr: `pichle weekend (${saturday} se ${sunday})` }
+  }
+
+  if (/\b(last\s+week|pichle\s+hafte|pichla\s+hafta)\b/.test(lower)) {
+    const lastSunday = shiftIsoDate(today, -daysSinceSunday)
+    const lastMonday = shiftIsoDate(lastSunday, -6)
+    return { start: lastMonday, end: lastSunday, isToday: false, labelEn: `last week (${lastMonday} to ${lastSunday})`, labelUr: `pichle hafte (${lastMonday} se ${lastSunday})` }
+  }
+
+  if (/\b(this\s+week|is\s+hafte|hafta|hafte)\b/.test(lower)) {
+    const daysSinceMonday = (dayOfWeek + 6) % 7
+    const monday = shiftIsoDate(today, -daysSinceMonday)
+    return { start: monday, end: today, isToday: false, labelEn: `this week (${monday} to ${today})`, labelUr: `is hafte (${monday} se ${today})` }
+  }
+
+  if (/\b(last\s+month|pichle\s+mahin[ae]|pichla\s+mahina)\b/.test(lower)) {
+    const [y, m] = today.split('-').map(Number)
+    const prevFirst = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 10)
+    const prevLast = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10)
+    const ym = prevFirst.slice(0, 7)
+    return { start: prevFirst, end: prevLast, isToday: false, labelEn: `last month (${ym})`, labelUr: `pichle mahine (${ym})` }
+  }
+
+  if (/\b(this\s+month|month|mahin|mahine|mahina)\b/.test(lower)) {
+    const ym = today.slice(0, 7)
+    return { start: `${ym}-01`, end: today, isToday: false, labelEn: `this month (${ym})`, labelUr: `is mahine (${ym})` }
+  }
+
+  const isoMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/)
+  if (isoMatch) {
+    const d = isoMatch[1]
+    return { start: d, end: d, isToday: d === today, labelEn: d, labelUr: d }
+  }
+
+  return { start: today, end: today, isToday: true, labelEn: `today (${today})`, labelUr: `aaj (${today})` }
+}
+
+function getStudentFeeDue(studentId: string, fees: FeeState): number {
+  return fees.invoices
+    .filter((inv) => inv.studentId === studentId && !inv.voidedAt && inv.status !== 'Cancelled' && inv.status !== 'Voided')
+    .reduce((sum, inv) => sum + Math.max(0, inv.totalAmount - inv.paidAmount), 0)
+}
+
+function getStudentDateStatus(studentId: string, targetDate: string, attendance: AttendanceState): string {
+  const sessionIds = new Set(attendance.sessions.filter((s) => s.date === targetDate).map((s) => s.id))
+  const rec = attendance.records.find((r) => !r.trashedAt && r.studentId === studentId && sessionIds.has(r.sessionId))
+  return rec ? rec.status : 'Not recorded'
+}
+
 function answerStudentAttendanceQuery(
   lower: string,
   student: Student,
-  attendance: AttendanceSnapshot,
+  attendanceStats: AttendanceSnapshot,
+  rawAttendance: AttendanceState,
   romanUrdu: boolean,
 ): string {
   const name = `${student.firstName} ${student.lastName}`
-  const stAtt = attendance.perStudentAttendance.find((item) => item.name.toLowerCase() === name.toLowerCase())
+  const classLabel = formatClassLabel(student.className, student.section)
+
+  if (/\b(yesterday|kal)\b/.test(lower)) {
+    const yesterday = shiftIsoDate(attendanceStats.todayDate, -1)
+    const status = getStudentDateStatus(student.id, yesterday, rawAttendance)
+    return romanUrdu
+      ? `${name} (${classLabel}) ki kal (${yesterday}) ki attendance: ${status}.`
+      : `${name} (${classLabel}) attendance on ${yesterday}: ${status}.`
+  }
+
+  const stAtt = attendanceStats.perStudentAttendance.find(
+    (item) => item.name.toLowerCase() === name.toLowerCase() && item.class.toLowerCase() === classLabel.toLowerCase(),
+  )
   if (!stAtt) {
     return romanUrdu ? `${name} aapke authorized scope mein nahi mila.` : `${name} was not found in your authorized scope.`
   }
@@ -540,11 +666,43 @@ function answerStudentAttendanceQuery(
       : `${name} (${stAtt.class}) attendance today: ${stAtt.todayStatus}.`
   }
 
-  if (/\b(month|mahin|mahine)\b/.test(lower)) {
-    return formatStudentAttendanceStats(name, stAtt.class, stAtt.thisMonth, `this month (${attendance.currentMonth})`, `Is mahine (${attendance.currentMonth})`, romanUrdu)
+  if (/\b(month|mahin|mahine|mahina)\b/.test(lower)) {
+    return formatStudentAttendanceStats(name, stAtt.class, stAtt.thisMonth, `this month (${attendanceStats.currentMonth})`, `Is mahine (${attendanceStats.currentMonth})`, romanUrdu)
   }
 
   return formatStudentAttendanceStats(name, stAtt.class, stAtt.overall, 'overall', 'Overall', romanUrdu)
+}
+
+function formatStudentProfileSummary(
+  student: Student,
+  ctx: ReturnType<typeof buildAuthorizedContextSnapshot>,
+  input: AskCamviaAuthorizedInput,
+  romanUrdu: boolean,
+): string {
+  const name = `${student.firstName} ${student.lastName}`
+  const classLabel = formatClassLabel(student.className, student.section)
+  const parts = [
+    romanUrdu
+      ? `${name} (${student.studentId}) — Class ${classLabel}, Roll ${student.rollNumber || 'N/A'}, Status: ${student.status}, Guardian: ${student.guardian?.name || 'N/A'}`
+      : `${name} (${student.studentId}) — Class ${classLabel}, Roll ${student.rollNumber || 'N/A'}, Status: ${student.status}, Guardian: ${student.guardian?.name || 'N/A'}`,
+  ]
+  if (typeof ctx.attendance !== 'string') {
+    const stAtt = ctx.attendance.perStudentAttendance.find(
+      (item) => item.name.toLowerCase() === name.toLowerCase() && item.class.toLowerCase() === classLabel.toLowerCase(),
+    )
+    if (stAtt) {
+      parts.push(
+        romanUrdu
+          ? `Aaj: ${stAtt.todayStatus}, Overall attendance: ${stAtt.overall.ratePercent ?? 'N/A'}%`
+          : `Today: ${stAtt.todayStatus}, Overall attendance: ${stAtt.overall.ratePercent ?? 'N/A'}%`,
+      )
+    }
+  }
+  if (input.user.role !== 'teacher') {
+    const due = getStudentFeeDue(student.id, input.fees)
+    parts.push(romanUrdu ? `Pending fees: ${formatMoney(due)}` : `Outstanding fees: ${formatMoney(due)}`)
+  }
+  return `${parts.join(' | ')}.`
 }
 
 function answerStudentQuery(
@@ -557,25 +715,180 @@ function answerStudentQuery(
   const name = `${student.firstName} ${student.lastName}`
   const classLabel = formatClassLabel(student.className, student.section)
 
-  if (/\b(fee|fees|due|balance|invoice)\b/.test(lower) && input.user.role !== 'teacher') {
-    const studentInvoices = input.fees.invoices.filter((inv) => inv.studentId === student.id && !inv.voidedAt && inv.status !== 'Cancelled' && inv.status !== 'Voided')
-    const due = studentInvoices.reduce((sum, inv) => sum + Math.max(0, inv.totalAmount - inv.paidAmount), 0)
+  if (/\b(fee|fees|due|dues|balance|invoice|baqi|baki|jama)\b/.test(lower) && input.user.role !== 'teacher') {
+    const due = getStudentFeeDue(student.id, input.fees)
     return romanUrdu
       ? `${name} (${classLabel}) ki pending fees ${formatMoney(due)} hain.`
       : `${name} (${classLabel}) has ${formatMoney(due)} in outstanding fees.`
   }
 
-  if (/\b(attend(?:ance|ence)|absent|present|late|hajri|month|today|aaj)\b/.test(lower) && typeof ctx.attendance !== 'string') {
-    return answerStudentAttendanceQuery(lower, student, ctx.attendance, romanUrdu)
+  if (/\b(attend(?:ance|ence)|absent|present|late|hajri|hazir|gair|month|mahin|mahine|mahina|today|aaj|yesterday|kal)\b/.test(lower) && typeof ctx.attendance !== 'string') {
+    return answerStudentAttendanceQuery(lower, student, ctx.attendance, input.attendance, romanUrdu)
   }
 
-  if (/\b(guardian|parent|sarparast)\b/.test(lower)) {
+  if (/\b(guardian|parent|sarparast|walid|father|mother|phone|email|contact|number)\b/.test(lower)) {
+    const phone = student.guardian?.phone ? `, Phone: ${student.guardian.phone}` : ''
+    const email = student.guardian?.email ? `, Email: ${student.guardian.email}` : ''
     return romanUrdu
-      ? `${name} ke guardian ${student.guardian?.name || 'N/A'} hain.`
-      : `${name}'s guardian is ${student.guardian?.name || 'N/A'}.`
+      ? `${name} (${classLabel}) ke guardian ${student.guardian?.name || 'N/A'} hain${phone}${email}.`
+      : `${name}'s (${classLabel}) guardian is ${student.guardian?.name || 'N/A'}${phone}${email}.`
+  }
+
+  if (/\b(who|kaun|kon|detail|details|profile|info|roll|class|section|id|status|batao|btao|about)\b/.test(lower) || lower.split(/\s+/).length <= 3) {
+    return formatStudentProfileSummary(student, ctx, input, romanUrdu)
   }
 
   return null
+}
+
+function findMatchedStudents(students: Student[], lower: string): Student[] {
+  const active = students.filter((s) => s.status === 'Active')
+  const idMatch = active.filter((s) => s.studentId && lower.includes(s.studentId.toLowerCase()))
+  if (idMatch.length > 0) return idMatch
+
+  const fullMatches = active.filter((s) => {
+    const full = `${s.firstName} ${s.lastName}`.trim().toLowerCase()
+    return full.length >= 3 && lower.includes(full)
+  })
+  if (fullMatches.length > 0) return fullMatches
+
+  const tokens = new Set(tokenizeWords(lower).filter((t) => t.length >= 3))
+  return active.filter((s) =>
+    tokens.has(s.firstName.trim().toLowerCase()) || tokens.has(s.lastName.trim().toLowerCase()),
+  )
+}
+
+function answerClassScopedQuery(
+  lower: string,
+  scope: ClassScopeFilter,
+  ctx: ReturnType<typeof buildAuthorizedContextSnapshot>,
+  input: AskCamviaAuthorizedInput,
+  romanUrdu: boolean,
+): string | null {
+  const activeInClass = input.students.filter((s) => s.status === 'Active' && matchesClassScopeFilter(s, scope))
+  const label = scope.section ? `Class ${scope.className}-${scope.section}` : `Class ${scope.className}`
+
+  if (activeInClass.length === 0) {
+    return romanUrdu
+      ? `${label} mein aapke authorized scope mein koi active student nahi mila.`
+      : `No active students were found for ${label} in your authorized scope.`
+  }
+
+  if (/\b(fee|fees|collected|outstanding|overdue|due|dues|invoice|baqi|baki)\b/.test(lower) && input.user.role !== 'teacher') {
+    const studentIds = new Set(activeInClass.map((s) => s.id))
+    const invoices = input.fees.invoices.filter((inv) => studentIds.has(inv.studentId) && !inv.voidedAt && inv.status !== 'Cancelled' && inv.status !== 'Voided')
+    const billed = invoices.reduce((sum, inv) => sum + inv.totalAmount, 0)
+    const collected = invoices.reduce((sum, inv) => sum + inv.paidAmount, 0)
+    const outstanding = invoices.reduce((sum, inv) => sum + Math.max(0, inv.totalAmount - inv.paidAmount), 0)
+    return romanUrdu
+      ? `${label} (${activeInClass.length} students) — Billed: ${formatMoney(billed)}, Collected: ${formatMoney(collected)}, Pending: ${formatMoney(outstanding)}.`
+      : `${label} (${activeInClass.length} students) — Billed: ${formatMoney(billed)}, Collected: ${formatMoney(collected)}, Outstanding: ${formatMoney(outstanding)}.`
+  }
+
+  if (/\b(attend(?:ance|ence)|absent|present|late|hajri|hazir|gair|rate|who|kaun|kon)\b/.test(lower) && typeof ctx.attendance !== 'string') {
+    const period = resolveAttendancePeriod(lower, ctx.attendance.todayDate)
+    const sessionIds = new Set(
+      input.attendance.sessions
+        .filter((s) => s.date >= period.start && s.date <= period.end)
+        .map((s) => s.id),
+    )
+    const studentIds = new Set(activeInClass.map((s) => s.id))
+    const records = input.attendance.records.filter((r) => !r.trashedAt && sessionIds.has(r.sessionId) && studentIds.has(r.studentId))
+    if (records.length === 0) {
+      return romanUrdu
+        ? `${label} ki ${period.labelUr} ki attendance record nahi hui hai.`
+        : `No attendance was recorded for ${label} during ${period.labelEn}.`
+    }
+    const present = records.filter((r) => r.status === 'PRESENT').length
+    const late = records.filter((r) => r.status === 'LATE').length
+    const absentRecs = records.filter((r) => r.status === 'ABSENT')
+    const rate = computeRatePercent(present, late, records.length)
+    const studentById = new Map(activeInClass.map((s) => [s.id, s]))
+    const absentNames = absentRecs
+      .map((r) => studentById.get(r.studentId))
+      .filter((s): s is Student => Boolean(s))
+      .map((s) => `${s.firstName} ${s.lastName}`)
+    const absentSuffix = absentNames.length > 0 ? ` Absent: ${absentNames.slice(0, 20).join(', ')}.` : ''
+    return romanUrdu
+      ? `${label} (${period.labelUr}) ki attendance ${rate}% hai (Present: ${present}, Late: ${late}, Absent: ${absentRecs.length}).${absentSuffix}`
+      : `${label} (${period.labelEn}) attendance is ${rate}% (Present: ${present}, Late: ${late}, Absent: ${absentRecs.length}).${absentSuffix}`
+  }
+
+  if (/\b(student|students|kitne|kitni|how many|count|list|names|enrolled|total)\b/.test(lower)) {
+    const wantsNames = /\b(list|names|who|kaun|kon|dikhao|batao)\b/.test(lower) && !/\b(how many|kitne|kitni|count|total)\b/.test(lower)
+    if (wantsNames) {
+      const preview = activeInClass.slice(0, 20).map((s) => `${s.firstName} ${s.lastName} (${s.studentId})`).join(', ')
+      const more = activeInClass.length > 20 ? ` (+${activeInClass.length - 20} more)` : ''
+      return `${label} (${activeInClass.length} students): ${preview}${more}.`
+    }
+    return romanUrdu
+      ? `${label} mein ${activeInClass.length} active students hain.`
+      : `There are ${activeInClass.length} active students in ${label}.`
+  }
+
+  return null
+}
+
+function answerClassRankingsQuery(
+  lower: string,
+  ctx: ReturnType<typeof buildAuthorizedContextSnapshot>,
+  input: AskCamviaAuthorizedInput,
+  romanUrdu: boolean,
+): string | null {
+  if (typeof ctx.attendance === 'string') return null
+  const wantsLowest = /\b(lowest|worst|kam|sabse kam|below 75|low)\b/.test(lower)
+  const wantsHighest = /\b(highest|best|top|zyada|sabse zyada)\b/.test(lower)
+  const wantsUnmarked = /\b(unmarked|not marked|pending|missing|nahi hui)\b/.test(lower)
+  if (!wantsLowest && !wantsHighest && !wantsUnmarked) return null
+
+  const today = ctx.attendance.todayDate
+  const activeStudents = input.students.filter((s) => s.status === 'Active')
+  const classGroups = new Map<string, { label: string; studentIds: Set<string> }>()
+  for (const s of activeStudents) {
+    const key = `${s.campusId}|${s.className}|${s.section}`
+    const group = classGroups.get(key) ?? { label: formatClassLabel(s.className, s.section), studentIds: new Set<string>() }
+    group.studentIds.add(s.id)
+    classGroups.set(key, group)
+  }
+
+  const todaySessionIds = new Set(input.attendance.sessions.filter((s) => s.date === today).map((s) => s.id))
+  const todayRecords = input.attendance.records.filter((r) => !r.trashedAt && todaySessionIds.has(r.sessionId))
+
+  const stats = [...classGroups.values()].map((g) => {
+    const recs = todayRecords.filter((r) => g.studentIds.has(r.studentId))
+    const present = recs.filter((r) => r.status === 'PRESENT').length
+    const late = recs.filter((r) => r.status === 'LATE').length
+    const rate = computeRatePercent(present, late, recs.length)
+    return { label: g.label, rate, recorded: recs.length }
+  })
+
+  if (wantsUnmarked) {
+    const unmarked = stats.filter((s) => s.recorded === 0).map((s) => s.label)
+    if (unmarked.length === 0) {
+      return romanUrdu
+        ? `Aaj (${today}) sab ${stats.length} classes ki attendance record ho chuki hai.`
+        : `All ${stats.length} classes have recorded attendance today (${today}).`
+    }
+    return romanUrdu
+      ? `Aaj (${today}) in ${unmarked.length} classes ki attendance pending hai: ${unmarked.join(', ')}.`
+      : `${unmarked.length} class(es) have not recorded attendance today (${today}): ${unmarked.join(', ')}.`
+  }
+
+  const recorded = stats.filter((s): s is { label: string; rate: number; recorded: number } => s.rate !== null)
+  if (recorded.length === 0) {
+    return romanUrdu ? `Aaj (${today}) abhi kisi class ki attendance record nahi hui.` : `No class attendance has been recorded today (${today}).`
+  }
+
+  const sorted = [...recorded].sort((a, b) => (wantsLowest ? a.rate - b.rate : b.rate - a.rate))
+  const top = sorted.slice(0, 5).map((s) => `${s.label} (${s.rate}%)`).join(', ')
+  if (wantsLowest) {
+    return romanUrdu
+      ? `Aaj sabse kam attendance wali classes: ${top}.`
+      : `Classes with the lowest attendance today: ${top}.`
+  }
+  return romanUrdu
+    ? `Aaj sabse zyada attendance wali classes: ${top}.`
+    : `Classes with the highest attendance today: ${top}.`
 }
 
 function getScopeHint(role: Role, romanUrdu: boolean): string {
@@ -598,14 +911,93 @@ function answerAlertsSummary(ctx: ReturnType<typeof buildAuthorizedContextSnapsh
   return romanUrdu ? `${ctx.alerts.activeCount} active alerts hain: ${preview}` : `There are ${ctx.alerts.activeCount} active alerts: ${preview}`
 }
 
-function answerAttendanceSummary(attendance: AttendanceSnapshot, romanUrdu: boolean): string {
-  if (attendance.todayAttendanceRatePercent === null) {
-    return romanUrdu ? 'Aaj attendance record nahi hui hai.' : 'No attendance has been recorded today.'
+function answerAttendanceSummary(
+  lower: string,
+  attendance: AttendanceSnapshot,
+  rawAttendance: AttendanceState,
+  students: Student[],
+  romanUrdu: boolean,
+): string {
+  const period = resolveAttendancePeriod(lower, attendance.todayDate)
+  const activeStudents = students.filter((s) => s.status === 'Active')
+  const studentById = new Map(activeStudents.map((s) => [s.id, s]))
+
+  const sessionIds = new Set(
+    rawAttendance.sessions
+      .filter((s) => s.date >= period.start && s.date <= period.end)
+      .map((s) => s.id),
+  )
+  const recs = rawAttendance.records.filter((r) => !r.trashedAt && sessionIds.has(r.sessionId))
+
+  if (recs.length === 0) {
+    return romanUrdu
+      ? `${period.labelUr} ke liye koi attendance record nahi mili.`
+      : `No attendance was recorded for ${period.labelEn}.`
   }
-  const absNames = attendance.todayAbsentStudents.length ? ` Absent: ${attendance.todayAbsentStudents.join(', ')}.` : ''
+
+  const presentRecs = recs.filter((r) => r.status === 'PRESENT')
+  const lateRecs = recs.filter((r) => r.status === 'LATE')
+  const absentRecs = recs.filter((r) => r.status === 'ABSENT')
+  const rate = computeRatePercent(presentRecs.length, lateRecs.length, recs.length)
+
+  const asksLateOnly = /\b(late)\b/.test(lower) && !/\b(present|absent)\b/.test(lower)
+  if (asksLateOnly) {
+    const lateNames = lateRecs
+      .map((r) => studentById.get(r.studentId))
+      .filter((s): s is Student => Boolean(s))
+      .map((s) => `${s.firstName} ${s.lastName} (${formatClassLabel(s.className, s.section)})`)
+    if (lateNames.length === 0) {
+      return romanUrdu ? `${period.labelUr} mein koi student late nahi tha.` : `No students were marked late for ${period.labelEn}.`
+    }
+    return romanUrdu
+      ? `${period.labelUr} mein ${lateNames.length} student(s) late thay: ${lateNames.slice(0, 40).join(', ')}.`
+      : `${lateNames.length} student(s) were marked late for ${period.labelEn}: ${lateNames.slice(0, 40).join(', ')}.`
+  }
+
+  const asksPresentOnly = /\b(present|hazir)\b/.test(lower) && !/\b(absent|late)\b/.test(lower)
+  if (asksPresentOnly) {
+    const presentNames = presentRecs
+      .map((r) => studentById.get(r.studentId))
+      .filter((s): s is Student => Boolean(s))
+      .map((s) => `${s.firstName} ${s.lastName} (${formatClassLabel(s.className, s.section)})`)
+    const sample = presentNames.slice(0, 15).join(', ')
+    const more = presentNames.length > 15 ? ` (+${presentNames.length - 15} more)` : ''
+    return romanUrdu
+      ? `${period.labelUr} mein ${presentRecs.length} students present thay (${rate}% attendance; Late: ${lateRecs.length}, Absent: ${absentRecs.length}). Shuru ke students: ${sample}${more}.`
+      : `For ${period.labelEn}, ${presentRecs.length} students were present (${rate}% attendance; Late: ${lateRecs.length}, Absent: ${absentRecs.length}). Sample: ${sample}${more}.`
+  }
+
+  const absentNames = absentRecs
+    .map((r) => studentById.get(r.studentId))
+    .filter((s): s is Student => Boolean(s))
+    .map((s) => `${s.firstName} ${s.lastName} (${formatClassLabel(s.className, s.section)})`)
+  const absSuffix = absentNames.length > 0 ? ` Absent: ${absentNames.slice(0, 40).join(', ')}.` : ''
+
   return romanUrdu
-    ? `Aaj ki attendance ${attendance.todayAttendanceRatePercent}% hai (Present: ${attendance.todayPresentCount}, Late: ${attendance.todayLateCount}, Absent: ${attendance.todayAbsentCount}).${absNames}`
-    : `Today's attendance is ${attendance.todayAttendanceRatePercent}% (Present: ${attendance.todayPresentCount}, Late: ${attendance.todayLateCount}, Absent: ${attendance.todayAbsentCount}).${absNames}`
+    ? `${period.labelUr} ki attendance ${rate}% hai (Present: ${presentRecs.length}, Late: ${lateRecs.length}, Absent: ${absentRecs.length}).${absSuffix}`
+    : `Attendance for ${period.labelEn}: ${rate}% (Present: ${presentRecs.length}, Late: ${lateRecs.length}, Absent: ${absentRecs.length}).${absSuffix}`
+}
+
+function answerFeesSummary(
+  lower: string,
+  fees: FeesSnapshot,
+  romanUrdu: boolean,
+): string {
+  if (/\b(who|which|list|names|kon|kaun|kis|top|defaulter|defaulters)\b/.test(lower)) {
+    if (fees.studentsWithOutstandingBalances.length === 0) {
+      return romanUrdu ? 'Kisi student ki pending fee nahi hai.' : 'No students currently have outstanding fees.'
+    }
+    const list = fees.studentsWithOutstandingBalances
+      .slice(0, 10)
+      .map((s) => `${s.name} (${s.class}): ${s.dueAmount}`)
+      .join(', ')
+    return romanUrdu
+      ? `Top pending fee students (${fees.studentsWithDueCount} total): ${list}.`
+      : `Top students with outstanding fees (${fees.studentsWithDueCount} total): ${list}.`
+  }
+  return romanUrdu
+    ? `Fee summary — Billed: ${fees.totalBilled}, Collected: ${fees.totalCollected}, Total due: ${fees.totalOutstanding} (${fees.studentsWithDueCount} students), Overdue: ${fees.overdueAmount} (${fees.overdueInvoicesCount} invoices).`
+    : `Fee summary — Billed: ${fees.totalBilled}, Collected: ${fees.totalCollected}, Outstanding: ${fees.totalOutstanding} (${fees.studentsWithDueCount} students), Overdue: ${fees.overdueAmount} (${fees.overdueInvoicesCount} invoices).`
 }
 
 function answerCommunicationSummary(comm: CommunicationSnapshot, romanUrdu: boolean): string {
@@ -617,13 +1009,6 @@ function answerCommunicationSummary(comm: CommunicationSnapshot, romanUrdu: bool
     : `Communications — Drafts: ${comm.draft}, Awaiting approval: ${comm.awaitingApproval}, Approved: ${comm.approved}, Sent: ${comm.sent}.`
 }
 
-function findMatchedStudent(students: Student[], lower: string): Student | undefined {
-  return students.find((s) => {
-    const full = `${s.firstName} ${s.lastName}`.toLowerCase()
-    return lower.includes(full) || (s.firstName.length >= 3 && lower.includes(s.firstName.toLowerCase()))
-  })
-}
-
 function answerLocallyWithRoleScope(prompt: string, input: AskCamviaAuthorizedInput, romanUrdu: boolean): string | null {
   const ctx = buildAuthorizedContextSnapshot(input)
   const lower = prompt.toLowerCase()
@@ -632,20 +1017,44 @@ function answerLocallyWithRoleScope(prompt: string, input: AskCamviaAuthorizedIn
     return answerRoleCapabilityQuery(ctx, romanUrdu)
   }
 
-  const matchedStudent = findMatchedStudent(input.students, lower)
-  const studentAnswer = matchedStudent ? answerStudentQuery(lower, matchedStudent, ctx, input, romanUrdu) : null
-  if (studentAnswer) return studentAnswer
+  const classScope = extractClassScopeFilter(prompt)
+  if (classScope) {
+    const classAnswer = answerClassScopedQuery(lower, classScope, ctx, input, romanUrdu)
+    if (classAnswer) return classAnswer
+  }
+
+  const matchedStudents = findMatchedStudents(input.students, lower)
+  if (matchedStudents.length === 1) {
+    const studentAnswer = answerStudentQuery(lower, matchedStudents[0], ctx, input, romanUrdu)
+    if (studentAnswer) return studentAnswer
+  } else if (matchedStudents.length > 1) {
+    const preview = matchedStudents
+      .slice(0, 6)
+      .map((s) => `${s.firstName} ${s.lastName} (${formatClassLabel(s.className, s.section)}, ${s.studentId})`)
+      .join(', ')
+    return romanUrdu
+      ? `Is naam ke ${matchedStudents.length} students mile hain: ${preview}. Exact full name ya Student ID likh kar poochein.`
+      : `Found ${matchedStudents.length} matching students: ${preview}. Please specify the full name or Student ID.`
+  }
+
+  const rankingAnswer = answerClassRankingsQuery(lower, ctx, input, romanUrdu)
+  if (rankingAnswer) return rankingAnswer
 
   if (/\b(alert|alerts|attention)\b/.test(lower)) return answerAlertsSummary(ctx, romanUrdu)
 
-  if (/\b(fee|fees|collected|outstanding|overdue|due|invoice)\b/.test(lower) && typeof ctx.fees !== 'string') {
-    return romanUrdu
-      ? `Total collected: ${ctx.fees.totalCollected}, Total due: ${ctx.fees.totalOutstanding} (${ctx.fees.studentsWithDueCount} students), Overdue: ${ctx.fees.overdueAmount} (${ctx.fees.overdueInvoicesCount} invoices).`
-      : `Fee summary — Collected: ${ctx.fees.totalCollected}, Outstanding: ${ctx.fees.totalOutstanding} (${ctx.fees.studentsWithDueCount} students), Overdue: ${ctx.fees.overdueAmount} (${ctx.fees.overdueInvoicesCount} invoices).`
+  if (/\b(fee|fees|collected|collection|outstanding|overdue|due|dues|invoice|invoices|baqi|baki|jama|billed)\b/.test(lower) && typeof ctx.fees !== 'string') {
+    return answerFeesSummary(lower, ctx.fees, romanUrdu)
   }
 
-  if (/\b(attend(?:ance|ence)|absent|present|late|hajri)\b/.test(lower) && typeof ctx.attendance !== 'string') {
-    return answerAttendanceSummary(ctx.attendance, romanUrdu)
+  if (/\b(attend(?:ance|ence)|absent|present|late|hajri|hazir|gair|chutti|chuti)\b/.test(lower) && typeof ctx.attendance !== 'string') {
+    return answerAttendanceSummary(lower, ctx.attendance, input.attendance, input.students, romanUrdu)
+  }
+
+  if (/\b(class|classes|section|sections)\b/.test(lower) && !/\b(student|students|enrolled)\b/.test(lower)) {
+    const classEntries = Object.entries(ctx.students.classCounts)
+    return romanUrdu
+      ? `Aapke authorized scope mein ${classEntries.length} classes/sections aur ${ctx.students.activeCount} active students hain.`
+      : `There are ${classEntries.length} classes/sections and ${ctx.students.activeCount} active students in your authorized scope.`
   }
 
   if (/\b(student|students|enrolled|class|classes)\b/.test(lower)) {

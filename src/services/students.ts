@@ -2,6 +2,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import { mapConcurrent } from './mapConcurrent'
 import { mutationConfirmationError, runMutation, verifyMutationSession } from './mutations'
 import type { NewStudent, Student } from '../studentData'
+import { compareClassNames, compareNaturalText } from '../utils/sortOrder'
 import {
   evaluateCsvDuplicates,
   type CsvSkippedRow,
@@ -77,6 +78,13 @@ function requireSupabase() {
   return client
 }
 
+function mapStudentStatus(status: string): Student['status'] {
+  const normalized = status.toUpperCase()
+  if (normalized === 'ACTIVE') return 'Active'
+  if (normalized === 'ARCHIVED') return 'Archived'
+  return 'Inactive'
+}
+
 function mapStudent(
   row: StudentRow,
   guardian: GuardianRow | undefined,
@@ -98,11 +106,7 @@ function mapStudent(
     organizationId: row.organization_id,
     schoolId: row.school_id,
     campusId: row.campus_id,
-    status: row.status.toUpperCase() === 'ACTIVE'
-      ? 'Active'
-      : row.status.toUpperCase() === 'ARCHIVED'
-        ? 'Archived'
-        : 'Inactive',
+    status: mapStudentStatus(row.status),
     campus: campusName,
     guardian: {
       id: guardian?.id,
@@ -251,7 +255,10 @@ export async function fetchTeacherAssignments(): Promise<TeacherAssignment[]> {
     .order('section')
 
   if (error) throw error
-  return (data ?? []) as TeacherAssignment[]
+  return ((data ?? []) as TeacherAssignment[]).sort((left, right) =>
+    compareClassNames(left.class_name, right.class_name) ||
+    compareNaturalText(left.section, right.section),
+  )
 }
 
 export async function fetchStudentCreationOptions(
@@ -390,6 +397,221 @@ function getDuplicateRule(message: string): CsvSkippedRow['rule'] {
   return 'identity'
 }
 
+let batchImportRpcAvailable = true
+
+function isMissingBatchImportRpc(error: { code?: unknown; message?: unknown }): boolean {
+  const code = typeof error.code === 'string' ? error.code : ''
+  const message = typeof error.message === 'string' ? error.message : ''
+  return code === 'PGRST202'
+    || code === '42883'
+    || /Could not find the function public\.create_students_batch/i.test(message)
+}
+
+type BatchImportSupabaseError = {
+  code?: string
+  message: string
+  details?: unknown
+  hint?: unknown
+}
+
+type SingleStudentBatchOutcome = {
+  ok: boolean
+  error?: BatchImportSupabaseError
+}
+
+async function createSingleStudentFromBatchRow(
+  db: any,
+  campusId: string,
+  student: NewStudent,
+): Promise<SingleStudentBatchOutcome> {
+  const guardianName = student.guardian.name.trim().split(/\s+/)
+  const hasGuardian = Boolean(student.guardian.name.trim() || student.guardian.phone.trim() || student.guardian.email.trim())
+  if (hasGuardian && !student.guardian.name.trim()) {
+    return { ok: false, error: { message: 'Enter the guardian name when adding guardian contact details.' } }
+  }
+  const { error } = await db.rpc('create_student', {
+    target_campus_id: campusId,
+    target_student_code: student.studentId.trim(),
+    target_first_name: student.firstName.trim(),
+    target_last_name: student.lastName.trim(),
+    target_class_name: student.className.trim(),
+    target_section: student.section.trim(),
+    target_roll_number: student.rollNumber.trim() || null,
+    target_date_of_birth: student.dateOfBirth || null,
+    target_gender: student.gender || null,
+    target_guardian_first_name: hasGuardian ? guardianName[0] : null,
+    target_guardian_last_name: hasGuardian ? guardianName.slice(1).join(' ') || guardianName[0] : null,
+    target_guardian_phone: student.guardian.phone.trim() || null,
+    target_guardian_email: student.guardian.email.trim() || null,
+    target_guardian_relationship: student.guardian.relationship?.trim() || null,
+  })
+  if (!error) return { ok: true }
+  return {
+    ok: false,
+    error: {
+      code: typeof error.code === 'string' ? error.code : undefined,
+      message: error.message || 'Unknown database error',
+      details: error.details,
+      hint: error.hint,
+    },
+  }
+}
+
+function toBatchFailureRows(
+  batch: NewStudent[],
+  sourceRowByStudent: Map<NewStudent, number>,
+  message: string,
+  rule: CsvSkippedRow['rule'],
+): CsvSkippedRow[] {
+  return batch.map((student) => ({
+    rowNumber: sourceRowByStudent.get(student) ?? 0,
+    student,
+    reason: message,
+    rule,
+  }))
+}
+
+async function importBatchViaSingleStudentRpc(
+  db: any,
+  campusId: string,
+  batch: NewStudent[],
+  sourceRowByStudent: Map<NewStudent, number>,
+): Promise<{
+  createdCount: number
+  failedRows: CsvSkippedRow[]
+  firstError: BatchImportSupabaseError | null
+}> {
+  const singleResults = await mapConcurrent(
+    batch,
+    (student) => createSingleStudentFromBatchRow(db, campusId, student),
+    5,
+  )
+  let createdCount = 0
+  let firstError: BatchImportSupabaseError | null = null
+  const failedRows: CsvSkippedRow[] = []
+  singleResults.forEach((result, index) => {
+    if (result.ok) {
+      createdCount += 1
+      return
+    }
+    const rowError = result.error ?? { message: 'Unknown database error' }
+    firstError ??= rowError
+    failedRows.push({
+      rowNumber: sourceRowByStudent.get(batch[index]) ?? 0,
+      student: batch[index],
+      reason: rowError.message,
+      rule: getDuplicateRule(rowError.message),
+    })
+  })
+  return { createdCount, failedRows, firstError }
+}
+
+async function importSingleBatch(
+  db: any,
+  campusId: string,
+  batch: NewStudent[],
+  sourceRowByStudent: Map<NewStudent, number>,
+): Promise<{
+  createdCount: number
+  failedRows: CsvSkippedRow[]
+  firstError: BatchImportSupabaseError | null
+}> {
+  const targetStudents = batch.map((student) => {
+    const guardianName = student.guardian.name.trim().split(/\s+/)
+    const hasGuardian = Boolean(student.guardian.name.trim() || student.guardian.phone.trim() || student.guardian.email.trim())
+    return {
+      student_code: student.studentId.trim(),
+      first_name: student.firstName.trim(),
+      last_name: student.lastName.trim(),
+      class_name: student.className.trim(),
+      section: student.section.trim(),
+      roll_number: student.rollNumber.trim() || null,
+      date_of_birth: student.dateOfBirth || null,
+      gender: student.gender || null,
+      guardian_first_name: hasGuardian ? guardianName[0] : null,
+      guardian_last_name: hasGuardian ? guardianName.slice(1).join(' ') || guardianName[0] : null,
+      guardian_phone: student.guardian.phone.trim() || null,
+      guardian_email: student.guardian.email.trim() || null,
+      guardian_relationship: student.guardian.relationship?.trim() || null,
+    }
+  })
+
+  if (!batchImportRpcAvailable) {
+    return importBatchViaSingleStudentRpc(db, campusId, batch, sourceRowByStudent)
+  }
+
+  const { data, error } = await db.rpc('create_students_batch', {
+    target_campus_id: campusId,
+    target_students: targetStudents,
+  })
+
+  if (error) {
+    if (isMissingBatchImportRpc(error)) {
+      batchImportRpcAvailable = false
+      return importBatchViaSingleStudentRpc(db, campusId, batch, sourceRowByStudent)
+    }
+
+    const batchError: BatchImportSupabaseError = {
+      code: typeof error.code === 'string' ? error.code : undefined,
+      message: error.message || 'Unknown database error',
+      details: error.details,
+      hint: error.hint,
+    }
+    return {
+      createdCount: 0,
+      failedRows: toBatchFailureRows(batch, sourceRowByStudent, batchError.message, getDuplicateRule(batchError.message)),
+      firstError: batchError,
+    }
+  }
+
+  if (!Array.isArray(data)) {
+    const batchError: BatchImportSupabaseError = { message: 'The batch import RPC returned an invalid response.' }
+    return {
+      createdCount: 0,
+      failedRows: toBatchFailureRows(batch, sourceRowByStudent, batchError.message, 'identity'),
+      firstError: batchError,
+    }
+  }
+
+  const batchResults = data.filter(isStudentBatchResult)
+  const resultIndexes = new Set(batchResults.map((result) => result.row_index))
+  if (
+    batchResults.length !== batch.length
+    || resultIndexes.size !== batch.length
+    || batchResults.some((result) => result.row_index < 0 || result.row_index >= batch.length)
+  ) {
+    const batchError: BatchImportSupabaseError = { message: 'The batch import RPC returned an incomplete or invalid response.' }
+    return {
+      createdCount: 0,
+      failedRows: toBatchFailureRows(batch, sourceRowByStudent, batchError.message, 'identity'),
+      firstError: batchError,
+    }
+  }
+
+  const resultByIndex = new Map(batchResults.map((result) => [result.row_index, result]))
+  let createdCount = 0
+  let firstError: BatchImportSupabaseError | null = null
+  const failedRows: CsvSkippedRow[] = []
+  batch.forEach((student, index) => {
+    const result = resultByIndex.get(index)
+    if (result?.success) {
+      createdCount += 1
+      return
+    }
+    const message = result?.error_message || 'The batch import did not return a result for this student.'
+    const rowError: BatchImportSupabaseError = { code: result?.error_code, message }
+    firstError ??= rowError
+    failedRows.push({
+      rowNumber: sourceRowByStudent.get(student) ?? 0,
+      student,
+      reason: message,
+      rule: getDuplicateRule(message),
+    })
+  })
+
+  return { createdCount, failedRows, firstError }
+}
+
 export async function importStudentsBatch(
   students: NewStudent[],
   campusId: string,
@@ -432,101 +654,19 @@ export async function importStudentsBatch(
   const failedRows: CsvSkippedRow[] = []
   let createdCount = 0
 
-  for (let offset = 0; offset < nonDuplicateStudents.length; offset += 500) {
-    const batch = nonDuplicateStudents.slice(offset, offset + 500)
-    const targetStudents = batch.map((student) => {
-      const guardianName = student.guardian.name.trim().split(/\s+/)
-      const hasGuardian = Boolean(student.guardian.name.trim() || student.guardian.phone.trim() || student.guardian.email.trim())
-      return {
-        student_code: student.studentId.trim(),
-        first_name: student.firstName.trim(),
-        last_name: student.lastName.trim(),
-        class_name: student.className.trim(),
-        section: student.section.trim(),
-        roll_number: student.rollNumber.trim() || null,
-        date_of_birth: student.dateOfBirth || null,
-        gender: student.gender || null,
-        guardian_first_name: hasGuardian ? guardianName[0] : null,
-        guardian_last_name: hasGuardian ? guardianName.slice(1).join(' ') || guardianName[0] : null,
-        guardian_phone: student.guardian.phone.trim() || null,
-        guardian_email: student.guardian.email.trim() || null,
-        guardian_relationship: student.guardian.relationship?.trim() || null,
-      }
-    })
-
-    const { data, error } = await db.rpc('create_students_batch', {
-      target_campus_id: campusId,
-      target_students: targetStudents,
-    })
-
-    if (error) {
-      const batchError = {
-        code: typeof error.code === 'string' ? error.code : undefined,
-        message: error.message || 'Unknown database error',
-        details: error.details,
-        hint: error.hint,
-      }
-      firstSupabaseError ??= batchError
-      failedRows.push(...batch.map((student) => ({
-        rowNumber: sourceRowByStudent.get(student) ?? 0,
-        student,
-        reason: batchError.message,
-        rule: getDuplicateRule(batchError.message),
-      })))
-      continue
-    }
-
-    if (!Array.isArray(data)) {
-      const batchError = { message: 'The batch import RPC returned an invalid response.' }
-      firstSupabaseError ??= batchError
-      failedRows.push(...batch.map((student) => ({
-        rowNumber: sourceRowByStudent.get(student) ?? 0,
-        student,
-        reason: batchError.message,
-        rule: 'identity' as const,
-      })))
-      continue
-    }
-
-    const batchResults = data.filter(isStudentBatchResult)
-    const resultIndexes = new Set(batchResults.map((result) => result.row_index))
-    if (
-      batchResults.length !== batch.length
-      || resultIndexes.size !== batch.length
-      || batchResults.some((result) => result.row_index < 0 || result.row_index >= batch.length)
-    ) {
-      const batchError = { message: 'The batch import RPC returned an incomplete or invalid response.' }
-      firstSupabaseError ??= batchError
-      failedRows.push(...batch.map((student) => ({
-        rowNumber: sourceRowByStudent.get(student) ?? 0,
-        student,
-        reason: batchError.message,
-        rule: 'identity' as const,
-      })))
-      continue
-    }
-
-    const resultByIndex = new Map(batchResults.map((result) => [result.row_index, result]))
-    batch.forEach((student, index) => {
-      const result = resultByIndex.get(index)
-      if (result?.success) {
-        createdCount += 1
-        return
-      }
-
-      const message = result?.error_message || 'The batch import did not return a result for this student.'
-      const rowError = {
-        code: result?.error_code,
-        message,
-      }
-      firstSupabaseError ??= rowError
-      failedRows.push({
-        rowNumber: sourceRowByStudent.get(student) ?? 0,
-        student,
-        reason: message,
-        rule: getDuplicateRule(message),
-      })
-    })
+  const batches = Array.from(
+    { length: Math.ceil(nonDuplicateStudents.length / 500) },
+    (_, index) => nonDuplicateStudents.slice(index * 500, (index + 1) * 500),
+  )
+  const batchOutcomes = await mapConcurrent(
+    batches,
+    (batch) => importSingleBatch(db, campusId, batch, sourceRowByStudent),
+    1,
+  )
+  for (const outcome of batchOutcomes) {
+    createdCount += outcome.createdCount
+    failedRows.push(...outcome.failedRows)
+    firstSupabaseError ??= outcome.firstError
   }
 
   const rejectedRows = totalParsedRows - createdCount
@@ -603,7 +743,7 @@ export async function archiveStudent(studentId: string, reason: string): Promise
     p_student_id: studentId,
     p_reason: reason,
   }), true)
-  if (!data || data.student_id !== studentId || data.status !== 'ARCHIVED') {
+  if (data?.student_id !== studentId || data.status !== 'ARCHIVED') {
     throw mutationConfirmationError(
       'archive_student',
       studentId,

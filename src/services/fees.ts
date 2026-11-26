@@ -281,3 +281,48 @@ export async function voidFeePayment(
   }
   return fetchFeeState(students)
 }
+
+export type BulkFeeInvoiceResult = {
+  createdCount: number
+  failedCount: number
+  firstError: string | null
+}
+
+export async function createBulkFeeInvoices(
+  studentIds: string[],
+  submission: Omit<FeeInvoiceCreationInput, 'studentId'>,
+): Promise<BulkFeeInvoiceResult> {
+  const db = requireSupabase()
+  const feePeriod = submission.feePeriod.length === 7 ? `${submission.feePeriod}-01` : submission.feePeriod
+  let createdCount = 0
+  let failedCount = 0
+  let firstError: string | null = null
+
+  const batchSize = 5
+  for (let i = 0; i < studentIds.length; i += batchSize) {
+    const batch = studentIds.slice(i, i + batchSize)
+    const results = await Promise.allSettled(
+      batch.map((studentId) =>
+        runMutation('create_fee_invoice', studentId, () => db.rpc('create_fee_invoice', {
+          target_student_id: studentId,
+          target_fee_period: feePeriod,
+          target_due_date: submission.dueDate,
+          target_line_items: submission.lineItems,
+        })),
+      ),
+    )
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        createdCount += 1
+      } else {
+        failedCount += 1
+        if (!firstError) {
+          const mapped = mapFeeInvoiceError(result.reason)
+          firstError = mapped.message
+        }
+      }
+    }
+  }
+
+  return { createdCount, failedCount, firstError }
+}

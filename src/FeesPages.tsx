@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, ArrowLeft, Banknote, FileText, Plus, Search, Trash2, Wallet, X, type LucideIcon } from 'lucide-react'
+import { useMemo, useRef, useState, type FormEvent, type SyntheticEvent } from 'react'
+import { AlertTriangle, ArrowLeft, Banknote, FileText, Layers, Plus, Search, Trash2, Wallet, X, type LucideIcon } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { SchoolUser } from './mockData'
 import type { Student } from './studentData'
@@ -19,8 +19,9 @@ import {
 import { RecordActionMenu, DestructiveActionModal } from './components/RecordActionControls'
 import { InvoiceEditModal } from './components/InvoiceEditModal'
 import { WhatsAppComposer } from './components/WhatsAppComposer'
-import { updateFeeInvoice, voidFeeInvoice, voidFeePayment } from './services/fees'
+import { createBulkFeeInvoices, updateFeeInvoice, voidFeeInvoice, voidFeePayment } from './services/fees'
 import { formatRpcErrorMessage } from './utils/errorMapping'
+import { compareClassNames, compareNaturalText } from './utils/sortOrder'
 import { addCalendarDays, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
 
 type FeesPagesProps = {
@@ -50,6 +51,7 @@ export function FeesPage(props: FeesPagesProps) {
   const [sectionFilter, setSectionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [showBulkCreateModal, setShowBulkCreateModal] = useState(false)
 
   const allInvoices = useMemo(
     () => getFeeInvoices(props.feeState, props.students, props.user).filter((invoice) => !invoice.voidedAt),
@@ -73,7 +75,13 @@ export function FeesPage(props: FeesPagesProps) {
         (!classFilter || student.className === classFilter) &&
         (!sectionFilter || student.section === sectionFilter) &&
         (!statusFilter || invoice.status === statusFilter)
-    })
+    }).sort((left, right) =>
+      right.month.localeCompare(left.month) ||
+      compareClassNames(left.student.className, right.student.className) ||
+      compareNaturalText(left.student.section, right.student.section) ||
+      compareNaturalText(left.student.studentId, right.student.studentId) ||
+      compareNaturalText(left.student.firstName, right.student.firstName),
+    )
   }, [allInvoices, query, month, classFilter, sectionFilter, statusFilter])
 
   const totalPages = Math.ceil(filteredInvoices.length / pageSize) || 1
@@ -87,10 +95,10 @@ export function FeesPage(props: FeesPagesProps) {
   if (props.feeError) return <FeesErrorState error={props.feeError} onRetry={props.onRetry} />
 
   const months = [...new Set(allInvoices.map((invoice) => invoice.month))].sort().reverse()
-  const classes = [...new Set(allInvoices.map((invoice) => invoice.student.className))].sort()
+  const classes = [...new Set(allInvoices.map((invoice) => invoice.student.className))].sort(compareClassNames)
   const sections = [...new Set(allInvoices
     .filter((invoice) => !classFilter || invoice.student.className === classFilter)
-    .map((invoice) => invoice.student.section))].sort()
+    .map((invoice) => invoice.student.section))].sort(compareNaturalText)
 
   const metrics = getFeeMetrics(filteredInvoices)
   const overdueInvoices = allInvoices
@@ -115,13 +123,22 @@ export function FeesPage(props: FeesPagesProps) {
             <FileText size={16} /> Account Statement
           </button>
           {canMutateFeeData(props.user) && props.onCreateInvoice ? (
-            <button
-              type="button"
-              className="primary-button small-button"
-              onClick={() => setShowCreateModal(true)}
-            >
-              <Plus size={16} /> Create Invoice
-            </button>
+            <>
+              <button
+                type="button"
+                className="secondary-button small-button"
+                onClick={() => setShowBulkCreateModal(true)}
+              >
+                <Layers size={16} /> Bulk Create by Class
+              </button>
+              <button
+                type="button"
+                className="primary-button small-button"
+                onClick={() => setShowCreateModal(true)}
+              >
+                <Plus size={16} /> Create Invoice
+              </button>
+            </>
           ) : null}
         </div>
       </div>
@@ -223,6 +240,17 @@ export function FeesPage(props: FeesPagesProps) {
           students={props.students}
           timeZone={props.user.schoolTimezone}
           onCreate={props.onCreateInvoice}
+        />
+      ) : null}
+
+      {showBulkCreateModal ? (
+        <BulkCreateInvoiceModal
+          isOpen={showBulkCreateModal}
+          onClose={() => setShowBulkCreateModal(false)}
+          students={props.students}
+          existingInvoices={allInvoices}
+          timeZone={props.user.schoolTimezone}
+          onCompleted={() => props.onRefresh?.()}
         />
       ) : null}
     </section>
@@ -871,6 +899,332 @@ function CreateInvoiceModal({
             </button>
             <button type="submit" className="primary-button" disabled={submitting || totalAmount <= 0}>
               {submitting ? 'Creating Invoice…' : 'Create Invoice'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function validateBulkInvoiceItems(
+  lineItems: Array<{ id: string; label: string; amount: string }>,
+  totalAmount: number,
+): string | null {
+  if (lineItems.length === 0) return 'Please add at least one line item.'
+  for (const item of lineItems) {
+    if (!item.label.trim()) return 'Every line item must have a non-empty description.'
+    const val = Number.parseFloat(item.amount)
+    if (!Number.isFinite(val) || val <= 0) {
+      return `Amount for "${item.label.trim()}" must be greater than zero.`
+    }
+  }
+  if (totalAmount <= 0) return 'Total invoice amount must be greater than zero.'
+  return null
+}
+
+function BulkCreateInvoiceModal({
+  isOpen,
+  onClose,
+  students,
+  existingInvoices,
+  timeZone,
+  onCompleted,
+}: Readonly<{
+  isOpen: boolean
+  onClose: () => void
+  students: Student[]
+  existingInvoices: FeeInvoiceView[]
+  timeZone?: string | null
+  onCompleted: () => Promise<unknown> | void
+}>) {
+  const activeStudents = useMemo(
+    () => students.filter((student) => student.status === 'Active'),
+    [students],
+  )
+  const classOptions = useMemo(
+    () => [...new Set(activeStudents.map((student) => student.className))].sort(compareClassNames),
+    [activeStudents],
+  )
+  const [selectedClass, setSelectedClass] = useState(() => classOptions[0] ?? '')
+  const [selectedSection, setSelectedSection] = useState('')
+  const [feePeriod, setFeePeriod] = useState(() => schoolMonthKey(timeZone))
+  const [dueDate, setDueDate] = useState(() => schoolDateAfterDays(timeZone, 14))
+  const [lineItems, setLineItems] = useState<Array<{ id: string; label: string; amount: string }>>([
+    { id: '1', label: 'Monthly Tuition Fee', amount: '' },
+  ])
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  const sectionOptions = useMemo(
+    () => [...new Set(
+      activeStudents
+        .filter((student) => !selectedClass || student.className === selectedClass)
+        .map((student) => student.section),
+    )].sort(compareNaturalText),
+    [activeStudents, selectedClass],
+  )
+
+  const targetStudents = useMemo(
+    () => activeStudents.filter((student) =>
+      Boolean(selectedClass) &&
+      student.className === selectedClass &&
+      (!selectedSection || student.section === selectedSection),
+    ),
+    [activeStudents, selectedClass, selectedSection],
+  )
+
+  const alreadyInvoicedIds = useMemo(() => {
+    const monthKey = feePeriod.slice(0, 7)
+    return new Set(
+      existingInvoices
+        .filter((inv) => inv.month === monthKey && !inv.voidedAt)
+        .map((inv) => inv.studentId),
+    )
+  }, [existingInvoices, feePeriod])
+
+  const studentsToInvoice = useMemo(
+    () => targetStudents.filter((student) => !alreadyInvoicedIds.has(student.id)),
+    [targetStudents, alreadyInvoicedIds],
+  )
+
+  if (!isOpen) return null
+
+  const skippedCount = targetStudents.length - studentsToInvoice.length
+  const totalAmount = lineItems.reduce((sum, item) => {
+    const val = Number.parseFloat(item.amount)
+    return sum + (Number.isFinite(val) && val > 0 ? val : 0)
+  }, 0)
+
+  const handleAddLineItem = () => {
+    setLineItems((current) => [
+      ...current,
+      { id: String(Date.now() + Math.random()), label: '', amount: '' },
+    ])
+  }
+
+  const handleRemoveLineItem = (id: string) => {
+    if (lineItems.length <= 1) return
+    setLineItems((current) => current.filter((item) => item.id !== id))
+  }
+
+  const handleUpdateLineItem = (id: string, field: 'label' | 'amount', value: string) => {
+    setLineItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
+    )
+  }
+
+  const handleSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (submitting) return
+    setError('')
+    setSuccess('')
+
+    if (!selectedClass) {
+      setError('Please select a class.')
+      return
+    }
+    if (!feePeriod) {
+      setError('Please select a fee period.')
+      return
+    }
+    if (!dueDate) {
+      setError('Please enter a due date.')
+      return
+    }
+    const normalizedPeriod = feePeriod.length === 7 ? `${feePeriod}-01` : feePeriod
+    if (dueDate < normalizedPeriod) {
+      setError('Invoice due date cannot be earlier than the fee period month.')
+      return
+    }
+    const itemsError = validateBulkInvoiceItems(lineItems, totalAmount)
+    if (itemsError) {
+      setError(itemsError)
+      return
+    }
+    if (studentsToInvoice.length === 0) {
+      setError('All active students in the selected class already have an invoice for this fee period.')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const result = await createBulkFeeInvoices(
+        studentsToInvoice.map((student) => student.id),
+        {
+          feePeriod: normalizedPeriod,
+          dueDate,
+          lineItems: lineItems.map((item) => ({
+            label: item.label.trim(),
+            amount: Number.parseFloat(item.amount),
+          })),
+        },
+      )
+      await onCompleted()
+      if (result.createdCount > 0 && result.failedCount === 0) {
+        setSuccess(`Created ${result.createdCount} invoice(s) for Class ${selectedClass}${selectedSection ? `-${selectedSection}` : ''}.`)
+        setTimeout(() => onClose(), 900)
+      } else if (result.createdCount > 0) {
+        setSuccess(`Created ${result.createdCount} invoice(s); ${result.failedCount} failed${result.firstError ? `: ${result.firstError}` : '.'}`)
+      } else {
+        setError(result.firstError ?? 'Invoices could not be created. Please review the details.')
+      }
+    } catch (bulkErr) {
+      setError(bulkErr instanceof Error ? bulkErr.message : 'Bulk invoice creation failed.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="user-modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="user-modal invoice-create-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-labelledby="bulk-create-invoice-title"
+      >
+        <div className="user-modal-heading">
+          <div>
+            <h2 id="bulk-create-invoice-title">Bulk Create Invoices by Class</h2>
+            <p className="student-muted" style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>
+              Issue monthly fee invoices for all active students in a class or section.
+            </p>
+          </div>
+          <button type="button" className="text-button" onClick={onClose} disabled={submitting}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="invoice-create-form" onSubmit={(e) => void handleSubmit(e)}>
+          <div className="invoice-form-grid invoice-form-grid-2col">
+            <label>
+              Class *
+              <select
+                required
+                value={selectedClass}
+                onChange={(e) => { setSelectedClass(e.target.value); setSelectedSection('') }}
+                disabled={submitting || classOptions.length === 0}
+              >
+                <option value="">Select class</option>
+                {classOptions.map((cls) => (
+                  <option key={cls} value={cls}>Class {cls}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Section
+              <select
+                value={selectedSection}
+                onChange={(e) => setSelectedSection(e.target.value)}
+                disabled={submitting || !selectedClass}
+              >
+                <option value="">All sections</option>
+                {sectionOptions.map((sec) => (
+                  <option key={sec} value={sec}>Section {sec}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Fee Month / Period *
+              <input
+                type="month"
+                required
+                value={feePeriod}
+                onChange={(e) => setFeePeriod(e.target.value)}
+                disabled={submitting}
+              />
+            </label>
+
+            <label>
+              Due Date *
+              <input
+                type="date"
+                required
+                value={dueDate}
+                min={feePeriod ? `${feePeriod}-01` : undefined}
+                onChange={(e) => setDueDate(e.target.value)}
+                disabled={submitting}
+              />
+            </label>
+          </div>
+
+          {selectedClass ? (
+            <div className="invoice-bulk-summary">
+              <strong>{studentsToInvoice.length}</strong> of {targetStudents.length} active student(s) in Class {selectedClass}{selectedSection ? `-${selectedSection}` : ''} will be invoiced
+              {skippedCount > 0 ? ` (${skippedCount} already invoiced for ${formatMonth(feePeriod.slice(0, 7))} will be skipped)` : ''}.
+            </div>
+          ) : null}
+
+          <div className="invoice-line-items-section">
+            <div className="invoice-line-items-heading">
+              <h3>Line Items (per student)</h3>
+              <button
+                type="button"
+                className="secondary-button small-button"
+                onClick={handleAddLineItem}
+                disabled={submitting}
+              >
+                <Plus size={14} /> Add Line Item
+              </button>
+            </div>
+
+            <div className="invoice-line-items-list">
+              {lineItems.map((item) => (
+                <div className="invoice-line-item-row" key={item.id}>
+                  <div className="invoice-item-label-col">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Fee description (e.g. Tuition Fee)"
+                      value={item.label}
+                      onChange={(e) => handleUpdateLineItem(item.id, 'label', e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <div className="invoice-item-amount-col">
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      step="0.01"
+                      placeholder="Amount (PKR)"
+                      value={item.amount}
+                      onChange={(e) => handleUpdateLineItem(item.id, 'amount', e.target.value)}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="invoice-item-remove-button"
+                    title="Remove line item"
+                    disabled={lineItems.length <= 1 || submitting}
+                    onClick={() => handleRemoveLineItem(item.id)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="invoice-live-total-card">
+              <span>Per-student Total ({studentsToInvoice.length} students)</span>
+              <strong>PKR {new Intl.NumberFormat('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(totalAmount)}</strong>
+            </div>
+          </div>
+
+          {error ? <p className="fee-form-error" role="alert">{error}</p> : null}
+          {success ? <output className="fee-form-success">{success}</output> : null}
+
+          <div className="user-modal-actions">
+            <button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>
+              Cancel
+            </button>
+            <button type="submit" className="primary-button" disabled={submitting || totalAmount <= 0 || studentsToInvoice.length === 0}>
+              {submitting ? `Creating ${studentsToInvoice.length} Invoices…` : `Create ${studentsToInvoice.length} Invoices`}
             </button>
           </div>
         </form>

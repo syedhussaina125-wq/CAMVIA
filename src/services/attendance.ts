@@ -105,6 +105,7 @@ type RecordRow = {
   marked_by: string
   created_at: string
   updated_at: string
+  trashed_at?: string | null
 }
 
 function throwAttendanceQueryError(
@@ -133,7 +134,7 @@ function requireSupabase() {
   return client
 }
 
-function toSession(row: SessionRow, studentCount: number): AttendanceSession {
+function toSession(row: SessionRow, studentCount: number, hasTrashedRecords: boolean): AttendanceSession {
   return {
     id: row.id,
     date: row.attendance_date,
@@ -146,6 +147,7 @@ function toSession(row: SessionRow, studentCount: number): AttendanceSession {
     markedByUserId: row.created_by,
     completedAt: row.status === 'COMPLETED' ? row.updated_at : null,
     studentCount,
+    hasTrashedRecords,
   }
 }
 
@@ -210,16 +212,22 @@ async function loadAttendanceState(context: AttendanceRequestContext): Promise<A
   const recordBatches = await mapConcurrent(sessionBatches, async (sessionBatch) => {
     const records: RecordRow[] = []
     for (let offset = 0; ; offset += pageSize) {
-      const request = () => db
+      const selectColumns = trashColumnAvailable
+        ? 'id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at, trashed_at'
+        : 'id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at'
+      let result = await db
         .from('attendance_records')
-        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at')
+        .select(selectColumns)
         .in('attendance_session_id', sessionBatch)
         .range(offset, offset + pageSize - 1)
-      let result = trashColumnAvailable ? await request().is('trashed_at', null) : await request()
       if (result.error && trashColumnAvailable && isMissingTrashColumn(result.error)) {
         trashColumnAvailable = false
         logOptionalTrashColumnMissing(context)
-        result = await request()
+        result = await db
+          .from('attendance_records')
+          .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at')
+          .in('attendance_session_id', sessionBatch)
+          .range(offset, offset + pageSize - 1)
       }
       if (result.error) throwAttendanceQueryError('attendance_records.select', result.error, context)
       const { data } = result
@@ -229,16 +237,25 @@ async function loadAttendanceState(context: AttendanceRequestContext): Promise<A
     }
     return records
   })
-  const records = recordBatches.flat()
-
+  const allRows = recordBatches.flat()
+  const activeRecords: RecordRow[] = []
+  const trashedSessionIds = new Set<string>()
   const studentCounts = new Map<string, number>()
-  for (const record of records) {
+
+  for (const record of allRows) {
+    if (record.trashed_at) {
+      trashedSessionIds.add(record.attendance_session_id)
+      continue
+    }
+    activeRecords.push(record)
     studentCounts.set(record.attendance_session_id, (studentCounts.get(record.attendance_session_id) ?? 0) + 1)
   }
 
   return {
-    sessions: sessions.map((session) => toSession(session, studentCounts.get(session.id) ?? 0)),
-    records: records.map(toRecord),
+    sessions: sessions.map((session) =>
+      toSession(session, studentCounts.get(session.id) ?? 0, trashedSessionIds.has(session.id)),
+    ),
+    records: activeRecords.map(toRecord),
   }
 }
 

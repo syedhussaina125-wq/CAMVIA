@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type SyntheticEvent } from 'react'
 import { ArrowLeft, CalendarDays, FileText, FileUp, Link2, Search, UserRound, Users, X } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Role, SchoolUser } from './mockData'
@@ -6,6 +6,7 @@ import type { AlertItem } from './alertsData'
 import { getStudentAttendance, type AttendanceState, type AttendanceStatus } from './attendanceData'
 import { getFeeInvoices, getFeeMetrics, localDateKey, type FeeInvoiceView, type FeePayment, type FeeState } from './feeData'
 import { addCalendarDays, schoolDateKey } from './utils/schoolTimezone'
+import { compareClassNames, compareNaturalText } from './utils/sortOrder'
 import {
   canCreateCommunication,
   getAccessibleCommunication,
@@ -113,7 +114,538 @@ const studentCsvFields: (keyof NewStudent | 'guardianName' | 'guardianPhone' | '
   'guardianEmail',
 ]
 
-export function StudentsPage({ user, students, loading, error, onRetry, onAddStudent, onImportStudents, onRefresh }: StudentsPageProps) {
+type ImportStage = 'idle' | 'reading' | 'checking' | 'ready' | 'importing' | 'complete' | 'failed'
+
+function getReadStepDetail(importStage: ImportStage, importTotalRows: number): string {
+  if (importStage === 'failed' && importTotalRows === 0) return 'Could not read the selected CSV'
+  if (importTotalRows > 0) return `${importTotalRows} student rows found`
+  return 'Reading the selected CSV'
+}
+
+function getDuplicateStepDetail(
+  importStage: ImportStage,
+  importTotalRows: number,
+  importPreview: NewStudent[] | null,
+  importSkippedCount: number,
+): string {
+  if (importStage === 'checking') return 'Checking existing students and CSV rows'
+  if (importStage === 'reading') return 'Waiting for the CSV to load'
+  if (importStage === 'failed' && importTotalRows > 0 && !importPreview) return 'Duplicate check did not finish'
+  if (importSkippedCount > 0) return `${importSkippedCount} duplicates skipped automatically`
+  return 'No duplicates found'
+}
+
+function getImportStepDetail(
+  importStage: ImportStage,
+  importHasNoNewRows: boolean,
+  previewCount: number,
+): string {
+  if (importHasNoNewRows) return 'All rows were duplicates'
+  if (importStage === 'complete') return 'Import finished; check the result notification'
+  if (importStage === 'importing') return `Importing ${previewCount} students`
+  if (importStage === 'reading' || importStage === 'checking') return 'Waiting for duplicate check'
+  return `${previewCount} students ready`
+}
+
+function buildImportProgressSteps(
+  importStage: ImportStage,
+  importTotalRows: number,
+  importPreview: NewStudent[] | null,
+  importSkippedCount: number,
+  importHasNoNewRows: boolean,
+) {
+  const previewCount = importPreview?.length ?? 0
+  return [
+    {
+      label: 'Read CSV file',
+      complete: ['checking', 'ready', 'importing', 'complete'].includes(importStage),
+      active: importStage === 'reading',
+      failed: importStage === 'failed' && importTotalRows === 0,
+      detail: getReadStepDetail(importStage, importTotalRows),
+    },
+    {
+      label: 'Remove duplicates',
+      complete: ['ready', 'importing', 'complete'].includes(importStage),
+      active: importStage === 'checking',
+      failed: importStage === 'failed' && importTotalRows > 0 && !importPreview,
+      detail: getDuplicateStepDetail(importStage, importTotalRows, importPreview, importSkippedCount),
+    },
+    {
+      label: importHasNoNewRows ? 'Nothing left to import' : 'Import remaining students',
+      complete: importStage === 'complete' || importHasNoNewRows,
+      active: importStage === 'importing',
+      failed: importStage === 'failed' && Boolean(previewCount),
+      detail: getImportStepDetail(importStage, importHasNoNewRows, previewCount),
+    },
+  ]
+}
+
+function SkippedRowsNotice({
+  importSkipped,
+  heading,
+}: Readonly<{
+  importSkipped: CsvSkippedRow[]
+  heading: string
+}>) {
+  if (!importSkipped.length) return null
+  return (
+    <div style={{ margin: '12px 0', padding: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '6px' }}>
+      <p style={{ fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>{heading}</p>
+      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#78350f', maxHeight: '160px', overflowY: 'auto' }}>
+        {importSkipped.map((item) => (
+          <li key={`${item.rowNumber}-${item.student.studentId}`}>
+            <strong>Row {item.rowNumber}</strong> ({item.student.studentId} - {item.student.firstName} {item.student.lastName}): {item.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ImportErrorPanel({
+  importError,
+  importSkipped,
+  importPreview,
+  importing,
+  campusId,
+  onReset,
+  onConfirmImport,
+}: Readonly<{
+  importError: string
+  importSkipped: CsvSkippedRow[]
+  importPreview: NewStudent[] | null
+  importing: boolean
+  campusId: string
+  onReset: () => void
+  onConfirmImport: () => void
+}>) {
+  return (
+    <>
+      <h2>Import needs attention</h2>
+      <p>{importError}</p>
+      <SkippedRowsNotice importSkipped={importSkipped} heading={`${importSkipped.length} duplicate row(s) skipped:`} />
+      <div className="student-form-actions" style={{ marginTop: '12px' }}>
+        <button type="button" className="secondary-button small-button" onClick={onReset}>
+          Dismiss
+        </button>
+        {importPreview ? (
+          <button
+            type="button"
+            className="primary-button small-button"
+            disabled={importing || !campusId}
+            onClick={onConfirmImport}
+          >
+            Retry Import
+          </button>
+        ) : null}
+      </div>
+    </>
+  )
+}
+
+function ImportPreviewPanel({
+  importStage,
+  importPreview,
+  importSkipped,
+  importing,
+  campuses,
+  campusId,
+  onChangeCampusId,
+  onReset,
+  onConfirmImport,
+}: Readonly<{
+  importStage: ImportStage
+  importPreview: NewStudent[]
+  importSkipped: CsvSkippedRow[]
+  importing: boolean
+  campuses: StudentCampusOption[]
+  campusId: string
+  onChangeCampusId: (value: string) => void
+  onReset: () => void
+  onConfirmImport: () => void
+}>) {
+  const isComplete = importStage === 'complete'
+  const summaryText = isComplete
+    ? 'The import request completed. Check the result notification for the exact count.'
+    : `${importPreview.length} student records are ready to confirm.`
+
+  return (
+    <>
+      <div className="panel-header">
+        <div>
+          <h2>{isComplete ? 'Import finished' : 'Preview import'}</h2>
+          <p>{summaryText}</p>
+        </div>
+        {campuses.length > 0 ? (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem', color: '#183252' }}>
+            <label htmlFor="import-campus-select"><strong>Campus:</strong></label>
+            {campuses.length > 1 ? (
+              <select
+                id="import-campus-select"
+                disabled={importing}
+                value={campusId}
+                onChange={(event) => onChangeCampusId(event.target.value)}
+                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+              >
+                {campuses.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span>{campuses[0].name}</span>
+            )}
+          </div>
+        ) : null}
+        <div className="student-form-actions">
+          <button type="button" className="secondary-button small-button" disabled={importing} onClick={onReset}>
+            {isComplete ? 'Done' : 'Cancel'}
+          </button>
+          {!isComplete ? (
+            <button
+              type="button"
+              className="primary-button small-button"
+              disabled={importing || !campusId}
+              onClick={onConfirmImport}
+            >
+              {importing ? `Importing ${importPreview.length} students…` : `Confirm Import (${importPreview.length} students)`}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <SkippedRowsNotice importSkipped={importSkipped} heading={`${importSkipped.length} duplicate row(s) detected and skipped:`} />
+      <div className="import-preview-list">
+        {importPreview.slice(0, 5).map((student) => (
+          <div key={student.studentId}>
+            <strong>{student.firstName} {student.lastName}</strong>
+            <span>{student.studentId} · {student.className}-{student.section}</span>
+          </div>
+        ))}
+        {importPreview.length > 5 ? <p>And {importPreview.length - 5} more…</p> : null}
+      </div>
+    </>
+  )
+}
+
+function StudentImportSection({
+  importStage,
+  importProgressSteps,
+  importError,
+  importPreview,
+  importSkipped,
+  importing,
+  campuses,
+  campusId,
+  onChangeCampusId,
+  onReset,
+  onConfirmImport,
+}: Readonly<{
+  importStage: ImportStage
+  importProgressSteps: ReturnType<typeof buildImportProgressSteps>
+  importError: string
+  importPreview: NewStudent[] | null
+  importSkipped: CsvSkippedRow[]
+  importing: boolean
+  campuses: StudentCampusOption[]
+  campusId: string
+  onChangeCampusId: (value: string) => void
+  onReset: () => void
+  onConfirmImport: () => void
+}>) {
+  let body: React.ReactNode = null
+  if (importError) {
+    body = (
+      <ImportErrorPanel
+        importError={importError}
+        importSkipped={importSkipped}
+        importPreview={importPreview}
+        importing={importing}
+        campusId={campusId}
+        onReset={onReset}
+        onConfirmImport={onConfirmImport}
+      />
+    )
+  } else if (importPreview) {
+    body = (
+      <ImportPreviewPanel
+        importStage={importStage}
+        importPreview={importPreview}
+        importSkipped={importSkipped}
+        importing={importing}
+        campuses={campuses}
+        campusId={campusId}
+        onChangeCampusId={onChangeCampusId}
+        onReset={onReset}
+        onConfirmImport={onConfirmImport}
+      />
+    )
+  }
+
+  return (
+    <section className={`import-panel ${importError ? 'import-error' : ''}`} aria-live="polite">
+      {importStage !== 'idle' ? (
+        <ol className="import-progress" aria-label="Student import progress">
+          {importProgressSteps.map((step, index) => (
+            <li
+              key={step.label}
+              className={`${step.complete ? 'is-complete' : ''} ${step.active ? 'is-active' : ''} ${step.failed ? 'is-failed' : ''}`}
+              aria-current={step.active ? 'step' : undefined}
+            >
+              <span className="import-progress-indicator" aria-hidden="true">
+                {step.complete ? '✓' : index + 1}
+              </span>
+              <span className="import-progress-copy">
+                <strong>{step.label}</strong>
+                <small>{step.detail}</small>
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {body}
+    </section>
+  )
+}
+
+function AddStudentFormSection({
+  userRole,
+  form,
+  setForm,
+  campuses,
+  campusId,
+  onChangeCampusId,
+  teacherScopes,
+  activeTeacherScopes,
+  creationOptionsLoading,
+  creationOptionsError,
+  studentSaveError,
+  studentSaving,
+  onCancel,
+  onSubmit,
+}: Readonly<{
+  userRole: Role
+  form: NewStudent
+  setForm: React.Dispatch<React.SetStateAction<NewStudent>>
+  campuses: StudentCampusOption[]
+  campusId: string
+  onChangeCampusId: (value: string) => void
+  teacherScopes: TeacherAssignment[]
+  activeTeacherScopes: TeacherAssignment[]
+  creationOptionsLoading: boolean
+  creationOptionsError: string
+  studentSaveError: string
+  studentSaving: boolean
+  onCancel: () => void
+  onSubmit: (event: SyntheticEvent<HTMLFormElement>) => void
+}>) {
+  const isTeacher = userRole === 'teacher'
+  const showNoScopesError = isTeacher && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length === 0
+  const showNoCampusError = isTeacher && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length > 0 && campuses.length === 0
+  const teacherClassOptions = [...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId).map((scope) => scope.class_name))].sort(compareClassNames)
+  const teacherSectionOptions = [...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId && scope.class_name === form.className).map((scope) => scope.section))].sort(compareNaturalText)
+
+  return (
+    <form className="student-form" onSubmit={onSubmit}>
+      <h2>Add Student</h2>
+      {creationOptionsError ? <p className="communication-feedback error" role="alert">{creationOptionsError}</p> : null}
+      {studentSaveError ? <p className="communication-feedback error" role="alert">{studentSaveError}</p> : null}
+      {showNoScopesError ? <p className="communication-feedback error" role="alert">No active class assignments were found for your account. Ask an Admin to assign a campus, class, and section before creating a student.</p> : null}
+      {showNoCampusError ? <p className="communication-feedback error" role="alert">No active campus is available for your class assignments. Ask an Admin to review the assigned campus.</p> : null}
+      <label>Campus<select required disabled={creationOptionsLoading || studentSaving || campuses.length === 0} value={campusId} onChange={(event) => { onChangeCampusId(event.target.value); if (isTeacher) setForm((current) => ({ ...current, className: '', section: '' })) }}><option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}</select></label>
+      <label>First name<input required value={form.firstName} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
+      <label>Last name<input required value={form.lastName} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
+      <label>Student ID<input required value={form.studentId} onChange={(event) => setForm((current) => ({ ...current, studentId: event.target.value }))} /></label>
+      {isTeacher ? (
+        <>
+          <label>Class<select required disabled={studentSaving || teacherScopes.length === 0} value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value, section: '' }))}><option value="">Select assigned class</option>{teacherClassOptions.map((className) => <option key={className}>{className}</option>)}</select></label>
+          <label>Section<select required disabled={studentSaving || !form.className} value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))}><option value="">Select assigned section</option>{teacherSectionOptions.map((section) => <option key={section}>{section}</option>)}</select></label>
+        </>
+      ) : (
+        <>
+          <label>Class<input required placeholder="e.g. Grade 8" value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value }))} /></label>
+          <label>Section<input required value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))} /></label>
+        </>
+      )}
+      <label>Roll number<input disabled={studentSaving} value={form.rollNumber} onChange={(event) => setForm((current) => ({ ...current, rollNumber: event.target.value }))} /></label>
+      <label>Date of birth<input disabled={studentSaving} type="date" value={form.dateOfBirth} onChange={(event) => setForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
+      <label>Gender<select disabled={studentSaving} value={form.gender} onChange={(event) => setForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Select</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
+      {userRole === 'admin' ? (
+        <>
+          <label>Guardian name<input disabled={studentSaving} value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
+          <label>Guardian phone<input disabled={studentSaving} type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
+          <label>Guardian email<input disabled={studentSaving} type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
+        </>
+      ) : (
+        <p className="student-muted" style={{ gridColumn: '1 / -1', margin: '0.5rem 0' }}>
+          Guardian information must be added by an Admin.
+        </p>
+      )}
+      <div className="student-form-actions">
+        <button type="button" className="secondary-button small-button" disabled={studentSaving} onClick={onCancel}>Cancel</button>
+        <button type="submit" className="primary-button small-button" disabled={studentSaving || creationOptionsLoading || Boolean(creationOptionsError) || campuses.length === 0 || !campusId}>{studentSaving ? 'Saving…' : 'Save Student'}</button>
+      </div>
+    </form>
+  )
+}
+
+function StudentDirectorySection({
+  query,
+  setQuery,
+  classFilter,
+  setClassFilter,
+  sectionFilter,
+  setSectionFilter,
+  statusFilter,
+  setStatusFilter,
+  classOptions,
+  sectionOptions,
+  filteredStudents,
+  paginatedStudents,
+  accessibleCount,
+  page,
+  totalPages,
+  setPage,
+  getStudentActions,
+  onOpenStudent,
+}: Readonly<{
+  query: string
+  setQuery: (value: string) => void
+  classFilter: string
+  setClassFilter: (value: string) => void
+  sectionFilter: string
+  setSectionFilter: (value: string) => void
+  statusFilter: string
+  setStatusFilter: (value: string) => void
+  classOptions: string[]
+  sectionOptions: string[]
+  filteredStudents: Student[]
+  paginatedStudents: Student[]
+  accessibleCount: number
+  page: number
+  totalPages: number
+  setPage: React.Dispatch<React.SetStateAction<number>>
+  getStudentActions: (student: Student) => ActionItem[]
+  onOpenStudent: (studentId: string) => void
+}>) {
+  return (
+    <>
+      <div className="student-filters">
+        <div className="student-search" role="search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search name, ID, class or roll number"
+            aria-label="Search students"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="search-clear-btn"
+              onClick={() => setQuery('')}
+              aria-label="Clear student search"
+            >
+              <X size={13} />
+            </button>
+          ) : null}
+        </div>
+        <select value={classFilter} onChange={(event) => { setClassFilter(event.target.value); setSectionFilter('') }} aria-label="Filter by class">
+          <option value="">All classes</option>
+          {classOptions.map((className) => <option key={className}>{className}</option>)}
+        </select>
+        <select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} aria-label="Filter by section">
+          <option value="">All sections</option>
+          {sectionOptions.map((section) => <option key={section}>{section}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option>Active</option>
+          <option>Inactive</option>
+          <option>Graduated</option>
+        </select>
+      </div>
+
+      {filteredStudents.length === 0 ? (
+        <StudentListState
+          title={accessibleCount ? 'No students match these filters.' : 'No students yet'}
+          detail={accessibleCount ? 'Try another name or clear one of the filters.' : 'Students will appear here once they are added to your school.'}
+        />
+      ) : (
+        <>
+          <div className="student-table-card">
+            <table className="student-table">
+              <thead>
+                <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th>Actions</th></tr>
+              </thead>
+              <tbody>
+                {paginatedStudents.map((student) => {
+                  const studentActions = getStudentActions(student)
+                  return (
+                    <tr key={student.id}>
+                      <td><strong>{student.firstName} {student.lastName}</strong></td>
+                      <td>{student.studentId}</td><td>{student.className}</td><td>{student.section}</td><td>{student.rollNumber}</td>
+                      <td><span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span></td>
+                      <td>
+                        <div className="table-actions">
+                          <button type="button" className="student-link" onClick={() => onOpenStudent(student.id)}>View profile</button>
+                          {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="student-mobile-list">
+            {paginatedStudents.map((student) => {
+              const studentActions = getStudentActions(student)
+              return (
+                <article className="student-mobile-card" key={student.id}>
+                  <div className="student-mobile-title">
+                    <div className="student-avatar"><UserRound size={18} /></div>
+                    <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId}</span></div>
+                    <span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span>
+                  </div>
+                  <div className="student-mobile-meta"><span>{student.className}-{student.section}</span><span>Roll {student.rollNumber}</span></div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
+                    <button type="button" className="student-link" onClick={() => onOpenStudent(student.id)}>Open Student 360</button>
+                    {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+          {totalPages > 1 && (
+            <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <span className="student-muted" style={{ fontSize: '0.875rem' }}>
+                Page {page} of {totalPages} ({filteredStudents.length} students)
+              </span>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleCount} students</p>
+    </>
+  )
+}
+
+export function StudentsPage({ user, students, loading, error, onRetry, onAddStudent, onImportStudents, onRefresh }: Readonly<StudentsPageProps>) {
   const navigate = useNavigate()
   const accessibleStudents = students
   const [query, setQuery] = useState('')
@@ -141,59 +673,25 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [importing, setImporting] = useState(false)
   const [importStage, setImportStage] = useState<'idle' | 'reading' | 'checking' | 'ready' | 'importing' | 'complete' | 'failed'>('idle')
   const [importTotalRows, setImportTotalRows] = useState(0)
-  const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort()
+  const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort(compareClassNames)
   const sectionOptions = [...new Set(
     accessibleStudents
       .filter((student) => !classFilter || student.className === classFilter)
       .map((student) => student.section),
-  )].sort()
+  )].sort(compareNaturalText)
   const canCreateStudents = user.role === 'admin' || user.role === 'teacher'
   const activeTeacherScopes = teacherScopes.filter((scope) =>
     scope.active && scope.school_id === user.schoolId,
   )
   const importBusy = ['reading', 'checking', 'importing'].includes(importStage)
   const importHasNoNewRows = importStage === 'ready' && importTotalRows > 0 && !importPreview && importSkipped.length === importTotalRows
-  const importProgressSteps = [
-    {
-      label: 'Read CSV file',
-      complete: ['checking', 'ready', 'importing', 'complete'].includes(importStage),
-      active: importStage === 'reading',
-      failed: importStage === 'failed' && importTotalRows === 0,
-      detail: importStage === 'failed' && importTotalRows === 0
-        ? 'Could not read the selected CSV'
-        : importTotalRows > 0 ? `${importTotalRows} student rows found` : 'Reading the selected CSV',
-    },
-    {
-      label: 'Remove duplicates',
-      complete: ['ready', 'importing', 'complete'].includes(importStage),
-      active: importStage === 'checking',
-      failed: importStage === 'failed' && importTotalRows > 0 && !importPreview,
-      detail: importStage === 'checking'
-        ? 'Checking existing students and CSV rows'
-        : importStage === 'reading'
-          ? 'Waiting for the CSV to load'
-          : importStage === 'failed' && importTotalRows > 0 && !importPreview
-            ? 'Duplicate check did not finish'
-            : importSkipped.length > 0
-              ? `${importSkipped.length} duplicates skipped automatically`
-              : 'No duplicates found',
-    },
-    {
-      label: importHasNoNewRows ? 'Nothing left to import' : 'Import remaining students',
-      complete: importStage === 'complete' || importHasNoNewRows,
-      active: importStage === 'importing',
-      failed: importStage === 'failed' && Boolean(importPreview?.length),
-      detail: importHasNoNewRows
-        ? 'All rows were duplicates'
-        : importStage === 'complete'
-          ? 'Import finished; check the result notification'
-          : importStage === 'importing'
-            ? `Importing ${importPreview?.length ?? 0} students`
-            : importStage === 'reading' || importStage === 'checking'
-              ? 'Waiting for duplicate check'
-              : `${importPreview?.length ?? 0} students ready`,
-    },
-  ]
+  const importProgressSteps = buildImportProgressSteps(
+    importStage,
+    importTotalRows,
+    importPreview,
+    importSkipped.length,
+    importHasNoNewRows,
+  )
 
   useEffect(() => {
     if (!canCreateStudents) return
@@ -237,7 +735,13 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
         (!sectionFilter || student.section === sectionFilter) &&
         (!statusFilter || student.status === statusFilter)
       )
-    })
+    }).sort((left, right) =>
+      compareClassNames(left.className, right.className) ||
+      compareNaturalText(left.section, right.section) ||
+      compareNaturalText(left.studentId, right.studentId) ||
+      compareNaturalText(left.firstName, right.firstName) ||
+      compareNaturalText(left.lastName, right.lastName),
+    )
   }, [accessibleStudents, query, classFilter, sectionFilter, statusFilter])
 
   const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1
@@ -247,7 +751,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     return filteredStudents.slice(start, start + pageSize)
   }, [filteredStudents, currentPage, pageSize])
 
-  const handleAddSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleAddSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
     setStudentSaveError('')
 
@@ -262,9 +766,9 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     setStudentSaving(true)
     const submissionPayload: NewStudent = user.role === 'teacher'
       ? {
-          ...form,
-          guardian: { name: '', phone: '', email: '' },
-        }
+        ...form,
+        guardian: { name: '', phone: '', email: '' },
+      }
       : form
     try {
       await onAddStudent(submissionPayload, campusId)
@@ -397,20 +901,22 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     const actions: ActionItem[] = []
 
     if (user.role === 'admin') {
-      actions.push({
-        label: 'Edit Student',
-        onClick: () => setEditingStudent(student),
-      })
-      actions.push({
-        label: 'Archive Student',
-        danger: false,
-        onClick: () => setArchivingStudent(student),
-      })
-      actions.push({
-        label: 'Move to Trash',
-        danger: true,
-        onClick: () => setTrashingStudent(student),
-      })
+      actions.push(
+        {
+          label: 'Edit Student',
+          onClick: () => setEditingStudent(student),
+        },
+        {
+          label: 'Archive Student',
+          danger: false,
+          onClick: () => setArchivingStudent(student),
+        },
+        {
+          label: 'Move to Trash',
+          danger: true,
+          onClick: () => setTrashingStudent(student),
+        },
+      )
     } else if (user.role === 'principal') {
       actions.push({
         label: 'Edit Class & Section',
@@ -471,204 +977,46 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       ) : null}
 
       {canCreateStudents && showAddForm ? (
-        <form className="student-form" onSubmit={(event) => void handleAddSubmit(event)}>
-          <h2>Add Student</h2>
-          {creationOptionsError ? <p className="communication-feedback error" role="alert">{creationOptionsError}</p> : null}
-          {studentSaveError ? <p className="communication-feedback error" role="alert">{studentSaveError}</p> : null}
-          {user.role === 'teacher' && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length === 0
-            ? <p className="communication-feedback error" role="alert">No active class assignments were found for your account. Ask an Admin to assign a campus, class, and section before creating a student.</p>
-            : null}
-          {user.role === 'teacher' && !creationOptionsLoading && !creationOptionsError && activeTeacherScopes.length > 0 && campuses.length === 0
-            ? <p className="communication-feedback error" role="alert">No active campus is available for your class assignments. Ask an Admin to review the assigned campus.</p>
-            : null}
-          <label>Campus<select required disabled={creationOptionsLoading || studentSaving || campuses.length === 0} value={campusId} onChange={(event) => { setCampusId(event.target.value); if (user.role === 'teacher') setForm((current) => ({ ...current, className: '', section: '' })) }}><option value="">Select campus</option>{campuses.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}</select></label>
-          <label>First name<input required value={form.firstName} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
-          <label>Last name<input required value={form.lastName} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
-          <label>Student ID<input required value={form.studentId} onChange={(event) => setForm((current) => ({ ...current, studentId: event.target.value }))} /></label>
-          {user.role === 'teacher' ? (
-            <>
-              <label>Class<select required disabled={studentSaving || teacherScopes.length === 0} value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value, section: '' }))}><option value="">Select assigned class</option>{[...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId).map((scope) => scope.class_name))].sort().map((className) => <option key={className}>{className}</option>)}</select></label>
-              <label>Section<select required disabled={studentSaving || !form.className} value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))}><option value="">Select assigned section</option>{[...new Set(teacherScopes.filter((scope) => scope.campus_id === campusId && scope.class_name === form.className).map((scope) => scope.section))].sort().map((section) => <option key={section}>{section}</option>)}</select></label>
-            </>
-          ) : (
-            <>
-              <label>Class<input required placeholder="e.g. Grade 8" value={form.className} onChange={(event) => setForm((current) => ({ ...current, className: event.target.value }))} /></label>
-              <label>Section<input required value={form.section} onChange={(event) => setForm((current) => ({ ...current, section: event.target.value }))} /></label>
-            </>
-          )}
-          <label>Roll number<input disabled={studentSaving} value={form.rollNumber} onChange={(event) => setForm((current) => ({ ...current, rollNumber: event.target.value }))} /></label>
-          <label>Date of birth<input disabled={studentSaving} type="date" value={form.dateOfBirth} onChange={(event) => setForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
-          <label>Gender<select disabled={studentSaving} value={form.gender} onChange={(event) => setForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Select</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
-          {user.role === 'admin' ? (
-            <>
-              <label>Guardian name<input disabled={studentSaving} value={form.guardian.name} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, name: event.target.value } }))} /></label>
-              <label>Guardian phone<input disabled={studentSaving} type="tel" value={form.guardian.phone} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, phone: event.target.value } }))} /></label>
-              <label>Guardian email<input disabled={studentSaving} type="email" value={form.guardian.email} onChange={(event) => setForm((current) => ({ ...current, guardian: { ...current.guardian, email: event.target.value } }))} /></label>
-            </>
-          ) : (
-            <p className="student-muted" style={{ gridColumn: '1 / -1', margin: '0.5rem 0' }}>
-              Guardian information must be added by an Admin.
-            </p>
-          )}
-          <div className="student-form-actions">
-            <button type="button" className="secondary-button small-button" disabled={studentSaving} onClick={() => setShowAddForm(false)}>Cancel</button>
-            <button type="submit" className="primary-button small-button" disabled={studentSaving || creationOptionsLoading || Boolean(creationOptionsError) || campuses.length === 0 || !campusId}>{studentSaving ? 'Saving…' : 'Save Student'}</button>
-          </div>
-        </form>
+        <AddStudentFormSection
+          userRole={user.role}
+          form={form}
+          setForm={setForm}
+          campuses={campuses}
+          campusId={campusId}
+          onChangeCampusId={setCampusId}
+          teacherScopes={teacherScopes}
+          activeTeacherScopes={activeTeacherScopes}
+          creationOptionsLoading={creationOptionsLoading}
+          creationOptionsError={creationOptionsError}
+          studentSaveError={studentSaveError}
+          studentSaving={studentSaving}
+          onCancel={() => setShowAddForm(false)}
+          onSubmit={(event) => void handleAddSubmit(event)}
+        />
       ) : null}
 
       {user.role === 'admin' && (importError || importPreview || importStage !== 'idle') ? (
-        <section className={`import-panel ${importError ? 'import-error' : ''}`} aria-live="polite">
-          {importStage !== 'idle' && (
-            <ol className="import-progress" aria-label="Student import progress">
-              {importProgressSteps.map((step, index) => (
-                <li
-                  key={step.label}
-                  className={`${step.complete ? 'is-complete' : ''} ${step.active ? 'is-active' : ''} ${step.failed ? 'is-failed' : ''}`}
-                  aria-current={step.active ? 'step' : undefined}
-                >
-                  <span className="import-progress-indicator" aria-hidden="true">
-                    {step.complete ? '✓' : index + 1}
-                  </span>
-                  <span className="import-progress-copy">
-                    <strong>{step.label}</strong>
-                    <small>{step.detail}</small>
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-          {importError ? (
-            <>
-              <h2>Import needs attention</h2>
-              <p>{importError}</p>
-              {importSkipped.length > 0 && (
-                <div style={{ margin: '12px 0', padding: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '6px' }}>
-                  <p style={{ fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>
-                    {importSkipped.length} duplicate row(s) skipped:
-                  </p>
-                  <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#78350f', maxHeight: '160px', overflowY: 'auto' }}>
-                    {importSkipped.map((item) => (
-                      <li key={`${item.rowNumber}-${item.student.studentId}`}>
-                        <strong>Row {item.rowNumber}</strong> ({item.student.studentId} - {item.student.firstName} {item.student.lastName}): {item.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className="student-form-actions" style={{ marginTop: '12px' }}>
-                <button
-                  type="button"
-                  className="secondary-button small-button"
-                  onClick={() => {
-                    setImportError('')
-                    setImportPreview(null)
-                    setImportSkipped([])
-                    setImportTotalRows(0)
-                    setImportStage('idle')
-                    const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
-                    if (fileInput) fileInput.value = ''
-                  }}
-                >
-                  Dismiss
-                </button>
-                {importPreview && (
-                  <button
-                    type="button"
-                    className="primary-button small-button"
-                    disabled={importing || !campusId}
-                    onClick={() => void confirmImport()}
-                  >
-                    Retry Import
-                  </button>
-                )}
-              </div>
-            </>
-          ) : importPreview ? (
-            <>
-              <div className="panel-header">
-                <div>
-                  <h2>{importStage === 'complete' ? 'Import finished' : 'Preview import'}</h2>
-                  <p>
-                    {importStage === 'complete'
-                      ? 'The import request completed. Check the result notification for the exact count.'
-                      : `${importPreview.length} student records are ready to confirm.`}
-                  </p>
-                </div>
-                {campuses.length > 0 && (
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '0.88rem', color: '#183252' }}>
-                    <label htmlFor="import-campus-select"><strong>Campus:</strong></label>
-                    {campuses.length > 1 ? (
-                      <select
-                        id="import-campus-select"
-                        disabled={importing}
-                        value={campusId}
-                        onChange={(event) => setCampusId(event.target.value)}
-                        style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
-                      >
-                        {campuses.map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span>{campuses[0].name}</span>
-                    )}
-                  </div>
-                )}
-                <div className="student-form-actions">
-                  <button
-                    type="button"
-                    className="secondary-button small-button"
-                    disabled={importing}
-                    onClick={() => {
-                      setImportPreview(null)
-                      setImportSkipped([])
-                      setImportTotalRows(0)
-                      setImportStage('idle')
-                      const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
-                      if (fileInput) fileInput.value = ''
-                    }}
-                  >
-                    {importStage === 'complete' ? 'Done' : 'Cancel'}
-                  </button>
-                  {importStage !== 'complete' && (
-                    <button
-                      type="button"
-                      className="primary-button small-button"
-                      disabled={importing || !campusId}
-                      onClick={() => void confirmImport()}
-                    >
-                      {importing ? `Importing ${importPreview.length} students…` : `Confirm Import (${importPreview.length} students)`}
-                    </button>
-                  )}
-                </div>
-              </div>
-              {importSkipped.length > 0 && (
-                <div style={{ margin: '12px 0', padding: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '6px' }}>
-                  <p style={{ fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>
-                    {importSkipped.length} duplicate row(s) detected and skipped:
-                  </p>
-                  <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#78350f', maxHeight: '160px', overflowY: 'auto' }}>
-                    {importSkipped.map((item) => (
-                      <li key={`${item.rowNumber}-${item.student.studentId}`}>
-                        <strong>Row {item.rowNumber}</strong> ({item.student.studentId} - {item.student.firstName} {item.student.lastName}): {item.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className="import-preview-list">
-                {importPreview.slice(0, 5).map((student) => (
-                  <div key={student.studentId}>
-                    <strong>{student.firstName} {student.lastName}</strong>
-                    <span>{student.studentId} · {student.className}-{student.section}</span>
-                  </div>
-                ))}
-                {importPreview.length > 5 ? <p>And {importPreview.length - 5} more…</p> : null}
-              </div>
-            </>
-          ) : null}
-        </section>
+        <StudentImportSection
+          importStage={importStage}
+          importProgressSteps={importProgressSteps}
+          importError={importError}
+          importPreview={importPreview}
+          importSkipped={importSkipped}
+          importing={importing}
+          campuses={campuses}
+          campusId={campusId}
+          onChangeCampusId={setCampusId}
+          onReset={() => {
+            setImportError('')
+            setImportPreview(null)
+            setImportSkipped([])
+            setImportTotalRows(0)
+            setImportStage('idle')
+            const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
+            if (fileInput) fileInput.value = ''
+          }}
+          onConfirmImport={() => void confirmImport()}
+        />
       ) : null}
 
       {user.role === 'admin' ? (
@@ -684,118 +1032,26 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
           onRefreshStudents={() => onRefresh?.()}
         />
       ) : (
-      <>
-      <div className="student-filters">
-        <div className="student-search" role="search">
-          <Search size={16} />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search name, ID, class or roll number"
-            aria-label="Search students"
-          />
-          {query ? (
-            <button
-              type="button"
-              className="search-clear-btn"
-              onClick={() => setQuery('')}
-              aria-label="Clear student search"
-            >
-              <X size={13} />
-            </button>
-          ) : null}
-        </div>
-        <select value={classFilter} onChange={(event) => { setClassFilter(event.target.value); setSectionFilter('') }} aria-label="Filter by class">
-          <option value="">All classes</option>
-          {classOptions.map((className) => <option key={className}>{className}</option>)}
-        </select>
-        <select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} aria-label="Filter by section">
-          <option value="">All sections</option>
-          {sectionOptions.map((section) => <option key={section}>{section}</option>)}
-        </select>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status">
-          <option value="">All statuses</option>
-          <option>Active</option>
-          <option>Inactive</option>
-          <option>Graduated</option>
-        </select>
-      </div>
-
-      {filteredStudents.length === 0 ? (
-        <StudentListState title={accessibleStudents.length ? 'No students match these filters.' : 'No students yet'} detail={accessibleStudents.length ? 'Try another name or clear one of the filters.' : 'Students will appear here once they are added to your school.'} />
-      ) : (
-        <>
-          <div className="student-table-card">
-            <table className="student-table">
-              <thead>
-                <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th>Actions</th></tr>
-              </thead>
-              <tbody>
-                {paginatedStudents.map((student) => {
-                  const studentActions = getStudentActions(student)
-                  return (
-                    <tr key={student.id}>
-                      <td><strong>{student.firstName} {student.lastName}</strong></td>
-                      <td>{student.studentId}</td><td>{student.className}</td><td>{student.section}</td><td>{student.rollNumber}</td>
-                      <td><span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span></td>
-                      <td>
-                        <div className="table-actions">
-                          <button type="button" className="student-link" onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>View profile</button>
-                          {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="student-mobile-list">
-            {paginatedStudents.map((student) => {
-              const studentActions = getStudentActions(student)
-              return (
-                <article className="student-mobile-card" key={student.id} onClick={() => navigate(`/students/${encodeURIComponent(student.id)}`)}>
-                  <div className="student-mobile-title">
-                    <div className="student-avatar"><UserRound size={18} /></div>
-                    <div><strong>{student.firstName} {student.lastName}</strong><span>{student.studentId}</span></div>
-                    <span className={`status-pill ${student.status === 'Active' ? 'success' : 'muted'}`}>{student.status}</span>
-                  </div>
-                  <div className="student-mobile-meta"><span>{student.className}-{student.section}</span><span>Roll {student.rollNumber}</span></div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
-                    <button type="button" className="student-link" onClick={(event) => { event.stopPropagation(); navigate(`/students/${encodeURIComponent(student.id)}`) }}>Open Student 360</button>
-                    {studentActions.length > 0 && <RecordActionMenu actions={studentActions} />}
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-          {totalPages > 1 && (
-            <div className="pagination-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', gap: '12px' }}>
-              <button
-                type="button"
-                className="secondary-button compact-button"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
-                Previous
-              </button>
-              <span className="student-muted" style={{ fontSize: '0.875rem' }}>
-                Page {page} of {totalPages} ({filteredStudents.length} students)
-              </span>
-              <button
-                type="button"
-                className="secondary-button compact-button"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </>
-      )}
-      <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleStudents.length} students</p>
-      </>
+        <StudentDirectorySection
+          query={query}
+          setQuery={setQuery}
+          classFilter={classFilter}
+          setClassFilter={setClassFilter}
+          sectionFilter={sectionFilter}
+          setSectionFilter={setSectionFilter}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          classOptions={classOptions}
+          sectionOptions={sectionOptions}
+          filteredStudents={filteredStudents}
+          paginatedStudents={paginatedStudents}
+          accessibleCount={accessibleStudents.length}
+          page={page}
+          totalPages={totalPages}
+          setPage={setPage}
+          getStudentActions={getStudentActions}
+          onOpenStudent={(studentId) => void navigate(`/students/${encodeURIComponent(studentId)}`)}
+        />
       )}
 
       {editingStudent && (
@@ -837,7 +1093,44 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   )
 }
 
-export function StudentDetailPage({ user, students, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError, onRefresh }: DetailPageProps) {
+function normalizeScopeValue(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function isTeacherAssignedToStudent(user: StudentPageUser, student: Student): boolean {
+  if (user.role !== 'teacher') return true
+  return (user.teacherAssignments ?? []).some((assignment) =>
+    assignment.active &&
+    assignment.school_id === student.schoolId &&
+    assignment.campus_id === student.campusId &&
+    normalizeScopeValue(assignment.class_name) === normalizeScopeValue(student.className) &&
+    normalizeScopeValue(assignment.section) === normalizeScopeValue(student.section),
+  )
+}
+
+function buildStudentDetailActions(
+  role: Role,
+  status: Student['status'],
+  handlers: { onEdit: () => void; onArchive: () => void; onTrash: () => void },
+): ActionItem[] {
+  if (status === 'Archived') return []
+  if (role === 'admin') {
+    return [
+      { label: 'Edit Student', onClick: handlers.onEdit },
+      { label: 'Archive Student', danger: false, onClick: handlers.onArchive },
+      { label: 'Move to Trash', danger: true, onClick: handlers.onTrash },
+    ]
+  }
+  if (role === 'principal') {
+    return [{ label: 'Edit Class & Section', onClick: handlers.onEdit }]
+  }
+  if (role === 'teacher') {
+    return [{ label: 'Edit Roll Number / DOB', onClick: handlers.onEdit }]
+  }
+  return []
+}
+
+export function StudentDetailPage({ user, students, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError, onRefresh }: Readonly<DetailPageProps>) {
   const navigate = useNavigate()
   const { studentId = '' } = useParams()
   const [pageState, setPageState] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -861,7 +1154,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
         user.schoolId ?? null,
         user.organizationId ?? null,
         user.teacherAssignments ?? [],
-      ).then((options) => setCampuses(options.campuses)).catch(() => {})
+      ).then((options) => setCampuses(options.campuses)).catch(() => { })
     }
   }, [user.role, user.schoolId, user.organizationId, user.teacherAssignments])
 
@@ -918,13 +1211,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     )
   }
 
-  const canViewStatementTab = user.role !== 'teacher' || (user.teacherAssignments ?? []).some((assignment) =>
-    assignment.active &&
-    assignment.school_id === authorizedStudent.schoolId &&
-    assignment.campus_id === authorizedStudent.campusId &&
-    (assignment.class_name ?? '').trim().replace(/\s+/g, ' ').toLowerCase() === (authorizedStudent.className ?? '').trim().replace(/\s+/g, ' ').toLowerCase() &&
-    (assignment.section ?? '').trim().replace(/\s+/g, ' ').toLowerCase() === (authorizedStudent.section ?? '').trim().replace(/\s+/g, ' ').toLowerCase(),
-  )
+  const canViewStatementTab = isTeacherAssignedToStudent(user, authorizedStudent)
   const studentAttendanceSummary = getStudentAttendance(authorizedStudent, attendance)
   const latestAttendance = studentAttendanceSummary.recent[0]
   const feeReminderInvoice = feeInvoices.find((invoice) => invoice.outstandingAmount > 0)
@@ -958,7 +1245,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     setActionError('')
     await archiveStudent(authorizedStudent.id, reason)
     if (onRefresh) await onRefresh()
-    navigate('/students')
+    void navigate('/students')
   }
 
   const handleTrashStudent = async (reason: string) => {
@@ -966,7 +1253,7 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     setActionError('')
     await trashStudent(authorizedStudent.id, reason)
     if (onRefresh) await onRefresh()
-    navigate('/students')
+    void navigate('/students')
   }
 
   const handleUpdateGuardian = async (payload: {
@@ -1012,35 +1299,11 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     if (onRefresh) await onRefresh()
   }
 
-  const studentActions: ActionItem[] = []
-  if (authorizedStudent.status !== 'Archived') {
-    if (user.role === 'admin') {
-      studentActions.push({
-        label: 'Edit Student',
-        onClick: () => setEditingStudent(true),
-      })
-      studentActions.push({
-        label: 'Archive Student',
-        danger: false,
-        onClick: () => setArchivingStudent(true),
-      })
-      studentActions.push({
-        label: 'Move to Trash',
-        danger: true,
-        onClick: () => setTrashingStudent(true),
-      })
-    } else if (user.role === 'principal') {
-      studentActions.push({
-        label: 'Edit Class & Section',
-        onClick: () => setEditingStudent(true),
-      })
-    } else if (user.role === 'teacher') {
-      studentActions.push({
-        label: 'Quick Edit Roll No.',
-        onClick: () => setEditingStudent(true),
-      })
-    }
-  }
+  const studentActions = buildStudentDetailActions(user.role, authorizedStudent.status, {
+    onEdit: () => setEditingStudent(true),
+    onArchive: () => setArchivingStudent(true),
+    onTrash: () => setTrashingStudent(true),
+  })
 
   return (
     <section className="student-detail-page">
@@ -1195,6 +1458,108 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
   )
 }
 
+function OverviewSummaryCard({
+  title,
+  loading,
+  loadingText,
+  error,
+  value,
+  detail,
+}: Readonly<{
+  title: string
+  loading: boolean
+  loadingText: string
+  error: string
+  value: string | number
+  detail: string
+}>) {
+  let content: React.ReactNode
+  if (loading) {
+    content = <output>{loadingText}</output>
+  } else if (error) {
+    content = <p role="alert">{error}</p>
+  } else {
+    content = (
+      <>
+        <strong>{value}</strong>
+        <p>{detail}</p>
+      </>
+    )
+  }
+  return (
+    <section className="student-summary-card">
+      <h2>{title}</h2>
+      {content}
+    </section>
+  )
+}
+
+function GuardianInfoCard({
+  student,
+  role,
+  onEditGuardian,
+  onLinkGuardian,
+  onUnlinkGuardian,
+}: Readonly<{
+  student: Student
+  role: Role
+  onEditGuardian?: () => void
+  onLinkGuardian?: () => void
+  onUnlinkGuardian?: () => void
+}>) {
+  const isActiveStudent = student.status !== 'Archived'
+  const canEditGuardian = isActiveStudent && (role === 'admin' || role === 'principal') && Boolean(student.guardian.id)
+  const canManageGuardian = isActiveStudent && role === 'admin'
+
+  return (
+    <section className="student-info-card">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <h2 style={{ margin: 0 }}>Guardian information</h2>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {canEditGuardian ? (
+            <button
+              type="button"
+              className="secondary-button icon-only-button"
+              style={{ padding: '4px 8px', fontSize: '12px' }}
+              onClick={onEditGuardian}
+            >
+              Edit Details
+            </button>
+          ) : null}
+          {canManageGuardian ? (
+            <>
+              <button
+                type="button"
+                className="secondary-button icon-only-button"
+                style={{ padding: '4px 8px', fontSize: '12px' }}
+                onClick={onLinkGuardian}
+              >
+                Link New
+              </button>
+              {student.guardian.id ? (
+                <button
+                  type="button"
+                  className="secondary-button icon-only-button"
+                  style={{ padding: '4px 8px', fontSize: '12px', color: '#dc2626' }}
+                  onClick={onUnlinkGuardian}
+                >
+                  Unlink
+                </button>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
+      <dl className="student-info-grid">
+        <InfoField label="Name" value={student.guardian.name || 'No guardian assigned'} />
+        <InfoField label="Relationship" value={student.guardian.relationship ?? ''} />
+        <InfoField label="Phone" value={student.guardian.phone || '—'} />
+        <InfoField label="Email" value={student.guardian.email || '—'} />
+      </dl>
+    </section>
+  )
+}
+
 function StudentOverview({
   student,
   role,
@@ -1210,7 +1575,7 @@ function StudentOverview({
   onEditGuardian,
   onLinkGuardian,
   onUnlinkGuardian,
-}: {
+}: Readonly<{
   student: Student
   role: Role
   attendance: AttendanceState
@@ -1225,7 +1590,7 @@ function StudentOverview({
   onEditGuardian?: () => void
   onLinkGuardian?: () => void
   onUnlinkGuardian?: () => void
-}) {
+}>) {
   const canViewSensitiveOverview = role !== 'finance'
   const canViewFees = canViewStudentTab(role, 'Fees')
   const summary = getStudentAttendance(student, attendance)
@@ -1233,6 +1598,10 @@ function StudentOverview({
   const openAlerts = alerts.filter((alert) =>
     alert.sourceType === 'ATTENDANCE' && alert.studentId === student.id && alert.status !== 'RESOLVED',
   ).length
+  const attendanceValue = summary.counts.rate === null ? '—' : `${summary.counts.rate}%`
+  const attendanceDetail = `${summary.counts.present} present · ${summary.counts.absent} absent · ${summary.counts.late} late days`
+  const alertDetail = openAlerts ? 'Attendance items may need follow-up.' : 'No attendance alerts for this student.'
+
   return (
     <div className="student-overview-grid">
       <section className="student-info-card">
@@ -1249,85 +1618,42 @@ function StudentOverview({
         </dl>
       </section>
       {canViewSensitiveOverview ? (
-        <>
-          <section className="student-summary-card">
-            <h2>Attendance summary</h2>
-            {attendanceLoading ? <p role="status">Loading attendance…</p> : attendanceError ? <p role="alert">{attendanceError}</p> : (
-              <>
-                <strong>{summary.counts.rate === null ? '—' : `${summary.counts.rate}%`}</strong>
-                <p>{summary.counts.present} present · {summary.counts.absent} absent · {summary.counts.late} late days</p>
-              </>
-            )}
-          </section>
-        </>
+        <OverviewSummaryCard
+          title="Attendance summary"
+          loading={attendanceLoading}
+          loadingText="Loading attendance…"
+          error={attendanceError}
+          value={attendanceValue}
+          detail={attendanceDetail}
+        />
       ) : null}
-      <section className="student-info-card">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-          <h2 style={{ margin: 0 }}>Guardian information</h2>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {student.status !== 'Archived' && (role === 'admin' || role === 'principal') && student.guardian.id && (
-              <button
-                type="button"
-                className="secondary-button icon-only-button"
-                style={{ padding: '4px 8px', fontSize: '12px' }}
-                onClick={onEditGuardian}
-              >
-                Edit Details
-              </button>
-            )}
-            {student.status !== 'Archived' && role === 'admin' && (
-              <>
-                <button
-                  type="button"
-                  className="secondary-button icon-only-button"
-                  style={{ padding: '4px 8px', fontSize: '12px' }}
-                  onClick={onLinkGuardian}
-                >
-                  Link New
-                </button>
-                {student.guardian.id && (
-                  <button
-                    type="button"
-                    className="secondary-button icon-only-button"
-                    style={{ padding: '4px 8px', fontSize: '12px', color: '#dc2626' }}
-                    onClick={onUnlinkGuardian}
-                  >
-                    Unlink
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-        <dl className="student-info-grid">
-          <InfoField label="Name" value={student.guardian.name || 'No guardian assigned'} />
-          <InfoField label="Relationship" value={student.guardian.relationship ?? ''} />
-          <InfoField label="Phone" value={student.guardian.phone || '—'} />
-          <InfoField label="Email" value={student.guardian.email || '—'} />
-        </dl>
-      </section>
+      <GuardianInfoCard
+        student={student}
+        role={role}
+        onEditGuardian={onEditGuardian}
+        onLinkGuardian={onLinkGuardian}
+        onUnlinkGuardian={onUnlinkGuardian}
+      />
       {canViewFees ? (
-        <section className="student-summary-card">
-          <h2>Fee summary</h2>
-          {feesLoading ? <p role="status">Loading fee information…</p> : feesError ? <p role="alert">{feesError}</p> : (
-            <>
-              <strong>{formatCurrency(feeSummary.outstanding)} outstanding</strong>
-              <p>{formatCurrency(feeSummary.collected)} paid of {formatCurrency(feeSummary.expected)}</p>
-            </>
-          )}
-        </section>
+        <OverviewSummaryCard
+          title="Fee summary"
+          loading={feesLoading}
+          loadingText="Loading fee information…"
+          error={feesError}
+          value={`${formatCurrency(feeSummary.outstanding)} outstanding`}
+          detail={`${formatCurrency(feeSummary.collected)} paid of ${formatCurrency(feeSummary.expected)}`}
+        />
       ) : null}
       {canViewSensitiveOverview ? (
         <>
-          <section className="student-summary-card">
-            <h2>Open alerts</h2>
-            {alertsLoading ? <p role="status">Loading alerts…</p> : alertsError ? <p role="alert">{alertsError}</p> : (
-              <>
-                <strong>{openAlerts}</strong>
-                <p>{openAlerts ? 'Attendance items may need follow-up.' : 'No attendance alerts for this student.'}</p>
-              </>
-            )}
-          </section>
+          <OverviewSummaryCard
+            title="Open alerts"
+            loading={alertsLoading}
+            loadingText="Loading alerts…"
+            error={alertsError}
+            value={openAlerts}
+            detail={alertDetail}
+          />
           <section className="student-info-card student-activity-card">
             <h2>Recent activity</h2>
             <ActivityTimeline items={student.activity.filter((item) => !item.title.toLowerCase().includes('fee'))} />
@@ -1338,13 +1664,13 @@ function StudentOverview({
   )
 }
 
-function StudentAttendance({ student, attendance, loading, error, timeZone }: {
+function StudentAttendance({ student, attendance, loading, error, timeZone }: Readonly<{
   student: Student
   attendance: AttendanceState
   loading: boolean
   error: string
   timeZone?: string | null
-}) {
+}>) {
   const summary = getStudentAttendance(student, attendance)
   if (loading) return <StudentListState title="Loading attendance…" />
   if (error) return <StudentListState title="We couldn't load attendance." detail={error} isError />
@@ -1376,7 +1702,7 @@ function displayAttendanceStatus(status: AttendanceStatus): string {
   return status[0] + status.slice(1).toLowerCase()
 }
 
-function StudentFees({ invoices, payments, loading, error, onRetry }: { invoices: FeeInvoiceView[]; payments: FeePayment[]; loading: boolean; error: string; onRetry: () => void }) {
+function StudentFees({ invoices, payments, loading, error, onRetry }: Readonly<{ invoices: FeeInvoiceView[]; payments: FeePayment[]; loading: boolean; error: string; onRetry: () => void }>) {
   if (loading) return <StudentListState title="Loading fee history…" />
   if (error) return <section className="student-state-card"><h2>We couldn't load fee history.</h2><p>{error}</p><button type="button" className="secondary-button small-button" onClick={onRetry}>Try again</button></section>
   const summary = getFeeMetrics(invoices)
@@ -1411,15 +1737,21 @@ function StudentFees({ invoices, payments, loading, error, onRetry }: { invoices
   )
 }
 
-function StudentCommunication({ student, messages, user, invoices, users }: {
+function getCommunicationCreateType(role: Role): 'Fee Reminder' | 'Attendance Reminder' | 'General Notice' {
+  if (role === 'finance') return 'Fee Reminder'
+  if (role === 'teacher') return 'Attendance Reminder'
+  return 'General Notice'
+}
+
+function StudentCommunication({ student, messages, user, invoices, users }: Readonly<{
   student: Student
   messages: ReturnType<typeof getAccessibleCommunication>
   user: StudentPageUser
   invoices: FeeInvoiceView[]
   users: SchoolUser[]
-}) {
+}>) {
   const navigate = useNavigate()
-  const createType = user.role === 'finance' ? 'Fee Reminder' : user.role === 'teacher' ? 'Attendance Reminder' : 'General Notice'
+  const createType = getCommunicationCreateType(user.role)
   const canCreate = canCreateCommunication(user, createType) &&
     (user.role !== 'finance' || invoices.some((invoice) => invoice.outstandingAmount > 0))
   const userNames = new Map(users.map((item) => [item.id, item.name]))
@@ -1433,7 +1765,7 @@ function StudentCommunication({ student, messages, user, invoices, users }: {
     : `/communication?studentId=${encodeURIComponent(student.id)}`
   return (
     <section className="student-info-card">
-      <div className="student-communication-header"><h2>Recent Messages</h2>{canCreate ? <button type="button" className="secondary-button small-button" onClick={() => navigate(createHref)}>Create Message</button> : null}</div>
+      <div className="student-communication-header"><h2>Recent Messages</h2>{canCreate ? <button type="button" className="secondary-button small-button" onClick={() => void navigate(createHref)}>Create Message</button> : null}</div>
       {messages.length ? (
         <div className="student-record-list communication-list">
           {messages.slice(0, 10).map((entry) => (
@@ -1449,7 +1781,7 @@ function StudentCommunication({ student, messages, user, invoices, users }: {
   )
 }
 
-function ActivityTimeline({ items }: { items: Student['activity'] }) {
+function ActivityTimeline({ items }: Readonly<{ items: Student['activity'] }>) {
   if (!items.length) return <p className="student-muted">No recent activity.</p>
   return (
     <ol className="activity-timeline">
@@ -1458,89 +1790,150 @@ function ActivityTimeline({ items }: { items: Student['activity'] }) {
   )
 }
 
-function AttendanceTrend({ data, timeZone }: {
+function buildRoundedColumnPath(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius = 4,
+): string {
+  if (height <= 0) return ''
+  const r = Math.min(radius, width / 2, height)
+  const bottom = y + height
+  const right = x + width
+  return `M ${x},${bottom} L ${x},${y + r} Q ${x},${y} ${x + r},${y} L ${right - r},${y} Q ${right},${y} ${right},${y + r} L ${right},${bottom} Z`
+}
+
+function getAttendanceTrendTooltip(params: {
+  activePoint: { date: string; value: number } | null
+  activeIndex: number | null
+  left: number
+  top: number
+  width: number
+  height: number
+  slotWidth: number
+  plotHeight: number
+}) {
+  const { activePoint, activeIndex, left, top, width, height, slotWidth, plotHeight } = params
+  if (!activePoint || activeIndex === null) return null
+  const slotCenterX = left + slotWidth * (activeIndex + 0.5)
+  const clamped = Math.max(0, Math.min(100, activePoint.value))
+  const barHeight = (clamped / 100) * plotHeight
+  const barY = top + plotHeight - barHeight
+  return {
+    point: activePoint,
+    leftPct: Math.min(84, Math.max(16, (slotCenterX / width) * 100)),
+    topPct: Math.max(6, Math.min(72, (barY / height) * 100)),
+    placeBelowTop: barY / height < 0.42,
+  }
+}
+
+function AttendanceTrend({ data, timeZone }: Readonly<{
   data: { date: string; value: number }[]
   timeZone?: string | null
-}) {
+}>) {
   const [period, setPeriod] = useState<'week' | 'month'>('week')
   const [today] = useState(() => schoolDateKey(timeZone))
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const year = Number(today.slice(0, 4))
-  const chartRef = useRef<SVGSVGElement>(null)
-  const [chartSize, setChartSize] = useState({ width: 0, height: 0 })
   const startDate = period === 'week'
     ? addCalendarDays(today, -6)
     : `${today.slice(0, 7)}-01`
   const visibleData = data.filter((point) => point.date >= startDate && point.date <= today)
-  const chartWidth = chartSize.width
-  const chartHeight = chartSize.height
-  const viewBoxWidth = Math.max(chartWidth, 1)
-  const viewBoxHeight = Math.max(chartHeight, 1)
+  const width = 800
+  const height = 240
   const left = 48
-  const right = 30
-  const top = 20
-  const bottom = 40
-  const plotWidth = chartWidth - left - right
-  const plotHeight = chartHeight - top - bottom
-  const points = visibleData.map((point, index) => ({
-    ...point,
-    x: visibleData.length === 1 ? left + plotWidth / 2 : left + (index * plotWidth) / (visibleData.length - 1),
-    y: top + ((100 - point.value) / 100) * plotHeight,
-  }))
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ')
-  const periodLabel = period === 'week'
-    ? 'Last 7 days'
-    : `${new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' }).format(new Date(`${today.slice(0, 7)}-01T00:00:00Z`))} ${year}`
-
-  useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-
-    const observer = new ResizeObserver(([entry]) => {
-      const width = Math.round(entry.contentRect.width)
-      const height = Math.round(entry.contentRect.height)
-      if (width > 0 && height > 0) {
-        setChartSize((current) => current.width === width && current.height === height
-          ? current
-          : { width, height })
-      }
-    })
-    observer.observe(chart)
-    return () => observer.disconnect()
-  }, [])
+  const right = 20
+  const top = 16
+  const bottom = 30
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const slotWidth = plotWidth / Math.max(visibleData.length, 1)
+  const barWidth = Math.min(44, Math.max(10, slotWidth * 0.56))
+  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' }).format(
+    new Date(`${today.slice(0, 7)}-01T00:00:00Z`),
+  )
+  const periodLabel = period === 'week' ? 'Last 7 days' : `${monthLabel} ${year}`
+  const activePoint = activeIndex === null ? null : visibleData[activeIndex] ?? null
+  const tooltip = getAttendanceTrendTooltip({
+    activePoint,
+    activeIndex,
+    left,
+    top,
+    width,
+    height,
+    slotWidth,
+    plotHeight,
+  })
 
   return (
     <div className="student-trend-chart">
       <div className="student-trend-controls">
         <span>{periodLabel}</span>
-        <div className="student-trend-filters" role="group" aria-label="Attendance graph date range">
-          <button type="button" className={period === 'week' ? 'active' : ''} aria-pressed={period === 'week'} onClick={() => setPeriod('week')}>Weekly</button>
-          <button type="button" className={period === 'month' ? 'active' : ''} aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>Monthly</button>
-        </div>
+        <fieldset className="student-trend-filters" aria-label="Attendance graph date range" style={{ border: 0, padding: 0, margin: 0 }}>
+          <button type="button" className={period === 'week' ? 'active' : ''} aria-pressed={period === 'week'} onClick={() => { setPeriod('week'); setActiveIndex(null) }}>Weekly</button>
+          <button type="button" className={period === 'month' ? 'active' : ''} aria-pressed={period === 'month'} onClick={() => { setPeriod('month'); setActiveIndex(null) }}>Monthly</button>
+        </fieldset>
       </div>
       {visibleData.length ? (
-        <svg ref={chartRef} viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`} role="img" aria-label={`Student attendance trend for ${periodLabel}`}>
-          {[0, 50, 100].map((tick) => {
-            const y = top + ((100 - tick) / 100) * plotHeight
-            return (
-              <g key={tick}>
-                <line x1={left} y1={y} x2={chartWidth - right} y2={y} />
-                <text className="student-trend-y-label" x={left - 8} y={y + 3} textAnchor="end">{tick}%</text>
-              </g>
-            )
-          })}
-          {points.length > 1 ? <polyline points={line} /> : null}
-          {points.map((point, index) => (
-            <g key={point.date}>
-              <circle cx={point.x} cy={point.y} r="4" />
-              <title>{`${formatDate(point.date)}: ${point.value}% attendance`}</title>
-              {period === 'week' || index % 5 === 0 || index === points.length - 1 ? (
-                <text className="student-trend-date-label" x={point.x} y={chartHeight - 12} textAnchor="middle">
-                  {period === 'week' ? formatTrendDate(point.date) : point.date.slice(-2)}
-                </text>
-              ) : null}
-            </g>
-          ))}
-        </svg>
+        <div className="attendance-chart-wrap">
+          {tooltip ? (
+            <output
+              className="attendance-chart-tooltip"
+              style={{
+                left: `${tooltip.leftPct}%`,
+                top: `${tooltip.topPct}%`,
+                transform: tooltip.placeBelowTop ? 'translate(-50%, 8px)' : 'translate(-50%, calc(-100% - 8px))',
+              }}
+            >
+              <strong>{formatDate(tooltip.point.date)}</strong>
+              <span>{tooltip.point.value}% attendance</span>
+            </output>
+          ) : null}
+          <svg className="attendance-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label={`Student attendance trend for ${periodLabel}`}>
+            {[0, 25, 50, 75, 100].map((tick) => {
+              const y = top + ((100 - tick) / 100) * plotHeight
+              return (
+                <g key={tick}>
+                  <line className={tick === 0 ? 'attendance-chart-baseline' : 'attendance-chart-gridline'} x1={left} y1={y} x2={width - right} y2={y} />
+                  <text className="student-trend-y-label" x={left - 10} y={y + 4} textAnchor="end">{tick}%</text>
+                </g>
+              )
+            })}
+            {visibleData.map((point, index) => {
+              const slotCenterX = left + slotWidth * (index + 0.5)
+              const barX = slotCenterX - barWidth / 2
+              const clamped = Math.max(0, Math.min(100, point.value))
+              const barHeight = (clamped / 100) * plotHeight
+              const barY = top + plotHeight - barHeight
+              const barPath = buildRoundedColumnPath(barX, barY, barWidth, barHeight, 4)
+              const isActive = activeIndex === index
+              const showLabel = period === 'week' || visibleData.length <= 10 || index % 5 === 0 || index === visibleData.length - 1
+              return (
+                <g
+                  key={point.date}
+                  className={`attendance-chart-column-group${isActive ? ' is-active' : ''}`}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onMouseLeave={() => setActiveIndex(null)}
+                  onFocus={() => setActiveIndex(index)}
+                  onBlur={() => setActiveIndex(null)}
+                  onTouchStart={() => setActiveIndex(index)}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${formatDate(point.date)}: ${point.value}% attendance`}
+                >
+                  <rect className="attendance-chart-column-hit" x={barX - 4} y={top} width={barWidth + 8} height={plotHeight} />
+                  {barPath ? <path className="attendance-chart-column" d={barPath} style={{ fill: '#3B82F6' }} /> : null}
+                  {showLabel ? (
+                    <text className="attendance-chart-day student-trend-date-label" x={slotCenterX} y={height - 8} textAnchor="middle">
+                      {period === 'week' ? formatTrendDate(point.date) : point.date.slice(-2)}
+                    </text>
+                  ) : null}
+                </g>
+              )
+            })}
+          </svg>
+        </div>
       ) : (
         <p className="student-muted">No attendance records for {period === 'week' ? 'the last 7 days' : 'this month'}.</p>
       )}
@@ -1553,15 +1946,15 @@ function formatTrendDate(date: string): string {
   return `${monthNames[Number(date.slice(5, 7)) - 1]} ${Number(date.slice(8, 10))}`
 }
 
-function InfoField({ label, value }: { label: string; value: string }) {
+function InfoField({ label, value }: Readonly<{ label: string; value: string }>) {
   return <div><dt>{label}</dt><dd>{value || '—'}</dd></div>
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+function SummaryMetric({ label, value }: Readonly<{ label: string; value: string }>) {
   return <article className="student-metric"><span>{label}</span><strong>{value}</strong></article>
 }
 
-function StudentListState({ title, detail, isError = false, onRetry }: { title: string; detail?: string; isError?: boolean; onRetry?: () => void }) {
+function StudentListState({ title, detail, isError = false, onRetry }: Readonly<{ title: string; detail?: string; isError?: boolean; onRetry?: () => void }>) {
   return (
     <section className={`student-state-card ${isError ? 'error-card' : ''}`} role={isError ? 'alert' : 'status'}>
       <div className="empty-icon">{isError ? <CalendarDays size={21} /> : <Users size={21} />}</div>
@@ -1578,6 +1971,15 @@ function sanitizeCsvCell(value: string): string {
     cell = cell.slice(1).trim()
   }
   return cell
+}
+
+function isValidEmailAddress(email: string): boolean {
+  if (/\s/.test(email)) return false
+  const atIndex = email.indexOf('@')
+  if (atIndex <= 0 || atIndex !== email.lastIndexOf('@')) return false
+  const domain = email.slice(atIndex + 1)
+  const dotIndex = domain.lastIndexOf('.')
+  return dotIndex > 0 && dotIndex < domain.length - 1
 }
 
 function parseStudentCsv(content: string): NewStudent[] {
@@ -1623,7 +2025,7 @@ function parseStudentCsv(content: string): NewStudent[] {
     if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
       throw new Error(`Student row ${index + 2} has an invalid date of birth format (must be YYYY-MM-DD).`)
     }
-    if (guardianEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guardianEmail)) {
+    if (guardianEmail && !isValidEmailAddress(guardianEmail)) {
       throw new Error(`Student row ${index + 2} has an invalid guardian email address.`)
     }
 
@@ -1647,35 +2049,51 @@ function parseStudentCsv(content: string): NewStudent[] {
   return parsed
 }
 
-function parseCsvRows(content: string): string[][] {
-  const rows: string[][] = []
-  let row: string[] = []
-  let value = ''
-  let quoted = false
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index]
-    if (character === '"' && quoted && content[index + 1] === '"') {
-      value += '"'
-      index += 1
-    } else if (character === '"') {
-      quoted = !quoted
-    } else if (character === ',' && !quoted) {
-      row.push(value)
-      value = ''
-    } else if ((character === '\n' || character === '\r') && !quoted) {
-      if (character === '\r' && content[index + 1] === '\n') index += 1
-      row.push(value)
-      if (row.some((cell) => cell.trim())) rows.push(row)
-      row = []
-      value = ''
-    } else {
-      value += character
-    }
-  }
-  if (quoted) throw new Error('The CSV contains an unfinished quoted field.')
-  row.push(value)
+function pushNonEmptyCsvRow(rows: string[][], row: string[], lastValue: string) {
+  row.push(lastValue)
   if (row.some((cell) => cell.trim())) rows.push(row)
-  return rows
+}
+
+type CsvParseState = {
+  rows: string[][]
+  row: string[]
+  value: string
+  quoted: boolean
+}
+
+function advanceCsvIndex(state: CsvParseState, content: string, index: number): number {
+  const character = content[index]
+  if (character === '"') {
+    if (state.quoted && content[index + 1] === '"') {
+      state.value += '"'
+      return index + 1
+    }
+    state.quoted = !state.quoted
+    return index
+  }
+  if (!state.quoted && character === ',') {
+    state.row.push(state.value)
+    state.value = ''
+    return index
+  }
+  if (!state.quoted && (character === '\n' || character === '\r')) {
+    pushNonEmptyCsvRow(state.rows, state.row, state.value)
+    state.row = []
+    state.value = ''
+    return character === '\r' && content[index + 1] === '\n' ? index + 1 : index
+  }
+  state.value += character
+  return index
+}
+
+function parseCsvRows(content: string): string[][] {
+  const state: CsvParseState = { rows: [], row: [], value: '', quoted: false }
+  for (let index = 0; index < content.length; index += 1) {
+    index = advanceCsvIndex(state, content, index)
+  }
+  if (state.quoted) throw new Error('The CSV contains an unfinished quoted field.')
+  pushNonEmptyCsvRow(state.rows, state.row, state.value)
+  return state.rows
 }
 
 function formatDate(date: string): string {

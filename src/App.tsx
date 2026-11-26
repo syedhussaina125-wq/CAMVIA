@@ -1,6 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type SubmitEvent } from 'react'
 import {
-  Activity,
   AlertTriangle,
   ArrowRight,
   ChartNoAxesColumnIncreasing,
@@ -85,10 +84,13 @@ import {
   getAttendanceAttention,
   getAttendanceForScope,
   getAttendanceTrend,
+  getGroupedAttendanceChartData,
   getSessionForClass,
   type AttendanceClass,
+  type AttendanceOverviewTimeframe,
   type AttendanceState,
   type AttendanceSubmission,
+  type GroupedAttendanceSeries,
 } from './attendanceData'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { formatMMSS, getActiveLockout, getActiveProfile, normalizeRole, resetPasswordForEmail, signInWithEmail, signOut as signOutSupabase, updateUserPassword, type AppProfile } from './services/auth'
@@ -101,6 +103,7 @@ import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicatio
 import { fetchLiveAlerts } from './services/alerts'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 import { effectiveSchoolTimezone, formatInSchoolTimezone, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
+import { compareClassNames, compareNaturalText } from './utils/sortOrder'
 import {
   fetchAdministrationSnapshot,
   saveCampusSettings,
@@ -201,16 +204,6 @@ type TrendPoint = {
   value: number
   date?: string
   total?: number
-}
-
-type DashboardActivity = {
-  id: string
-  title: string
-  detail: string
-  occurredAt: string
-  path: string
-  icon: LucideIcon
-  tone: 'blue' | 'teal' | 'purple'
 }
 
 type DashboardConfig = {
@@ -3658,75 +3651,75 @@ function AppTopBar({
   return (
     <>
       <header className="topbar">
-      <div className="topbar-left">
+        <div className="topbar-left">
+          <button
+            type="button"
+            className="icon-button mobile-menu-btn"
+            aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen((value) => !value)}
+          >
+            <Menu size={20} />
+          </button>
+          <span className="topbar-page-label">{pageTitle}</span>
+          <span className="topbar-crumb-sep" aria-hidden="true">/</span>
+          <span className="topbar-school-name">{user.schoolName}</span>
+        </div>
+
+        <div className="topbar-actions">
+          <AppGlobalSearch
+            user={user}
+            students={students}
+            profiles={profiles}
+            profilesLoading={profilesLoading}
+            nav={nav}
+            attendanceNavigationGuard={attendanceNavigationGuard}
+            navigate={(dest) => void navigate(dest)}
+            searchMobileOpen={searchMobileOpen}
+            setSearchMobileOpen={setSearchMobileOpen}
+            searchContainerRef={searchContainerRef}
+          />
+
+          <AppNotificationsMenu
+            activeAlerts={activeAlerts}
+            notificationsOpen={notificationsOpen}
+            setNotificationsOpen={setNotificationsOpen}
+            notificationMenuRef={notificationMenuRef}
+            user={user}
+            navigate={(dest) => void navigate(dest)}
+          />
+
+          <AppProfileMenu
+            user={user}
+            initials={initials}
+            profileOpen={profileOpen}
+            setProfileOpen={setProfileOpen}
+            profileMenuRef={profileMenuRef}
+            attendanceNavigationGuard={attendanceNavigationGuard}
+            navigate={(dest) => void navigate(dest)}
+            onLogout={onLogout}
+            onRestartTour={onRestartTour}
+          />
+        </div>
+      </header>
+      <div className="mobile-campus-strip">
+        <div className="campus-selector-pill mobile-campus-pill" title="Selected campus">
+          <Building2 size={13} />
+          <span className="campus-pill-name">{user.campusName}</span>
+          <span className="campus-pill-sep" aria-hidden="true">/</span>
+          <span className="campus-pill-school">{user.schoolName}</span>
+          <ChevronDown size={13} className="selector-chevron" />
+        </div>
         <button
           type="button"
-          className="icon-button mobile-menu-btn"
-          aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
-          aria-expanded={sidebarOpen}
-          onClick={() => setSidebarOpen((value) => !value)}
+          className="icon-button mobile-campus-search"
+          aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
+          aria-expanded={searchMobileOpen}
+          onClick={() => setSearchMobileOpen((open) => !open)}
         >
-          <Menu size={20} />
+          {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
         </button>
-        <span className="topbar-page-label">{pageTitle}</span>
-        <span className="topbar-crumb-sep" aria-hidden="true">/</span>
-        <span className="topbar-school-name">{user.schoolName}</span>
       </div>
-
-      <div className="topbar-actions">
-        <AppGlobalSearch
-          user={user}
-          students={students}
-          profiles={profiles}
-          profilesLoading={profilesLoading}
-          nav={nav}
-          attendanceNavigationGuard={attendanceNavigationGuard}
-          navigate={(dest) => void navigate(dest)}
-          searchMobileOpen={searchMobileOpen}
-          setSearchMobileOpen={setSearchMobileOpen}
-          searchContainerRef={searchContainerRef}
-        />
-
-        <AppNotificationsMenu
-          activeAlerts={activeAlerts}
-          notificationsOpen={notificationsOpen}
-          setNotificationsOpen={setNotificationsOpen}
-          notificationMenuRef={notificationMenuRef}
-          user={user}
-          navigate={(dest) => void navigate(dest)}
-        />
-
-        <AppProfileMenu
-          user={user}
-          initials={initials}
-          profileOpen={profileOpen}
-          setProfileOpen={setProfileOpen}
-          profileMenuRef={profileMenuRef}
-          attendanceNavigationGuard={attendanceNavigationGuard}
-          navigate={(dest) => void navigate(dest)}
-          onLogout={onLogout}
-          onRestartTour={onRestartTour}
-        />
-      </div>
-    </header>
-    <div className="mobile-campus-strip">
-      <div className="campus-selector-pill mobile-campus-pill" title="Selected campus">
-        <Building2 size={13} />
-        <span className="campus-pill-name">{user.campusName}</span>
-        <span className="campus-pill-sep" aria-hidden="true">/</span>
-        <span className="campus-pill-school">{user.schoolName}</span>
-        <ChevronDown size={13} className="selector-chevron" />
-      </div>
-      <button
-        type="button"
-        className="icon-button mobile-campus-search"
-        aria-label={searchMobileOpen ? 'Close search' : 'Open search'}
-        aria-expanded={searchMobileOpen}
-        onClick={() => setSearchMobileOpen((open) => !open)}
-      >
-        {searchMobileOpen ? <X size={18} /> : <Search size={18} />}
-      </button>
-    </div>
     </>
   )
 }
@@ -3955,9 +3948,6 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
         config={config}
         students={students}
         attendance={attendance}
-        fees={fees}
-        communication={communication}
-        alerts={alerts}
         attendanceError={Boolean(attendanceError)}
         profiles={profiles}
         profilesLoading={profilesLoading}
@@ -4808,7 +4798,7 @@ function ApprovalsPage({
   )
 }
 
-                                        function DashboardLoadingState({ role }: Readonly<{ role: Role }>) {
+function DashboardLoadingState({ role }: Readonly<{ role: Role }>) {
   const isTeacher = role === 'teacher'
 
   return (
@@ -4869,9 +4859,6 @@ function SchoolDashboard({
   config,
   students,
   attendance,
-  fees,
-  communication,
-  alerts,
   attendanceError,
   profiles,
   profilesLoading,
@@ -4882,9 +4869,6 @@ function SchoolDashboard({
   config: DashboardConfig
   students: Student[]
   attendance: AttendanceState
-  fees: FeeState
-  communication: CommunicationState
-  alerts: AlertItem[]
   attendanceError: boolean
   profiles: SchoolUser[]
   profilesLoading: boolean
@@ -4893,9 +4877,6 @@ function SchoolDashboard({
 }>) {
   const navigate = useNavigate()
   const activeStudents = students.filter((student) => student.status === 'Active')
-  const activeStudentIds = new Set(activeStudents.map((student) => student.id))
-  const visibleAlerts = alerts.filter((alert) => !alert.studentId || activeStudentIds.has(alert.studentId))
-  const activities = getDashboardActivities(user, activeStudents, attendance, fees, communication, visibleAlerts)
   const attendanceStat = config.stats.find((stat) => stat.label === 'Attendance')
 
   return (
@@ -4914,10 +4895,12 @@ function SchoolDashboard({
         <DashboardSection
           title="Attendance Overview"
           icon={<CalendarDays size={18} className="panel-title-icon text-blue" />}
-          badgeText="Last 7 recorded days"
+          badgeText=""
         >
           <AttendanceOverview
-            data={config.trend}
+            attendance={attendance}
+            students={activeStudents}
+            schoolTimezone={user.schoolTimezone}
             currentRate={attendanceStat?.value ?? '—'}
             error={attendanceError}
           />
@@ -4934,13 +4917,6 @@ function SchoolDashboard({
       <div className="executive-operations-grid">
         <DashboardSection title="Needs Attention" badgeText={`${config.attention.length} items`}>
           <AttentionList items={config.attention} onNavigate={navigate} />
-        </DashboardSection>
-        <DashboardSection
-          title="Recent Activities"
-          icon={<Activity size={18} className="panel-title-icon text-blue" />}
-          badgeText={`${activities.length} recent`}
-        >
-          <RecentActivities activities={activities} navigate={navigate} timeZone={user.schoolTimezone} />
         </DashboardSection>
         <DashboardSection title="Quick Actions" badgeText="Shortcuts">
           <QuickActions actions={config.quickActions} navigate={navigate} />
@@ -5003,21 +4979,6 @@ function ExecutiveKpiGrid({
   )
 }
 
-function getAttendancePointAriaLabel(point: TrendPoint): string {
-  const label = point.date ?? point.day
-  const totalSuffix = point.total === undefined ? '' : `, ${point.total} students recorded`
-  return `${label}: ${point.value}% attendance${totalSuffix}`
-}
-
-function calculateAttendanceStats(data: TrendPoint[]) {
-  if (!data.length) return { avg: 0, highest: 0, lowest: 0 }
-  const values = data.map((d) => d.value)
-  const avg = Math.round(values.reduce((sum, v) => sum + v, 0) / values.length)
-  const highest = Math.max(...values)
-  const lowest = Math.min(...values)
-  return { avg, highest, lowest }
-}
-
 function AttendanceOverviewEmpty({ error }: Readonly<{ error: boolean }>) {
   const title = error ? 'Attendance data is unavailable' : 'No attendance data recorded yet.'
   const message = error ? 'Retry attendance to refresh this overview.' : 'Recorded attendance sessions will appear here.'
@@ -5030,75 +4991,165 @@ function AttendanceOverviewEmpty({ error }: Readonly<{ error: boolean }>) {
   )
 }
 
-function calculateAttendanceChartPoints(
-  data: TrendPoint[],
-  plotWidth: number,
-  plotHeight: number,
-  left: number,
-  top: number,
-  xStart: number,
-  xEnd: number,
-) {
-  return data.map((point, index) => ({
-    ...point,
-    x: data.length === 1
-      ? left + plotWidth / 2
-      : xStart + (index * (xEnd - xStart)) / (data.length - 1),
-    y: top + ((100 - point.value) / 100) * plotHeight,
-  }))
+const ATTENDANCE_SERIES_COLORS = [
+  'var(--camvia-blue)',
+  'var(--camvia-purple)',
+  'var(--camvia-teal)',
+  'var(--camvia-warning)',
+  'var(--camvia-indigo)',
+  'var(--camvia-cyan)',
+  'var(--camvia-success)',
+  'var(--camvia-blue-light)',
+  'var(--camvia-purple-light)',
+  'var(--camvia-blue-hover)',
+]
+
+const ATTENDANCE_TIMEFRAME_OPTIONS: Array<{ value: AttendanceOverviewTimeframe; label: string }> = [
+  { value: 'today', label: 'Today' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+]
+
+function buildTopRoundedBarPath(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius = 2,
+): string {
+  if (height <= 0) return ''
+  const r = Math.min(radius, width / 2, height)
+  const bottom = y + height
+  const right = x + width
+  return `M ${x},${bottom} L ${x},${y + r} Q ${x},${y} ${x + r},${y} L ${right - r},${y} Q ${right},${y} ${right},${y + r} L ${right},${bottom} Z`
 }
 
-function formatAttendanceSelectedDate(point: { date?: string; day?: string } | null | undefined): string | undefined {
-  if (!point) return undefined
-  if (point.date) {
-    return new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${point.date}T00:00:00Z`))
-  }
-  return point.day
+function getAttendanceBarGap(seriesCount: number): number {
+  if (seriesCount > 8) return 1.5
+  if (seriesCount > 1) return 2.5
+  return 0
+}
+
+function AttendanceChartLegend({
+  series,
+  highlightedSeries,
+  onToggleSeries,
+}: Readonly<{
+  series: GroupedAttendanceSeries[]
+  highlightedSeries: string | null
+  onToggleSeries: (key: string) => void
+}>) {
+  return (
+    <div className="attendance-chart-legend" aria-label="Class legend">
+      {series.map((item, index) => {
+        const color = ATTENDANCE_SERIES_COLORS[index % ATTENDANCE_SERIES_COLORS.length]
+        const isSelected = highlightedSeries === item.key
+        const isLow = item.averageRate !== null && item.averageRate < 75
+        return (
+          <button
+            key={item.key}
+            type="button"
+            className={`attendance-legend-item${isSelected ? ' is-selected' : ''}`}
+            aria-pressed={isSelected}
+            onClick={() => onToggleSeries(item.key)}
+          >
+            <span className="attendance-legend-swatch" style={{ backgroundColor: color }} aria-hidden="true" />
+            <span className="attendance-legend-label">{item.label}</span>
+            {isLow ? <span className="attendance-legend-low">Below 75%</span> : null}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function AttendanceOverview({
-  data,
+  attendance,
+  students,
+  schoolTimezone,
   currentRate,
   error,
 }: Readonly<{
-  data: TrendPoint[]
+  attendance: AttendanceState
+  students: Student[]
+  schoolTimezone?: string | null
   currentRate: string
   error: boolean
 }>) {
-  const [activePoint, setActivePoint] = useState<number | null>(null)
+  const [timeframe, setTimeframe] = useState<AttendanceOverviewTimeframe>('weekly')
+  const [activeBar, setActiveBar] = useState<{
+    bucketKey: string
+    seriesKey: string
+    leftPct: number
+    topPct: number
+    placeBelowTop: boolean
+  } | null>(null)
+  const [highlightedSeries, setHighlightedSeries] = useState<string | null>(null)
 
-  const stats = useMemo(() => calculateAttendanceStats(data), [data])
+  const chartData = useMemo(
+    () => (error ? null : getGroupedAttendanceChartData(attendance, students, timeframe, schoolTimezone)),
+    [attendance, students, timeframe, schoolTimezone, error],
+  )
 
-  if (error || !data.length) {
+  if (error || !chartData?.buckets.length || !chartData.series.length) {
     return <AttendanceOverviewEmpty error={error} />
   }
 
-  const width = 620
-  const height = 196
-  const left = 48
-  const right = 20
-  const top = 22
-  const bottom = 32
+  const width = 640
+  const height = 176
+  const left = 46
+  const right = 18
+  const top = 14
+  const bottom = 26
   const plotWidth = width - left - right
   const plotHeight = height - top - bottom
-  const xStart = left + 14
-  const xEnd = width - right - 14
-  const points = calculateAttendanceChartPoints(data, plotWidth, plotHeight, left, top, xStart, xEnd)
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ')
-  const area = `${xStart},${top + plotHeight} ${line} ${xEnd},${top + plotHeight}`
-  const selectedPoint = activePoint === null ? null : points[activePoint]
-  const selectedDate = formatAttendanceSelectedDate(selectedPoint)
+  const bucketCount = chartData.buckets.length
+  const seriesCount = chartData.series.length
+  const slotWidth = plotWidth / Math.max(bucketCount, 1)
+  const maxGroupWidth = slotWidth * 0.84
+  const barGap = getAttendanceBarGap(seriesCount)
+  const barWidth = Math.max(4, Math.min(20, (maxGroupWidth - barGap * (seriesCount - 1)) / seriesCount))
+  const totalGroupWidth = seriesCount * barWidth + barGap * (seriesCount - 1)
+
+  const activeBucket = activeBar
+    ? chartData.buckets.find((bucket) => bucket.key === activeBar.bucketKey) ?? null
+    : null
+  const activeSeries = activeBar
+    ? chartData.series.find((series) => series.key === activeBar.seriesKey) ?? null
+    : null
+  const activeCell = activeBucket && activeSeries ? activeBucket.values[activeSeries.key] : null
 
   return (
     <div className="attendance-overview">
+      <div className="attendance-timeframe-row">
+        <div className="attendance-timeframe-tabs" role="tablist" aria-label="Attendance timeframe">
+          {ATTENDANCE_TIMEFRAME_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="tab"
+              aria-selected={timeframe === option.value}
+              className={`attendance-timeframe-tab${timeframe === option.value ? ' is-active' : ''}`}
+              onClick={() => {
+                setTimeframe(option.value)
+                setActiveBar(null)
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="attendance-chart-summary">
         <div className="attendance-summary-primary">
           <span className="attendance-summary-label">Today&apos;s attendance</span>
           <div className="attendance-summary-rate-row">
             <strong className="attendance-summary-rate">{currentRate}</strong>
-            {stats.avg > 0 ? (
+            {chartData.averageRate > 0 ? (
               <span className="attendance-avg-badge">
-                7-day avg: {stats.avg}%
+                {chartData.avgLabel}: {chartData.averageRate}%
               </span>
             ) : null}
           </div>
@@ -5106,82 +5157,118 @@ function AttendanceOverview({
         <div className="attendance-summary-meta">
           <div className="attendance-meta-item">
             <span className="attendance-meta-label">Highest</span>
-            <strong className="attendance-meta-val">{stats.highest}%</strong>
+            <strong className="attendance-meta-val">{chartData.highestRate}%</strong>
           </div>
           <div className="attendance-meta-item">
             <span className="attendance-meta-label">Lowest</span>
-            <strong className="attendance-meta-val">{stats.lowest}%</strong>
+            <strong className="attendance-meta-val">{chartData.lowestRate}%</strong>
           </div>
         </div>
       </div>
 
       <div className="attendance-chart-wrap">
-        {selectedPoint ? (
-          <output className="attendance-chart-tooltip">
-            <strong>{selectedDate}</strong>
-            <span>{selectedPoint.value}% attendance</span>
-            {selectedPoint.total !== undefined ? <span>{selectedPoint.total} recorded students</span> : null}
+        {activeBucket && activeSeries && activeCell && activeBar ? (
+          <output
+            className="attendance-chart-tooltip"
+            style={{
+              left: `${activeBar.leftPct}%`,
+              top: `${activeBar.topPct}%`,
+              transform: activeBar.placeBelowTop ? 'translate(-50%, 8px)' : 'translate(-50%, calc(-100% - 8px))',
+            }}
+          >
+            <strong>{activeBucket.fullLabel} · {activeSeries.label}</strong>
+            <span>{activeCell.rate === null ? 'No records' : `${activeCell.rate}% attendance`}</span>
+            {activeCell.total > 0 ? <span>{activeCell.present + activeCell.late}/{activeCell.total} present</span> : null}
           </output>
         ) : null}
         <svg
           className="attendance-chart"
           viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
+          preserveAspectRatio="xMidYMid meet"
           role="img"
-          aria-label="Attendance percentage over the last seven recorded days"
+          aria-label={`Attendance percentage by class for ${chartData.periodLabel}`}
         >
-          <defs>
-            <linearGradient id="attendanceAreaGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.18" />
-              <stop offset="85%" stopColor="#3B82F6" stopOpacity="0.02" />
-              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-
-          {[0, 50, 100].map((tick) => {
+          {[0, 25, 50, 75, 100].map((tick) => {
             const y = top + ((100 - tick) / 100) * plotHeight
             return (
               <g key={tick}>
                 <line
+                  className={tick === 0 ? 'attendance-chart-baseline' : 'attendance-chart-gridline'}
                   x1={left}
                   y1={y}
                   x2={width - right}
                   y2={y}
-                  strokeDasharray={tick === 0 ? undefined : '4 4'}
                 />
                 <text x={left - 10} y={y + 4} textAnchor="end">{tick}%</text>
               </g>
             )
           })}
-          {points.length > 1 ? (
-            <polygon
-              className="attendance-chart-area"
-              points={area}
-              fill="url(#attendanceAreaGrad)"
-            />
-          ) : null}
-          {points.length > 1 ? <polyline className="attendance-chart-line" points={line} /> : null}
-          {points.map((point, index) => (
-            <g
-              key={`${point.day}-${point.date ?? point.x}`}
-              className="attendance-chart-point-group"
-              onMouseEnter={() => setActivePoint(index)}
-              onMouseLeave={() => setActivePoint(null)}
-              onFocus={() => setActivePoint(index)}
-              onBlur={() => setActivePoint(null)}
-              onTouchStart={() => setActivePoint(index)}
-              tabIndex={0}
-              role="button"
-              aria-label={getAttendancePointAriaLabel(point)}
-            >
-              <circle className="attendance-chart-point-hit-area" cx={point.x} cy={point.y} r="14" />
-              <circle className="attendance-chart-point" cx={point.x} cy={point.y} r={activePoint === index ? '5.5' : '4'} />
-              <text className="attendance-chart-day" x={point.x} y={height - 8} textAnchor="middle">{point.day}</text>
-            </g>
-          ))}
+          {chartData.buckets.map((bucket, bucketIndex) => {
+            const slotCenterX = left + slotWidth * (bucketIndex + 0.5)
+            const groupStartX = slotCenterX - totalGroupWidth / 2
+            return (
+              <g key={bucket.key}>
+                {chartData.series.map((series, seriesIndex) => {
+                  const cell = bucket.values[series.key]
+                  const rate = cell?.rate ?? 0
+                  const clamped = Math.max(0, Math.min(100, rate))
+                  const barHeight = cell?.rate === null ? 0 : (clamped / 100) * plotHeight
+                  const barX = groupStartX + seriesIndex * (barWidth + barGap)
+                  const barY = top + plotHeight - barHeight
+                  const barPath = buildTopRoundedBarPath(barX, barY, barWidth, barHeight, 2)
+                  const color = ATTENDANCE_SERIES_COLORS[seriesIndex % ATTENDANCE_SERIES_COLORS.length]
+                  const isActive = activeBar?.bucketKey === bucket.key && activeBar?.seriesKey === series.key
+                  const isDimmed = highlightedSeries !== null && highlightedSeries !== series.key
+                  const rateLabel = cell?.rate === null ? 'No records' : `${cell?.rate}% attendance`
+                  const nextActiveBar = {
+                    bucketKey: bucket.key,
+                    seriesKey: series.key,
+                    leftPct: Math.min(84, Math.max(16, ((barX + barWidth / 2) / width) * 100)),
+                    topPct: Math.max(6, Math.min(72, (barY / height) * 100)),
+                    placeBelowTop: barY / height < 0.42,
+                  }
+                  return (
+                    <g
+                      key={`${bucket.key}-${series.key}`}
+                      className={`attendance-chart-column-group${isActive ? ' is-active' : ''}${isDimmed ? ' is-dimmed' : ''}`}
+                      onMouseEnter={() => setActiveBar(nextActiveBar)}
+                      onMouseLeave={() => setActiveBar(null)}
+                      onFocus={() => setActiveBar(nextActiveBar)}
+                      onBlur={() => setActiveBar(null)}
+                      onTouchStart={() => setActiveBar(nextActiveBar)}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`${bucket.fullLabel}, ${series.label}: ${rateLabel}`}
+                    >
+                      <rect
+                        className="attendance-chart-column-hit"
+                        x={barX - 1.5}
+                        y={top}
+                        width={barWidth + 3}
+                        height={plotHeight}
+                      />
+                      {barPath ? <path className="attendance-chart-column" d={barPath} style={{ fill: color }} /> : null}
+                    </g>
+                  )
+                })}
+                <text className="attendance-chart-day" x={slotCenterX} y={height - 8} textAnchor="middle">{bucket.label}</text>
+              </g>
+            )
+          })}
         </svg>
       </div>
-      {points.length === 1 ? <p className="attendance-chart-note">Only 1 recorded day available.</p> : null}
+
+      <AttendanceChartLegend
+        series={chartData.series}
+        highlightedSeries={highlightedSeries}
+        onToggleSeries={(key) => setHighlightedSeries((current) => (current === key ? null : key))}
+      />
+
+      {chartData.lowSeriesLabels.length > 0 ? (
+        <p className="attendance-chart-note">
+          Below 75% standard: {chartData.lowSeriesLabels.join(', ')}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -5202,15 +5289,15 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
       const className = formatClassName(student.className)
       counts.set(className, (counts.get(className) ?? 0) + 1)
     }
-    const sorted = [...counts.entries()]
-      .sort(([leftName, leftCount], [rightName, rightCount]) => rightCount - leftCount || leftName.localeCompare(rightName))
-    const visible = sorted.slice(0, 4).map(([label, count]) => ({ label, count }))
-    const remaining = sorted.slice(4).reduce((total, [, count]) => total + count, 0)
-    if (remaining) visible.push({ label: 'Other classes', count: remaining })
+    const sortedByClass = [...counts.entries()]
+      .sort(([leftName], [rightName]) => compareClassNames(leftName, rightName))
+    const sortedByCount = [...counts.entries()]
+      .sort(([leftName, leftCount], [rightName, rightCount]) => rightCount - leftCount || compareClassNames(leftName, rightName))
+    const visible = sortedByClass.map(([label, count]) => ({ label, count }))
 
     const totalCls = counts.size
     const avg = totalCls > 0 ? Math.round(students.length / totalCls) : 0
-    const top = sorted.length > 0 ? sorted[0][0] : '—'
+    const top = sortedByCount.length > 0 ? sortedByCount[0][0] : '—'
 
     return {
       groups: visible,
@@ -5230,7 +5317,7 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
     )
   }
 
-  const colors = ['#3B82F6', '#14B8A6', '#A78BFA', '#1E2A78', '#94A3B8']
+  const colors = ATTENDANCE_SERIES_COLORS
   const radius = 48
   const circumference = 2 * Math.PI * radius
   const segments = groups.map((group, index) => ({
@@ -5265,7 +5352,7 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
             <span>students</span>
           </div>
         </div>
-        <ul className="distribution-legend">
+        <ul className={groups.length > 5 ? 'distribution-legend is-multi-col' : 'distribution-legend'}>
           {groups.map((group, index) => {
             const pct = Math.round((group.count / students.length) * 100)
             const color = colors[index % colors.length]
@@ -5312,183 +5399,6 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
       </div>
     </div>
   )
-}
-
-function getAttendanceActivities(
-  attendance: AttendanceState,
-  classesById: Map<string, AttendanceClass>,
-): DashboardActivity[] {
-  const activities: DashboardActivity[] = []
-  for (const session of attendance.sessions) {
-    const attendanceClass = classesById.get(session.classId)
-    if (!attendanceClass || session.status !== 'COMPLETED' || session.studentCount === 0) continue
-    activities.push({
-      id: `attendance-${session.id}`,
-      title: 'Attendance recorded',
-      detail: `${attendanceClass.className} · ${attendanceClass.section}`,
-      occurredAt: session.completedAt ?? `${session.date}T12:00:00`,
-      path: `/attendance/take/${encodeURIComponent(session.classId)}?date=${session.date}`,
-      icon: ClipboardCheck,
-      tone: 'teal',
-    })
-  }
-  return activities
-}
-
-function getFeeActivities(
-  fees: FeeState,
-  students: Student[],
-  user: SessionUser,
-): DashboardActivity[] {
-  const activities: DashboardActivity[] = []
-  const accessibleInvoices = getFeeInvoices(fees, students, user)
-  const invoiceById = new Map(accessibleInvoices.map((invoice) => [invoice.id, invoice]))
-  for (const payment of fees.payments) {
-    const invoice = invoiceById.get(payment.invoiceId)
-    if (!invoice || payment.voidedAt) continue
-    activities.push({
-      id: `payment-${payment.id}`,
-      title: 'Fee payment recorded',
-      detail: `${invoice.student.firstName} ${invoice.student.lastName} · ${formatFeeCurrency(payment.amount)}`,
-      occurredAt: payment.date,
-      path: user.role === 'principal'
-        ? `/students/${encodeURIComponent(invoice.studentId)}`
-        : `/fees/${encodeURIComponent(invoice.studentId)}`,
-      icon: Wallet,
-      tone: 'purple',
-    })
-  }
-  return activities
-}
-
-function getCommunicationActivities(
-  communication: CommunicationState,
-  students: Student[],
-  user: SessionUser,
-): DashboardActivity[] {
-  const activities: DashboardActivity[] = []
-  for (const message of getAccessibleCommunication(communication, students, user)) {
-    const isSent = message.status === 'SENT'
-    const isApproved = message.status === 'APPROVED'
-    let label = 'Communication draft created'
-    if (isSent) {
-      label = 'Parent communication sent'
-    } else if (isApproved) {
-      label = 'Communication approved'
-    } else if (message.status === 'AWAITING_APPROVAL') {
-      label = 'Communication submitted for review'
-    } else if (message.status === 'REJECTED') {
-      label = 'Communication returned for revision'
-    }
-
-    let occurredAt = message.createdAt
-    if (isSent) {
-      occurredAt = message.sentAt ?? message.updatedAt
-    } else if (isApproved) {
-      occurredAt = message.approvedAt ?? message.updatedAt
-    }
-
-    activities.push({
-      id: `communication-${message.id}`,
-      title: label,
-      detail: `${message.student.firstName} ${message.student.lastName} · ${message.type}`,
-      occurredAt,
-      path: '/communication',
-      icon: MessageSquareText,
-      tone: 'blue',
-    })
-  }
-  return activities
-}
-
-function getDashboardActivities(
-  user: SessionUser,
-  students: Student[],
-  attendance: AttendanceState,
-  fees: FeeState,
-  communication: CommunicationState,
-  alerts: AlertItem[],
-): DashboardActivity[] {
-  const classesById = new Map(getAttendanceClasses(students).map((attendanceClass) => [attendanceClass.id, attendanceClass]))
-  const activities: DashboardActivity[] = [
-    ...getAttendanceActivities(attendance, classesById),
-    ...getFeeActivities(fees, students, user),
-    ...getCommunicationActivities(communication, students, user),
-  ]
-
-  for (const alert of alerts) {
-    if (alert.status === 'RESOLVED') { continue }
-    const item = alertToAttention(alert, user)
-    activities.push({
-      id: `alert-${alert.id}`,
-      title: alert.title,
-      detail: alert.detail,
-      occurredAt: alert.createdAt,
-      path: item.path ?? '/alerts',
-      icon: BellRing,
-      tone: 'blue',
-    })
-  }
-
-  return activities
-    .filter((activity) => Number.isFinite(Date.parse(activity.occurredAt)))
-    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
-    .slice(0, 5)
-}
-
-function RecentActivities({
-  activities,
-  navigate,
-  timeZone,
-}: Readonly<{
-  activities: DashboardActivity[]
-  navigate: (path: string) => void
-  timeZone?: string | null
-}>) {
-  const [now] = useState(() => Date.now())
-  if (!activities.length) {
-    return (
-      <div className="executive-activity-empty">
-        <span className="executive-empty-icon"><CalendarDays size={18} /></span>
-        <strong>No recent activity</strong>
-        <p>Completed attendance, payments and communication updates will appear here.</p>
-      </div>
-    )
-  }
-
-  return (
-    <ol className="executive-activity-list">
-      {activities.map((activity) => {
-        const Icon = activity.icon
-        return (
-          <li key={activity.id}>
-            <span className={`activity-icon activity-${activity.tone}`}><Icon size={15} /></span>
-            <button type="button" className="activity-copy" onClick={() => navigate(activity.path)}>
-              <strong>{activity.title}</strong>
-              <span>{activity.detail}</span>
-              <time dateTime={activity.occurredAt}>{formatRelativeActivityTime(activity.occurredAt, now, timeZone)}</time>
-            </button>
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
-
-function formatRelativeActivityTime(value: string, now: number, timeZone?: string | null): string {
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) return 'Time unavailable'
-  const elapsedMinutes = Math.round((timestamp - now) / 60_000)
-  if (elapsedMinutes > 1) {
-    return formatInSchoolTimezone(new Date(timestamp), timeZone, 'en-PK', { day: 'numeric', month: 'short' })
-  }
-  const minutes = Math.abs(elapsedMinutes)
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return days < 7 ? `${days}d ago` : formatInSchoolTimezone(new Date(timestamp), timeZone, 'en-PK', { day: 'numeric', month: 'short' })
 }
 
 function FinanceDashboard({ user, config }: Readonly<{ user: SessionUser; config: DashboardConfig }>) {
@@ -5553,7 +5463,7 @@ function renderTeacherClasses(
                 {isRecorded ? 'Recorded' : 'Pending'}
               </span>
             </div>
-            <h4 className="teacher-class-label">Grade {cls.className} · Section {cls.section}</h4>
+            <h4 className="teacher-class-label">Class {cls.className}, Section {cls.section}</h4>
           </div>
 
           <div className="teacher-class-meta">
@@ -5610,9 +5520,9 @@ function TeacherDashboard({
 
   const sortedClasses = useMemo(() => {
     return [...getAttendanceClasses(students)].sort((a, b) => {
-      const classCmp = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' })
+      const classCmp = compareClassNames(a.className, b.className)
       if (classCmp !== 0) return classCmp
-      return a.section.localeCompare(b.section)
+      return compareNaturalText(a.section, b.section)
     })
   }, [students])
 
@@ -5842,6 +5752,18 @@ function DashboardKpiGrid({ stats }: Readonly<{ stats: StatItem[] }>) {
         </div>
         <div className="stats-kpi-row stats-kpi-row-3">
           {stats.slice(3).map((stat) => (
+            <StatCard key={stat.label} stat={stat} />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  if (stats.length === 5) {
+    return (
+      <div className="stats-kpi-container">
+        <div className="stats-kpi-row stats-kpi-row-5">
+          {stats.map((stat) => (
             <StatCard key={stat.label} stat={stat} />
           ))}
         </div>
@@ -6088,6 +6010,8 @@ function SimpleTrendChart({
   data: TrendPoint[]
   emptyMessage?: string
 }>) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+
   if (!data.length) {
     return (
       <div className="chart-empty-state">
@@ -6096,63 +6020,94 @@ function SimpleTrendChart({
       </div>
     )
   }
+
   const width = 800
-  const height = 220
-  const padding = 28
-  const maxValue = Math.max(...data.map((point) => point.value))
-  const minValue = Math.min(...data.map((point) => point.value))
-
-  const coords = data.map((point, index) => {
-    const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1)
-    const y = height - padding - ((point.value - minValue) / Math.max(maxValue - minValue, 1)) * (height - padding * 2)
-    return { x, y }
-  })
-
-  const points = coords.map(({ x, y }) => `${x},${y}`).join(' ')
-  const pathCommands = coords.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ')
-  const lastX = coords.at(-1)?.x ?? width - padding
-  const firstX = coords[0]?.x ?? padding
-  const groundY = height - padding
-  const areaPath = `${pathCommands} L ${lastX} ${groundY} L ${firstX} ${groundY} Z`
+  const height = 240
+  const left = 52
+  const right = 18
+  const top = 16
+  const bottom = 30
+  const plotWidth = width - left - right
+  const plotHeight = height - top - bottom
+  const maxValue = Math.max(...data.map((point) => point.value), 1)
+  const slotWidth = plotWidth / Math.max(data.length, 1)
+  const barWidth = Math.min(44, Math.max(12, slotWidth * 0.56))
+  const activePoint = activeIndex !== null ? data[activeIndex] ?? null : null
+  const activeSlotCenterX = activeIndex !== null ? left + slotWidth * (activeIndex + 0.5) : 0
+  const activeBarHeight = activePoint ? (Math.max(0, activePoint.value) / maxValue) * plotHeight : 0
+  const activeBarY = top + plotHeight - activeBarHeight
+  const activeLeftPct = Math.min(84, Math.max(16, (activeSlotCenterX / width) * 100))
+  const activeTopPct = Math.max(6, Math.min(72, (activeBarY / height) * 100))
+  const placeBelowTop = activeBarY / height < 0.42
 
   return (
-    <div className="chart-shell">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend chart">
-        <defs>
-          <linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#2F6BFF" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#2F6BFF" stopOpacity="0.01" />
-          </linearGradient>
-        </defs>
-        {[0, 1, 2, 3].map((line) => {
-          const y = padding + (line * (height - padding * 2)) / 3
+    <div className="attendance-chart-wrap">
+      {activePoint ? (
+        <output
+          className="attendance-chart-tooltip"
+          style={{
+            left: `${activeLeftPct}%`,
+            top: `${activeTopPct}%`,
+            transform: placeBelowTop ? 'translate(-50%, 8px)' : 'translate(-50%, calc(-100% - 8px))',
+          }}
+        >
+          <strong>{activePoint.day}</strong>
+          <span>{activePoint.value.toLocaleString()}</span>
+        </output>
+      ) : null}
+      <svg
+        className="attendance-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="Trend column chart"
+      >
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const y = top + (1 - ratio) * plotHeight
+          const tickVal = Math.round(maxValue * ratio)
           return (
-            <line
-              key={line}
-              x1={padding}
-              x2={width - padding}
-              y1={y}
-              y2={y}
-              className="chart-gridline"
-            />
+            <g key={ratio}>
+              <line
+                className={ratio === 0 ? 'attendance-chart-baseline' : 'attendance-chart-gridline'}
+                x1={left}
+                y1={y}
+                x2={width - right}
+                y2={y}
+              />
+              <text x={left - 10} y={y + 4} textAnchor="end">{tickVal.toLocaleString()}</text>
+            </g>
           )
         })}
-        <path d={areaPath} fill="url(#trend-fill)" />
-        <polyline
-          points={points}
-          fill="none"
-          stroke="#2F6BFF"
-          strokeWidth="3.5"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-        {coords.map((point, index) => {
-          const day = data[index].day
+        {data.map((point, index) => {
+          const slotCenterX = left + slotWidth * (index + 0.5)
+          const barX = slotCenterX - barWidth / 2
+          const barHeight = Math.max(0, point.value / maxValue) * plotHeight
+          const barY = top + plotHeight - barHeight
+          const barPath = buildTopRoundedBarPath(barX, barY, barWidth, barHeight, 4)
+          const isActive = activeIndex === index
           return (
-            <g key={day}>
-              <circle cx={point.x} cy={point.y} r="6" fill="#FFFFFF" stroke="#2F6BFF" strokeWidth="2.5" />
-              <text x={point.x} y={height - 6} textAnchor="middle" className="chart-label">
-                {day}
+            <g
+              key={point.day}
+              className={`attendance-chart-column-group${isActive ? ' is-active' : ''}`}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseLeave={() => setActiveIndex(null)}
+              onFocus={() => setActiveIndex(index)}
+              onBlur={() => setActiveIndex(null)}
+              onTouchStart={() => setActiveIndex(index)}
+              tabIndex={0}
+              role="button"
+              aria-label={`${point.day}: ${point.value.toLocaleString()}`}
+            >
+              <rect
+                className="attendance-chart-column-hit"
+                x={barX - 4}
+                y={top}
+                width={barWidth + 8}
+                height={plotHeight}
+              />
+              {barPath ? <path className="attendance-chart-column" d={barPath} style={{ fill: '#3B82F6' }} /> : null}
+              <text className="attendance-chart-day" x={slotCenterX} y={height - 8} textAnchor="middle">
+                {point.day}
               </text>
             </g>
           )
@@ -6200,6 +6155,14 @@ function MyClassesPage({
         student.section === assignment.section,
       ),
     }))
+    .sort((a, b) => {
+      const classDiff = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' })
+      return classDiff !== 0
+        ? classDiff
+        : a.section.localeCompare(b.section, undefined, { numeric: true, sensitivity: 'base' })
+    })
+
+  const today = schoolDateKey(user.schoolTimezone)
 
   return (
     <section className="dashboard-page">
@@ -6208,40 +6171,73 @@ function MyClassesPage({
           <h1>My Classes</h1>
           <p className="student-muted">Authorized class schedules and assigned teaching sections.</p>
         </div>
+        {classes.length ? (
+          <span className="badge-soft">{classes.length} {classes.length === 1 ? 'class' : 'classes'}</span>
+        ) : null}
       </div>
 
       {attendanceError ? <div className="attendance-empty-notice" role="alert">{attendanceError} <button type="button" className="student-link" onClick={onRetry}>Try again</button></div> : null}
-      <div className="dashboard-grid">
-        {classes.length ? classes.map((attendanceClass) => {
-          const hasSession = Boolean(getSessionForClass(attendance, schoolDateKey(user.schoolTimezone), attendanceClass))
-          const statusText = getMyClassesAttendanceStatus(attendanceLoading, attendanceError, hasSession)
+      {classes.length ? (
+        <div className="teacher-classes-grid">
+          {classes.map((attendanceClass) => {
+            const hasSession = Boolean(getSessionForClass(attendance, today, attendanceClass))
+            const statusText = getMyClassesAttendanceStatus(attendanceLoading, attendanceError, hasSession)
 
-          return (
-            <div key={attendanceClass.id} className="panel-card">
-              <h3>{attendanceClass.className}</h3>
-              <p className="student-muted">Section {attendanceClass.section}</p>
-              <ul className="list-stack">
-                <li><span>Students</span><strong>{attendanceClass.students.length}</strong></li>
-                <li><span>Attendance status</span><strong>{statusText}</strong></li>
-              </ul>
-              <button
-                type="button"
-                className="primary-button small-button"
-                disabled={attendanceLoading || Boolean(attendanceError)}
-                onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${schoolDateKey(user.schoolTimezone)}`)}
-              >
-                Open Attendance
-              </button>
-            </div>
-          )
-        }) : (
-          <div className="empty-state-card">
-            <div className="empty-icon"><BookOpenText size={22} /></div>
-            <h1>No assigned classes</h1>
-            <p>Class assignments will appear here once your schedule is active.</p>
-          </div>
-        )}
-      </div>
+            return (
+              <article key={attendanceClass.id} className={`teacher-class-card ${hasSession ? 'is-recorded' : 'is-pending'}`}>
+                <div className="teacher-class-card-top">
+                  <div className="teacher-class-badge-row">
+                    <span className="teacher-class-code">{attendanceClass.className}-{attendanceClass.section}</span>
+                    <span className={`status-pill ${hasSession ? 'success' : 'pending'}`}>
+                      {hasSession ? <CheckCircle2 size={12} /> : null}
+                      {statusText}
+                    </span>
+                  </div>
+                  <h4 className="teacher-class-label">Class {attendanceClass.className}, Section {attendanceClass.section}</h4>
+                </div>
+
+                <div className="teacher-class-meta">
+                  <span className="teacher-class-meta-item">
+                    <Users size={13} />
+                    <span>{attendanceClass.students.length} students</span>
+                  </span>
+                  <span className="teacher-class-meta-item">
+                    <CalendarDays size={13} />
+                    <span>Daily session</span>
+                  </span>
+                </div>
+
+                <div className="teacher-class-action">
+                  <button
+                    type="button"
+                    className={hasSession ? 'secondary-button small-button' : 'primary-button small-button'}
+                    disabled={attendanceLoading || Boolean(attendanceError)}
+                    onClick={() => navigate(`/attendance/take/${encodeURIComponent(attendanceClass.id)}?date=${today}`)}
+                  >
+                    {hasSession ? (
+                      <>
+                        <span>Review Attendance</span>
+                        <ArrowRight size={13} />
+                      </>
+                    ) : (
+                      <>
+                        <ClipboardCheck size={13} />
+                        <span>Open Attendance</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="empty-state-card">
+          <div className="empty-icon"><BookOpenText size={22} /></div>
+          <h1>No assigned classes</h1>
+          <p>Class assignments will appear here once your schedule is active.</p>
+        </div>
+      )}
     </section>
   )
 }
