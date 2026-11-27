@@ -187,7 +187,6 @@ function classifyDomain(prompt: string): Domain | null {
   if (/\b(overview|dashboard|overall)\b/.test(text) || (/\b(attend(?:ance|ence))\b/.test(text) && /\b(fee|fees|collection|collections)\b/.test(text))) {
     return 'dashboard'
   }
-  const text = prompt.toLowerCase()
   if (/\b(communication|communications|approval|approvals|message|messages|drafts?|reminders?)\b/.test(text)) return 'communication'
   if (/\b(student|students|pupil|pupils)\b/.test(text) && /\badmission\s+(?:number|no\.?|id)\b/.test(text)) return 'students'
   if (/\b(admission|admissions|applicant|applicants|application|applications)\b/.test(text)) return 'admissions'
