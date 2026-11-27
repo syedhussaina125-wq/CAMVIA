@@ -19,8 +19,8 @@ import {
   type SchoolRegistrationLink,
 } from './services/admissions'
 import { normalizeWhatsAppPhone } from './utils/whatsapp'
-import { fetchSchoolStudentsForDuplicateCheck, type StudentCampusOption } from './services/students'
-import { checkStudentDuplicate, type StudentCandidate } from './utils/studentDuplicates'
+import { checkStudentDuplicateCandidate, type StudentCampusOption } from './services/students'
+import type { StudentCandidate } from './utils/studentDuplicates'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 
 const emptyDetails: PublicRegistrationDetails = {
@@ -1081,15 +1081,14 @@ export function PendingAdmissionsPanel({
       return
     }
 
-    let existingCandidates: StudentCandidate[]
+    let duplicate: Awaited<ReturnType<typeof checkStudentDuplicateCandidate>>
     try {
-      existingCandidates = await fetchSchoolStudentsForDuplicateCheck()
+      duplicate = await checkStudentDuplicateCandidate(buildStudentCandidate(selected, section, rollNumber))
     } catch (error) {
       setActionError(formatRpcErrorMessage(error))
       return
     }
 
-    const duplicate = checkStudentDuplicate(buildStudentCandidate(selected, section, rollNumber), existingCandidates)
     if (duplicate.isDuplicate && duplicate.message) {
       setActionError(duplicate.message)
       return

@@ -1,9 +1,25 @@
-import { ArrowRight, Bot, Sparkles } from 'lucide-react'
+import { ArrowRight, Bot, Sparkles, Copy, Check, RotateCcw } from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { BuddyStructuredResponse } from './components/ai-buddy/BuddyStructuredResponse'
 import { useAskCamviaChat } from './components/ai-buddy/useAskCamviaChat'
 import { getAskCamviaSuggestions } from './components/ai-buddy/promptSuggestions'
 
 export function AskEduPage() {
-  const { user, query, setQuery, generating, messages, submitPrompt } = useAskCamviaChat()
+  const { user, query, setQuery, generating, messages, submitPrompt, clearMessages, retryLastPrompt } = useAskCamviaChat()
+  const navigate = useNavigate()
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+
+  const handleCopy = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text)
+    setCopiedIndex(idx)
+    setTimeout(() => setCopiedIndex(null), 2000)
+  }
+
+  const handleAction = (type: string, target: string) => {
+    if (type === 'navigate') navigate(target)
+    else if (type === 'prompt') submitPrompt(target)
+  }
   if (!user) return null
   const suggestionCards = getAskCamviaSuggestions(user.role)
 
@@ -14,7 +30,20 @@ export function AskEduPage() {
           <h1>Ask CAMVIA</h1>
           <p className="student-muted">Ask questions and analyze performance across your authorized scope.</p>
         </div>
-        <div className="status-pill updated-pill">Role-scoped live data</div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button type="button" className="ghost-button" onClick={clearMessages} disabled={generating} style={{ fontSize: '12px', padding: '4px 10px' }}>
+            <RotateCcw size={12} /> Clear Chat
+          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button type="button" className="ghost-button" onClick={clearMessages} disabled={generating} style={{ fontSize: '12px', padding: '4px 10px' }}>
+            <RotateCcw size={12} /> Clear Chat
+          </button>
+          <button type="button" className="ghost-button" onClick={retryLastPrompt} disabled={generating} style={{ fontSize: '12px', padding: '4px 10px' }}>
+            Retry
+          </button>
+          <div className="status-pill updated-pill">Role-scoped live data</div>
+        </div>
+        </div>
       </div>
 
       <div className="ask-edu-container">
@@ -65,6 +94,25 @@ export function AskEduPage() {
                 )}
                 <div className={`ask-edu-bubble ${message.role}`}>
                   <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{message.text}</p>
+                  {message.role === 'assistant' ? (
+                    <>
+                      <BuddyStructuredResponse
+                        component={message.component}
+                        exportData={message.exportData}
+                        onActionClick={handleAction}
+                      />
+                      <div className="buddy-bubble-actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                        <button
+                          type="button"
+                          className="buddy-action-icon-btn"
+                          onClick={() => handleCopy(message.text, index)}
+                          title="Copy text"
+                        >
+                          {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               </div>
             ))}

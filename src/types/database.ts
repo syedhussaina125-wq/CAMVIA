@@ -1,5 +1,6 @@
 export type RoleName = 'ADMIN' | 'PRINCIPAL' | 'FINANCE' | 'TEACHER'
 export type ProfileStatus = 'ACTIVE' | 'INACTIVE'
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
   public: {
@@ -491,6 +492,14 @@ export type Database = {
       }
     }
     Functions: {
+      get_dashboard_student_summary: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
+      get_dashboard_attendance_summary: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
       can_access_attendance_scope: {
         Args: {
           target_organization_id: string

@@ -80,8 +80,12 @@ async function fetchByIds<T>(table: string, columns: string, key: string, ids: s
   return rowBatches.flat()
 }
 
-export async function fetchCommunicationState(students: Student[]): Promise<CommunicationState> {
+export async function fetchCommunicationState(students: Student[] | Promise<Student[]>): Promise<CommunicationState> {
   const db = requireSupabase()
+  const studentRowsPromise = Promise.resolve(students).then(
+    (rows) => ({ rows }),
+    (error: unknown) => ({ error }),
+  )
   const messageRows: MessageRow[] = []
   for (let offset = 0; ; offset += pageSize) {
     const { data, error } = await db
@@ -96,6 +100,9 @@ export async function fetchCommunicationState(students: Student[]): Promise<Comm
     if (rows.length < pageSize) break
   }
 
+  const studentResult = await studentRowsPromise
+  if ('error' in studentResult) throw studentResult.error
+  const studentRows = studentResult.rows
   const ids = messageRows.map((message) => message.id)
   const [recipients, events] = await Promise.all([
     fetchByIds<RecipientRow>('communication_recipients', 'message_id, guardian_id', 'message_id', ids),
@@ -104,7 +111,7 @@ export async function fetchCommunicationState(students: Student[]): Promise<Comm
   const guardianIds = [...new Set(recipients.map((recipient) => recipient.guardian_id))]
   const guardians = await fetchByIds<GuardianRow>('guardians', 'id, first_name, last_name', 'id', guardianIds)
 
-  const studentById = new Map(students.map((student) => [student.id, student]))
+  const studentById = new Map(studentRows.map((student) => [student.id, student]))
   const guardianById = new Map(guardians.map((guardian) => [guardian.id, guardian]))
   const guardianForMessage = new Map<string, string>()
   for (const recipient of recipients) {

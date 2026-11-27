@@ -5,7 +5,7 @@ import type { CommunicationState } from '../../communicationData'
 import type { FeeState } from '../../feeData'
 import type { SessionUser } from '../../mockData'
 import type { Student } from '../../studentData'
-import type { ChatMessage } from '../../services/askCamvia'
+import type { AskCamviaContextPayload, ChatMessage } from '../../services/askCamvia'
 
 export type AskCamviaChatValue = {
   user: SessionUser | null
@@ -21,9 +21,13 @@ export type AskCamviaChatValue = {
   messages: ChatMessage[]
   query: string
   generating: boolean
+  pageContext: AskCamviaContextPayload
   setQuery: (query: string) => void
-  submitPrompt: (prompt: string) => Promise<void>
+  submitPrompt: (prompt: string, overrideContext?: AskCamviaContextPayload) => Promise<void>
   clearMessages: () => void
+  setPageContext: (context: Partial<AskCamviaContextPayload>) => void
+  retryLastPrompt: () => Promise<void>
+  stopGeneration: () => void
 }
 
 export const AskCamviaContext = createContext<AskCamviaChatValue | null>(null)

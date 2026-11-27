@@ -5,12 +5,20 @@ import type { NewStudent, Student } from '../studentData'
 import { compareClassNames, compareNaturalText } from '../utils/sortOrder'
 import {
   evaluateCsvDuplicates,
+  type DuplicateMatch,
   type CsvSkippedRow,
   type StudentCandidate,
 } from '../utils/studentDuplicates'
+import {
+  buildStudentRosterSearchFilter,
+  defaultStudentRosterQuery,
+  parseStudentRosterQuery,
+  type StudentRosterQueryInput,
+} from './studentRoster'
 
 const client = supabase as any
 const pageSize = 1000
+const studentPageFetchConcurrency = 3
 const relationBatchSize = 100
 
 type StudentRow = {
@@ -27,6 +35,24 @@ type StudentRow = {
   organization_id: string
   school_id: string
   campus_id: string
+}
+
+export async function fetchStudentCampusOptions(scope: {
+  organizationId: string
+  schoolId: string
+}): Promise<StudentCampusOption[]> {
+  if (!scope.organizationId || !scope.schoolId) {
+    throw new Error('A verified organization and school scope are required to load campus filters.')
+  }
+  const db = requireSupabase()
+  const { data, error } = await db
+    .from('campuses')
+    .select('id, name')
+    .eq('organization_id', scope.organizationId)
+    .eq('school_id', scope.schoolId)
+    .order('name')
+  if (error) throw error
+  return (data ?? []) as StudentCampusOption[]
 }
 
 type SchoolRow = {
@@ -71,6 +97,14 @@ export type StudentCreationOptions = {
   teacherScopes: TeacherAssignment[]
 }
 
+export type StudentRosterPage = {
+  students: Student[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+}
+
 function requireSupabase() {
   if (!isSupabaseConfigured || !client) {
     throw new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
@@ -82,6 +116,7 @@ function mapStudentStatus(status: string): Student['status'] {
   const normalized = status.toUpperCase()
   if (normalized === 'ACTIVE') return 'Active'
   if (normalized === 'ARCHIVED') return 'Archived'
+  if (normalized === 'ALUMNI') return 'Graduated'
   return 'Inactive'
 }
 
@@ -122,8 +157,12 @@ function mapStudent(
 const schoolNameCache = new Map<string, string>()
 const campusNameCache = new Map<string, string>()
 
-async function mapRows(rows: StudentRow[]): Promise<Student[]> {
+async function mapRows(rows: StudentRow[], includeRelatedData = true): Promise<Student[]> {
   if (rows.length === 0) return []
+  if (!includeRelatedData) {
+    return rows.map((row) => mapStudent(row, undefined, null, '', ''))
+  }
+
   const db = requireSupabase()
   const studentIds = rows.map((row) => row.id)
   const uncachedSchoolIds = [...new Set(rows.map((row) => row.school_id))].filter((id) => !schoolNameCache.has(id))
@@ -196,11 +235,14 @@ async function mapRows(rows: StudentRow[]): Promise<Student[]> {
   })
 }
 
-export async function fetchStudents(): Promise<Student[]> {
+export async function fetchStudents(scope: {
+  organizationId: string | null
+  schoolId: string | null
+}): Promise<Student[]> {
   const db = requireSupabase()
   const rows: StudentRow[] = []
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await db
+  const fetchPage = async (offset: number): Promise<StudentRow[]> => {
+    let query = db
       .from('students')
       .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id')
       .is('deleted_at', null)
@@ -209,12 +251,26 @@ export async function fetchStudents(): Promise<Student[]> {
       .order('last_name')
       .order('first_name')
       .order('id')
-      .range(offset, offset + pageSize - 1)
+
+    if (scope.organizationId) query = query.eq('organization_id', scope.organizationId)
+    if (scope.schoolId) query = query.eq('school_id', scope.schoolId)
+
+    const { data, error } = await query.range(offset, offset + pageSize - 1)
 
     if (error) throw error
-    const page = (data ?? []) as StudentRow[]
-    rows.push(...page)
-    if (page.length < pageSize) break
+    return (data ?? []) as StudentRow[]
+  }
+
+  for (let offset = 0; ; offset += studentPageFetchConcurrency * pageSize) {
+    const offsets = Array.from(
+      { length: studentPageFetchConcurrency },
+      (_, index) => offset + index * pageSize,
+    )
+    const pages = await mapConcurrent(offsets, fetchPage, studentPageFetchConcurrency)
+    for (const page of pages) {
+      rows.push(...page)
+    }
+    if (pages.some((page) => page.length < pageSize)) break
   }
 
   const rowBatches: StudentRow[][] = []
@@ -223,6 +279,62 @@ export async function fetchStudents(): Promise<Student[]> {
   }
   const mappedBatches = await mapConcurrent(rowBatches, mapRows)
   return mappedBatches.flat()
+}
+
+export async function fetchStudentRosterPage(
+  scope: { organizationId: string; schoolId: string; campusId?: string | null },
+  input: StudentRosterQueryInput,
+): Promise<StudentRosterPage> {
+  if (!scope.organizationId || !scope.schoolId) {
+    throw new Error('A verified organization and school scope are required to load the student directory.')
+  }
+  const queryOptions = parseStudentRosterQuery({ ...defaultStudentRosterQuery, ...input })
+  if (!queryOptions) throw new Error('Invalid student roster query.')
+
+  const db = requireSupabase()
+  const start = (queryOptions.page - 1) * queryOptions.pageSize
+  const end = start + queryOptions.pageSize - 1
+  let query = db
+    .from('students')
+    .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, gender, status, organization_id, school_id, campus_id', { count: 'exact' })
+    .eq('organization_id', scope.organizationId)
+    .eq('school_id', scope.schoolId)
+    .is('deleted_at', null)
+    .is('archived_at', null)
+    .neq('status', 'ARCHIVED')
+
+  if (scope.campusId) query = query.eq('campus_id', scope.campusId)
+  if (queryOptions.campusId) query = query.eq('campus_id', queryOptions.campusId)
+  if (queryOptions.search) query = query.or(buildStudentRosterSearchFilter(queryOptions.search))
+  if (queryOptions.className) query = query.eq('class_name', queryOptions.className)
+  if (queryOptions.section) query = query.eq('section', queryOptions.section)
+  if (queryOptions.gender) query = query.eq('gender', queryOptions.gender)
+  if (queryOptions.status) query = query.eq('status', queryOptions.status)
+
+  const ascending = queryOptions.direction === 'asc'
+  const sortColumns = {
+    directory: ['class_name', 'section', 'student_code', 'first_name', 'last_name'],
+    name: ['last_name', 'first_name'],
+    studentId: ['student_code'],
+    className: ['class_name'],
+    section: ['section'],
+    status: ['status'],
+  } as const
+  for (const column of sortColumns[queryOptions.sort]) query = query.order(column, { ascending })
+  query = query.order('id', { ascending }).range(start, end)
+
+  const { data, count, error } = await query
+  if (error) throw error
+  if (typeof count !== 'number') throw new Error('Student roster total was not returned.')
+
+  const students = await mapRows((data ?? []) as StudentRow[], false)
+  return {
+    students,
+    page: queryOptions.page,
+    pageSize: queryOptions.pageSize,
+    total: count,
+    totalPages: Math.ceil(count / queryOptions.pageSize),
+  }
 }
 
 export async function fetchStudentById(studentUuid: string): Promise<Student | null> {
@@ -329,34 +441,117 @@ export async function createStudentRecord(
   return created
 }
 
-export async function fetchSchoolStudentsForDuplicateCheck(): Promise<StudentCandidate[]> {
-  const db = requireSupabase()
-  const rows: Array<Record<string, unknown>> = []
+type StudentCsvDuplicateResult = {
+  row_index: number
+  is_duplicate: boolean
+  rule?: CsvSkippedRow['rule']
+  message?: string
+}
 
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await db
-      .from('students')
-      .select('id, student_code, first_name, last_name, class_name, section, roll_number, date_of_birth, campus_id')
-      .order('id')
-      .range(offset, offset + pageSize - 1)
+function isStudentCsvDuplicateResult(value: unknown): value is StudentCsvDuplicateResult {
+  if (typeof value !== 'object' || value === null) return false
+  const result = value as Record<string, unknown>
+  if (!Number.isInteger(result.row_index) || typeof result.is_duplicate !== 'boolean') return false
+  if (!result.is_duplicate) return true
+  return (
+    (result.rule === 'student_id' || result.rule === 'roll_number' || result.rule === 'identity')
+    && typeof result.message === 'string'
+  )
+}
 
-    if (error) throw error
-    const page = (data ?? []) as Array<Record<string, unknown>>
-    rows.push(...page)
-    if (page.length < pageSize) break
+async function fetchStudentCsvDuplicateResults(
+  candidates: readonly StudentCandidate[],
+): Promise<StudentCsvDuplicateResult[]> {
+  if (candidates.length === 0) return []
+  if (candidates.length > 1500) {
+    throw new RangeError('A student CSV can contain at most 1,500 rows.')
   }
 
-  return rows.map((row) => ({
-    id: typeof row.id === 'string' ? row.id : undefined,
-    studentId: typeof row.student_code === 'string' ? row.student_code : '',
-    firstName: typeof row.first_name === 'string' ? row.first_name : '',
-    lastName: typeof row.last_name === 'string' ? row.last_name : '',
-    className: typeof row.class_name === 'string' ? row.class_name : '',
-    section: typeof row.section === 'string' ? row.section : '',
-    rollNumber: typeof row.roll_number === 'string' ? row.roll_number : '',
-    dateOfBirth: typeof row.date_of_birth === 'string' ? row.date_of_birth : '',
-    campusId: typeof row.campus_id === 'string' ? row.campus_id : undefined,
+  const db = requireSupabase()
+  const targetStudents = candidates.map((candidate) => ({
+    student_code: candidate.studentId.trim(),
+    first_name: candidate.firstName.trim(),
+    last_name: candidate.lastName.trim(),
+    class_name: candidate.className.trim(),
+    section: candidate.section.trim(),
+    roll_number: candidate.rollNumber?.trim() || null,
+    date_of_birth: candidate.dateOfBirth || null,
   }))
+  const { data, error } = await db.rpc('check_student_csv_duplicates', {
+    target_students: targetStudents,
+  })
+
+  if (error) throw error
+  if (
+    !Array.isArray(data)
+    || data.length !== candidates.length
+    || data.some((result) => !isStudentCsvDuplicateResult(result))
+  ) {
+    throw new Error('The student duplicate check returned an incomplete or invalid response.')
+  }
+
+  const results = data as StudentCsvDuplicateResult[]
+  const rowIndexes = new Set(results.map((result) => result.row_index))
+  if (
+    rowIndexes.size !== candidates.length
+    || results.some((result) => result.row_index < 0 || result.row_index >= candidates.length)
+  ) {
+    throw new Error('The student duplicate check returned invalid row indexes.')
+  }
+
+  return results
+}
+
+export async function checkStudentDuplicateCandidate(
+  candidate: StudentCandidate,
+): Promise<DuplicateMatch> {
+  const [result] = await fetchStudentCsvDuplicateResults([candidate])
+  if (!result?.is_duplicate) return { isDuplicate: false }
+  return {
+    isDuplicate: true,
+    rule: result.rule,
+    message: result.message,
+  }
+}
+
+export async function checkStudentCsvDuplicates(
+  students: readonly NewStudent[],
+): Promise<{ validRows: NewStudent[]; skippedRows: CsvSkippedRow[] }> {
+  if (students.length === 0) return { validRows: [], skippedRows: [] }
+  const candidates = students.map((student) => ({
+    studentId: student.studentId,
+    firstName: student.firstName,
+    lastName: student.lastName,
+    className: student.className,
+    section: student.section,
+    rollNumber: student.rollNumber,
+    dateOfBirth: student.dateOfBirth,
+  }))
+  const results = await fetchStudentCsvDuplicateResults(candidates)
+
+  const databaseSkippedRows = results.flatMap((result) => {
+    if (!result.is_duplicate) return []
+    const student = students[result.row_index]
+    return [{
+      rowNumber: result.row_index + 2,
+      student,
+      reason: result.message!,
+      rule: result.rule!,
+    }]
+  })
+
+  const { skippedRows: csvSkippedRows } = evaluateCsvDuplicates(students, [])
+  const skippedByRow = new Map(databaseSkippedRows.map((skipped) => [skipped.rowNumber, skipped]))
+  for (const skipped of csvSkippedRows) {
+    if (!skippedByRow.has(skipped.rowNumber)) skippedByRow.set(skipped.rowNumber, skipped)
+  }
+
+  const skippedRows = [...skippedByRow.values()].sort((left, right) => left.rowNumber - right.rowNumber)
+  const skippedRowNumbers = new Set(skippedRows.map((row) => row.rowNumber))
+  return {
+    validRows: students.filter((_, index) => !skippedRowNumbers.has(index + 2)),
+    skippedRows,
+  }
 }
 
 export type ImportBatchSummary = {
@@ -632,9 +827,7 @@ export async function importStudentsBatch(
   const db = requireSupabase()
   const totalParsedRows = students.length
 
-  // Pre-validate for duplicates against existing school records (active + trashed) and intra-CSV
-  const existingRecords = await fetchSchoolStudentsForDuplicateCheck()
-  const { validRows: nonDuplicateStudents, skippedRows } = evaluateCsvDuplicates(students, existingRecords)
+  const { validRows: nonDuplicateStudents, skippedRows } = await checkStudentCsvDuplicates(students)
 
   let firstSupabaseError: {
     code?: string

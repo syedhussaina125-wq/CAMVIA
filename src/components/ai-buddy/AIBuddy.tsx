@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   ArrowUp,
   Check,
@@ -14,12 +15,15 @@ import {
   Volume2,
   VolumeX,
   X,
+  Copy,
+  Square,
 } from 'lucide-react'
 import { getCommunicationSummary } from '../../communicationData'
 import { useAskCamviaChat } from './useAskCamviaChat'
 import { getAskCamviaSuggestions } from './promptSuggestions'
 import { BuddyFace, type BuddyEmotion } from './BuddyFace'
 import { listenForBuddyEvents, type BuddyEventType } from './events'
+import { BuddyStructuredResponse } from './BuddyStructuredResponse'
 
 type BuddyPreferences = {
   muted: boolean
@@ -57,10 +61,6 @@ const eventEmotions: Record<BuddyEventType, { emotion: BuddyEmotion; label: stri
   'approval-received': { emotion: 'alert', label: 'A new item is awaiting your review.', priority: 4, duration: 2000 },
   'operation-error': { emotion: 'error', label: 'That update needs attention. Please review the page for details.', priority: 5, duration: 2000 },
 }
-const DEBUG_EMOTIONS: BuddyEmotion[] = [
-  'idle', 'happy', 'thinking', 'listening', 'speaking',
-  'alert', 'error', 'success', 'sleep', 'wink',
-]
 
 function getPreferences(): BuddyPreferences {
   try {
@@ -80,12 +80,14 @@ function getPreferences(): BuddyPreferences {
 }
 
 export function AIBuddy() {
-  const { user, students, communication, messages, query, setQuery, generating, submitPrompt, clearMessages } = useAskCamviaChat()
+  const { user, students, communication, messages, query, setQuery, generating, submitPrompt, clearMessages, retryLastPrompt, stopGeneration } = useAskCamviaChat()
+  const navigate = useNavigate()
+  const [fullScreen, setFullScreen] = useState(false)
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const [preferences, setPreferences] = useState(getPreferences)
   const [open, setOpen] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const [emotion, setEmotion] = useState<BuddyEmotion>('idle')
-  const [debugEmotion, setDebugEmotion] = useState<BuddyEmotion | null>(null)
   const [notice, setNotice] = useState('')
   const [listening, setListening] = useState(false)
   const [speakingMessage, setSpeakingMessage] = useState<number | null>(null)
@@ -94,7 +96,6 @@ export function AIBuddy() {
   const reactionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reactionDeadlineRef = useRef<number | null>(null)
   const reactionRemainingRef = useRef(0)
-  const debugTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activityEmotionRef = useRef<BuddyEmotion | null>(null)
   const priorityRef = useRef(0)
   const previousApprovalsRef = useRef<number | null>(null)
@@ -114,9 +115,23 @@ export function AIBuddy() {
       : generating
         ? 'thinking'
         : null
-  const displayEmotion = import.meta.env.DEV && debugEmotion
-    ? debugEmotion
-    : activityEmotion ?? emotion
+
+  const handleCopyMessage = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text)
+    setCopiedIndex(idx)
+    setTimeout(() => setCopiedIndex(null), 2000)
+  }
+
+  const handleActionClick = (actionType: string, target: string) => {
+    if (actionType === 'navigate') {
+      navigate(target)
+      setOpen(false)
+    } else if (actionType === 'prompt') {
+      submitPrompt(target)
+    }
+  }
+
+  const displayEmotion = activityEmotion ?? emotion
 
   const persistPreferences = useCallback((next: BuddyPreferences) => {
     setPreferences(next)
@@ -155,33 +170,6 @@ export function AIBuddy() {
     reactionTimeoutRef.current = null
     if (!activityEmotionRef.current) scheduleReactionEnd()
   }, [scheduleReactionEnd])
-
-  const selectDebugEmotion = (nextEmotion: BuddyEmotion) => {
-    if (debugTimeoutRef.current) clearTimeout(debugTimeoutRef.current)
-    if (nextEmotion === 'idle') {
-      setDebugEmotion(null)
-      if (reactionTimeoutRef.current) clearTimeout(reactionTimeoutRef.current)
-      reactionTimeoutRef.current = null
-      reactionDeadlineRef.current = null
-      reactionRemainingRef.current = 0
-      priorityRef.current = 0
-      setEmotion('idle')
-      setNotice('')
-      return
-    }
-
-    setDebugEmotion(nextEmotion)
-    const duration = nextEmotion === 'happy' || nextEmotion === 'alert' || nextEmotion === 'error'
-      ? 2000
-      : nextEmotion === 'success'
-        ? 2500
-        : nextEmotion === 'wink'
-          ? 600
-          : null
-    if (duration !== null) {
-      debugTimeoutRef.current = setTimeout(() => setDebugEmotion(null), duration)
-    }
-  }
 
   useEffect(() => {
     activityEmotionRef.current = activityEmotion
@@ -235,7 +223,6 @@ export function AIBuddy() {
 
   useEffect(() => () => {
     if (reactionTimeoutRef.current) clearTimeout(reactionTimeoutRef.current)
-    if (debugTimeoutRef.current) clearTimeout(debugTimeoutRef.current)
     recognitionRef.current?.abort()
     window.speechSynthesis?.cancel()
   }, [])
@@ -336,7 +323,7 @@ export function AIBuddy() {
     <div className="buddy-widget" data-open={open}>
       {open ? (
         <section
-          className={`buddy-panel ${minimized ? 'minimized' : ''}`}
+          className={`buddy-panel ${minimized ? 'minimized' : ''} ${fullScreen ? 'fullscreen' : ''}`}
           role="dialog"
           aria-label="CAMVIA Buddy assistant"
           aria-modal="false"
@@ -356,8 +343,11 @@ export function AIBuddy() {
               >
                 {preferences.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
               </button>
+              <button type="button" aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} onClick={() => setFullScreen(!fullScreen)}>
+                <Maximize2 size={16} />
+              </button>
               <button type="button" aria-label={minimized ? 'Expand assistant' : 'Minimize assistant'} onClick={() => setMinimized(!minimized)}>
-                {minimized ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
+                {minimized ? <ChevronDown size={16} /> : <Minimize2 size={16} />}
               </button>
               <button type="button" aria-label="Close assistant" onClick={() => setOpen(false)}>
                 <X size={17} />
@@ -378,23 +368,6 @@ export function AIBuddy() {
 
           {!minimized ? (
             <>
-              {import.meta.env.DEV ? (
-                <aside className="buddy-debug-panel" aria-label="CAMVIA Buddy reaction tests">
-                  <span>Buddy reactions</span>
-                  <div>
-                    {DEBUG_EMOTIONS.map((debugEmotionName) => (
-                      <button
-                        key={debugEmotionName}
-                        type="button"
-                        aria-pressed={displayEmotion === debugEmotionName}
-                        onClick={() => selectDebugEmotion(debugEmotionName)}
-                      >
-                        {debugEmotionName}
-                      </button>
-                    ))}
-                  </div>
-                </aside>
-              ) : null}
               <div className="buddy-scope-note">
                 School scope · {user.role === 'teacher' ? 'Assigned students and classes' : user.campusName}
               </div>
@@ -413,16 +386,35 @@ export function AIBuddy() {
                     ) : null}
                     <div className={`buddy-message-bubble ${message.role}`}>
                       <p>{message.text}</p>
-                      {message.role === 'assistant' && 'speechSynthesis' in window ? (
-                        <button
-                          type="button"
-                          className="buddy-speak-button"
-                          disabled={preferences.muted}
-                          aria-label={speakingMessage === index ? 'Stop speaking' : 'Read response aloud'}
-                          onClick={() => toggleSpeech(message.text, index)}
-                        >
-                          {speakingMessage === index ? <Pause size={13} /> : <Headphones size={13} />}
-                        </button>
+                      {message.role === 'assistant' ? (
+                        <>
+                          <BuddyStructuredResponse
+                            component={message.component}
+                            exportData={message.exportData}
+                            onActionClick={handleActionClick}
+                          />
+                          <div className="buddy-bubble-actions">
+                            <button
+                              type="button"
+                              className="buddy-action-icon-btn"
+                              onClick={() => handleCopyMessage(message.text, index)}
+                              title="Copy response"
+                            >
+                              {copiedIndex === index ? <Check size={12} /> : <Copy size={12} />}
+                            </button>
+                            {'speechSynthesis' in window ? (
+                              <button
+                                type="button"
+                                className="buddy-speak-button"
+                                disabled={preferences.muted}
+                                aria-label={speakingMessage === index ? 'Stop speaking' : 'Read response aloud'}
+                                onClick={() => toggleSpeech(message.text, index)}
+                              >
+                                {speakingMessage === index ? <Pause size={13} /> : <Headphones size={13} />}
+                              </button>
+                            ) : null}
+                          </div>
+                        </>
                       ) : null}
                     </div>
                   </div>
@@ -436,9 +428,19 @@ export function AIBuddy() {
                 ) : null}
               </div>
               <div className="buddy-panel-footer">
-                <button type="button" className="buddy-clear-button" onClick={clearMessages} disabled={generating}>
-                  <RotateCcw size={13} /> Clear conversation
-                </button>
+                <div className="buddy-footer-actions">
+                  <button type="button" className="buddy-clear-button" onClick={clearMessages} disabled={generating}>
+                    <RotateCcw size={13} /> Clear
+                  </button>
+                  <button type="button" className="buddy-clear-button" onClick={retryLastPrompt} disabled={generating} title="Retry last query">
+                    Retry
+                  </button>
+                  {generating ? (
+                    <button type="button" className="buddy-clear-button danger" onClick={stopGeneration} title="Stop generating">
+                      <Square size={12} /> Stop
+                    </button>
+                  ) : null}
+                </div>
                 <form className="buddy-composer" onSubmit={(event) => void send(event)}>
                   <input
                     value={query}

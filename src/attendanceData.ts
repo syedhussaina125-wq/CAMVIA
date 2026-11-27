@@ -46,6 +46,20 @@ export type AttendanceState = {
   records: AttendanceRecord[]
 }
 
+export function mergeAttendanceState(current: AttendanceState, update: AttendanceState): AttendanceState {
+  const updatedSessionIds = new Set(update.sessions.map((session) => session.id))
+  const sessions = [...current.sessions.filter((session) => !updatedSessionIds.has(session.id)), ...update.sessions]
+    .sort((left, right) => right.date.localeCompare(left.date))
+
+  return {
+    sessions,
+    records: [
+      ...current.records.filter((record) => !updatedSessionIds.has(record.sessionId)),
+      ...update.records,
+    ],
+  }
+}
+
 export type AttendanceUser = {
   id: number
   role: Role
@@ -670,6 +684,145 @@ export function getGroupedAttendanceChartData(
   })
 
   const averageRate = rates.length ? Math.round(rates.reduce((sum, r) => sum + r, 0) / rates.length) : 0
+  const highestRate = rates.length ? Math.max(...rates) : 0
+  const lowestRate = rates.length ? Math.min(...rates) : 0
+  const lowSeriesLabels = series
+    .filter((item) => item.averageRate !== null && item.averageRate < attendanceRules.lowAttendanceRate)
+    .map((item) => item.label)
+
+  return {
+    timeframe,
+    periodLabel,
+    avgLabel,
+    series,
+    buckets,
+    averageRate,
+    highestRate,
+    lowestRate,
+    lowSeriesLabels,
+  }
+}
+
+export function getGroupedAttendanceChartDataFromDailyCounts(
+  classNames: string[],
+  dailyCounts: Array<{
+    className: string
+    date: string
+    present: number
+    late: number
+    absent: number
+  }>,
+  timeframe: AttendanceOverviewTimeframe,
+  schoolTimezone?: string | null,
+): GroupedAttendanceChartData {
+  const countsByClassAndDate = new Map<string, Map<string, { present: number; late: number; absent: number }>>()
+  for (const item of dailyCounts) {
+    let countsByDate = countsByClassAndDate.get(item.className)
+    if (!countsByDate) {
+      countsByDate = new Map()
+      countsByClassAndDate.set(item.className, countsByDate)
+    }
+    const counts = countsByDate.get(item.date)
+    if (counts) {
+      counts.present += item.present
+      counts.late += item.late
+      counts.absent += item.absent
+    } else {
+      countsByDate.set(item.date, {
+        present: item.present,
+        late: item.late,
+        absent: item.absent,
+      })
+    }
+  }
+
+  const recordedDates = [...new Set(
+    [...countsByClassAndDate.values()]
+      .flatMap((countsByDate) => [...countsByDate.entries()]
+        .filter(([, counts]) => counts.present + counts.late + counts.absent > 0)
+        .map(([date]) => date)),
+  )].sort((left, right) => left.localeCompare(right))
+  const { periodLabel, avgLabel, buckets: descriptors } = getBucketDescriptors(recordedDates, timeframe, schoolTimezone)
+  const groups = new Map<string, { key: string; label: string; classNames: Set<string> }>()
+
+  for (const className of classNames) {
+    const label = formatGroupedClassLabel(className)
+    const key = label.toLowerCase()
+    const group = groups.get(key)
+    if (group) group.classNames.add(className)
+    else groups.set(key, { key, label, classNames: new Set([className]) })
+  }
+
+  const allSeriesGroups = [...groups.values()].sort((left, right) =>
+    compareClassNames(left.label, right.label),
+  )
+
+  if (!allSeriesGroups.length || !descriptors.length) {
+    return {
+      timeframe,
+      periodLabel,
+      avgLabel,
+      series: [],
+      buckets: [],
+      averageRate: 0,
+      highestRate: 0,
+      lowestRate: 0,
+      lowSeriesLabels: [],
+    }
+  }
+
+  const computeCell = (
+    dates: Set<string>,
+    groupedClassNames: Set<string>,
+  ): GroupedAttendanceCell => {
+    const counts = { present: 0, late: 0, absent: 0 }
+    for (const className of groupedClassNames) {
+      const countsByDate = countsByClassAndDate.get(className)
+      if (!countsByDate) continue
+      for (const date of dates) {
+        const daily = countsByDate.get(date)
+        if (!daily) continue
+        counts.present += daily.present
+        counts.late += daily.late
+        counts.absent += daily.absent
+      }
+    }
+    const total = counts.present + counts.late + counts.absent
+    return {
+      rate: total ? Math.round(((counts.present + counts.late) / total) * 100) : null,
+      present: counts.present,
+      late: counts.late,
+      total,
+    }
+  }
+
+  const allPeriodDates = new Set(descriptors.flatMap((descriptor) => [...descriptor.dates]))
+  const selectedGroups = allSeriesGroups.map((group) => ({
+    ...group,
+    averageRate: computeCell(allPeriodDates, group.classNames).rate,
+  }))
+  const series: GroupedAttendanceSeries[] = selectedGroups.map(({ key, label, averageRate }) => ({
+    key,
+    label,
+    averageRate,
+  }))
+  const rates: number[] = []
+  const buckets: GroupedAttendanceBucket[] = descriptors.map((descriptor) => {
+    const values: Record<string, GroupedAttendanceCell> = {}
+    for (const group of selectedGroups) {
+      const cell = computeCell(descriptor.dates, group.classNames)
+      values[group.key] = cell
+      if (cell.rate !== null) rates.push(cell.rate)
+    }
+    return {
+      key: descriptor.key,
+      label: descriptor.label,
+      fullLabel: descriptor.fullLabel,
+      values,
+    }
+  })
+
+  const averageRate = rates.length ? Math.round(rates.reduce((sum, rate) => sum + rate, 0) / rates.length) : 0
   const highestRate = rates.length ? Math.max(...rates) : 0
   const lowestRate = rates.length ? Math.min(...rates) : 0
   const lowSeriesLabels = series

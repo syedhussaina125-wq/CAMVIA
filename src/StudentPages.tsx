@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from 'react'
 import { ArrowLeft, CalendarDays, FileText, FileUp, Link2, Search, UserRound, Users, X } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Role, SchoolUser } from './mockData'
@@ -19,9 +19,12 @@ import {
 } from './studentData'
 import {
   fetchStudentById,
+  fetchStudentCampusOptions,
   fetchStudentCreationOptions,
-  fetchSchoolStudentsForDuplicateCheck,
+  fetchStudentRosterPage,
+  checkStudentCsvDuplicates,
   type StudentCampusOption,
+  type StudentRosterPage,
   type TeacherAssignment,
   updateStudent,
   archiveStudent,
@@ -29,11 +32,8 @@ import {
   linkStudentGuardian,
   unlinkStudentGuardian,
 } from './services/students'
-import {
-  evaluateCsvDuplicates,
-  type CsvSkippedRow,
-  type StudentCandidate,
-} from './utils/studentDuplicates'
+import type { StudentRosterSortField } from './services/studentRoster'
+import type { CsvSkippedRow } from './utils/studentDuplicates'
 import { trashStudent } from './services/trash'
 import { RecordActionMenu, DestructiveActionModal, type ActionItem } from './components/RecordActionControls'
 import { StudentEditModal } from './components/StudentEditModal'
@@ -58,10 +58,6 @@ type StudentPageUser = {
 
 type StudentsPageProps = {
   user: StudentPageUser
-  students: Student[]
-  loading: boolean
-  error: string
-  onRetry: () => void
   onAddStudent: (student: NewStudent, campusId: string) => Promise<void>
   onImportStudents: (students: NewStudent[], campusId: string) => Promise<boolean>
   onRefresh?: () => void | Promise<unknown>
@@ -69,7 +65,6 @@ type StudentsPageProps = {
 
 type DetailPageProps = {
   user: StudentPageUser
-  students: Student[]
   attendance: AttendanceState
   attendanceLoading: boolean
   attendanceError: string
@@ -494,16 +489,25 @@ function StudentDirectorySection({
   setClassFilter,
   sectionFilter,
   setSectionFilter,
+  campusFilter,
+  setCampusFilter,
+  genderFilter,
+  setGenderFilter,
   statusFilter,
   setStatusFilter,
-  classOptions,
-  sectionOptions,
-  filteredStudents,
-  paginatedStudents,
-  accessibleCount,
+  sortField,
+  setSortField,
+  sortDirection,
+  setSortDirection,
+  campusOptions,
+  directoryStudents,
+  totalCount,
   page,
   totalPages,
   setPage,
+  loading,
+  error,
+  onRetry,
   getStudentActions,
   onOpenStudent,
 }: Readonly<{
@@ -513,16 +517,25 @@ function StudentDirectorySection({
   setClassFilter: (value: string) => void
   sectionFilter: string
   setSectionFilter: (value: string) => void
+  campusFilter: string
+  setCampusFilter: (value: string) => void
+  genderFilter: string
+  setGenderFilter: (value: string) => void
   statusFilter: string
   setStatusFilter: (value: string) => void
-  classOptions: string[]
-  sectionOptions: string[]
-  filteredStudents: Student[]
-  paginatedStudents: Student[]
-  accessibleCount: number
+  sortField: StudentRosterSortField
+  setSortField: (value: StudentRosterSortField) => void
+  sortDirection: 'asc' | 'desc'
+  setSortDirection: (value: 'asc' | 'desc') => void
+  campusOptions: StudentCampusOption[]
+  directoryStudents: Student[]
+  totalCount: number
   page: number
   totalPages: number
-  setPage: React.Dispatch<React.SetStateAction<number>>
+  setPage: (page: number) => void
+  loading: boolean
+  error: string
+  onRetry: () => void
   getStudentActions: (student: Student) => ActionItem[]
   onOpenStudent: (studentId: string) => void
 }>) {
@@ -548,26 +561,51 @@ function StudentDirectorySection({
             </button>
           ) : null}
         </div>
-        <select value={classFilter} onChange={(event) => { setClassFilter(event.target.value); setSectionFilter('') }} aria-label="Filter by class">
-          <option value="">All classes</option>
-          {classOptions.map((className) => <option key={className}>{className}</option>)}
+        <input value={classFilter} onChange={(event) => { setClassFilter(event.target.value); setSectionFilter('') }} placeholder="All classes" aria-label="Filter by class" />
+        <input value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} placeholder="All sections" aria-label="Filter by section" />
+        <select value={campusFilter} onChange={(event) => setCampusFilter(event.target.value)} aria-label="Filter by campus">
+          <option value="">All campuses</option>
+          {campusOptions.map((campus) => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
         </select>
-        <select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} aria-label="Filter by section">
-          <option value="">All sections</option>
-          {sectionOptions.map((section) => <option key={section}>{section}</option>)}
+        <select value={genderFilter} onChange={(event) => setGenderFilter(event.target.value)} aria-label="Filter by gender">
+          <option value="">All genders</option>
+          <option>Female</option>
+          <option>Male</option>
+          <option>Prefer not to say</option>
         </select>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status">
           <option value="">All statuses</option>
-          <option>Active</option>
-          <option>Inactive</option>
-          <option>Graduated</option>
+          <option value="ACTIVE">Active</option>
+          <option value="INACTIVE">Inactive</option>
+          <option value="ALUMNI">Graduated</option>
+        </select>
+        <select value={sortField} onChange={(event) => {
+          const value = event.target.value
+          if (value === 'directory' || value === 'name' || value === 'studentId' || value === 'className' || value === 'section' || value === 'status') setSortField(value)
+        }} aria-label="Sort students">
+          <option value="directory">Default order</option>
+          <option value="name">Name</option>
+          <option value="studentId">Student ID</option>
+          <option value="className">Class</option>
+          <option value="section">Section</option>
+          <option value="status">Status</option>
+        </select>
+        <select value={sortDirection} onChange={(event) => {
+          if (event.target.value === 'asc' || event.target.value === 'desc') setSortDirection(event.target.value)
+        }} aria-label="Sort direction">
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
         </select>
       </div>
 
-      {filteredStudents.length === 0 ? (
+      {loading ? (
+        <StudentListState title="Loading students…" />
+      ) : error ? (
+        <StudentListState title="We couldn't load students." detail={error} isError onRetry={onRetry} />
+      ) : directoryStudents.length === 0 ? (
         <StudentListState
-          title={accessibleCount ? 'No students match these filters.' : 'No students yet'}
-          detail={accessibleCount ? 'Try another name or clear one of the filters.' : 'Students will appear here once they are added to your school.'}
+          title={totalCount ? 'No students on this page.' : 'No students match these filters.'}
+          detail={totalCount ? 'Try a previous page or adjust your filters.' : 'Try another name or clear one of the filters.'}
         />
       ) : (
         <>
@@ -577,7 +615,7 @@ function StudentDirectorySection({
                 <tr><th>Student</th><th>Student ID</th><th>Class</th><th>Section</th><th>Roll number</th><th>Status</th><th>Actions</th></tr>
               </thead>
               <tbody>
-                {paginatedStudents.map((student) => {
+                {directoryStudents.map((student) => {
                   const studentActions = getStudentActions(student)
                   return (
                     <tr key={student.id}>
@@ -597,7 +635,7 @@ function StudentDirectorySection({
             </table>
           </div>
           <div className="student-mobile-list">
-            {paginatedStudents.map((student) => {
+            {directoryStudents.map((student) => {
               const studentActions = getStudentActions(student)
               return (
                 <article className="student-mobile-card" key={student.id}>
@@ -621,18 +659,18 @@ function StudentDirectorySection({
                 type="button"
                 className="secondary-button compact-button"
                 disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                onClick={() => setPage(Math.max(1, page - 1))}
               >
                 Previous
               </button>
               <span className="student-muted" style={{ fontSize: '0.875rem' }}>
-                Page {page} of {totalPages} ({filteredStudents.length} students)
+                Page {page} of {totalPages} ({totalCount} students)
               </span>
               <button
                 type="button"
                 className="secondary-button compact-button"
                 disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                onClick={() => setPage(Math.min(totalPages, page + 1))}
               >
                 Next
               </button>
@@ -640,18 +678,29 @@ function StudentDirectorySection({
           )}
         </>
       )}
-      <p className="student-result-count"><Users size={15} /> {filteredStudents.length} of {accessibleCount} students</p>
+      {!loading && !error ? <p className="student-result-count"><Users size={15} /> Showing {directoryStudents.length} of {totalCount} matching students</p> : null}
     </>
   )
 }
 
-export function StudentsPage({ user, students, loading, error, onRetry, onAddStudent, onImportStudents, onRefresh }: Readonly<StudentsPageProps>) {
+export function StudentsPage({ user, onAddStudent, onImportStudents, onRefresh }: Readonly<StudentsPageProps>) {
   const navigate = useNavigate()
-  const accessibleStudents = students
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const searchDebounceTimer = useRef<number | null>(null)
   const [classFilter, setClassFilter] = useState('')
   const [sectionFilter, setSectionFilter] = useState('')
+  const [campusFilter, setCampusFilter] = useState('')
+  const [genderFilter, setGenderFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [sortField, setSortField] = useState<StudentRosterSortField>('directory')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
+  const [directoryPage, setDirectoryPage] = useState<StudentRosterPage | null>(null)
+  const [directoryLoading, setDirectoryLoading] = useState(Boolean(user.organizationId && user.schoolId))
+  const [directoryError, setDirectoryError] = useState('')
+  const [directoryReload, setDirectoryReload] = useState(0)
+  const [directoryCampuses, setDirectoryCampuses] = useState<StudentCampusOption[]>([])
+  const [directoryCampusesError, setDirectoryCampusesError] = useState('')
   const [showAddForm, setShowAddForm] = useState(false)
   const [showRegistrationLink, setShowRegistrationLink] = useState(false)
   const [adminStudentView, setAdminStudentView] = useState<'students' | 'admissions'>('students')
@@ -673,12 +722,6 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [importing, setImporting] = useState(false)
   const [importStage, setImportStage] = useState<'idle' | 'reading' | 'checking' | 'ready' | 'importing' | 'complete' | 'failed'>('idle')
   const [importTotalRows, setImportTotalRows] = useState(0)
-  const classOptions = [...new Set(accessibleStudents.map((student) => student.className))].sort(compareClassNames)
-  const sectionOptions = [...new Set(
-    accessibleStudents
-      .filter((student) => !classFilter || student.className === classFilter)
-      .map((student) => student.section),
-  )].sort(compareNaturalText)
   const canCreateStudents = user.role === 'admin' || user.role === 'teacher'
   const activeTeacherScopes = teacherScopes.filter((scope) =>
     scope.active && scope.school_id === user.schoolId,
@@ -718,38 +761,133 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   const [page, setPage] = useState(1)
   const pageSize = 50
 
-  const filteredStudents = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return accessibleStudents.filter((student) => {
-      const searchable = [
-        student.firstName,
-        student.lastName,
-        student.studentId,
-        student.className,
-        student.section,
-        student.rollNumber,
-      ].join(' ').toLowerCase()
-      return (
-        (!q || searchable.includes(q)) &&
-        (!classFilter || student.className === classFilter) &&
-        (!sectionFilter || student.section === sectionFilter) &&
-        (!statusFilter || student.status === statusFilter)
-      )
-    }).sort((left, right) =>
-      compareClassNames(left.className, right.className) ||
-      compareNaturalText(left.section, right.section) ||
-      compareNaturalText(left.studentId, right.studentId) ||
-      compareNaturalText(left.firstName, right.firstName) ||
-      compareNaturalText(left.lastName, right.lastName),
-    )
-  }, [accessibleStudents, query, classFilter, sectionFilter, statusFilter])
+  useEffect(() => () => {
+    if (searchDebounceTimer.current !== null) window.clearTimeout(searchDebounceTimer.current)
+  }, [])
 
-  const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1
-  const currentPage = Math.min(page, totalPages)
-  const paginatedStudents = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return filteredStudents.slice(start, start + pageSize)
-  }, [filteredStudents, currentPage, pageSize])
+  useEffect(() => {
+    let active = true
+    if (!user.organizationId || !user.schoolId) return () => { active = false }
+
+    void fetchStudentCampusOptions({
+      organizationId: user.organizationId,
+      schoolId: user.schoolId,
+    }).then((options) => {
+      if (!active) return
+      setDirectoryCampuses(options)
+      setDirectoryCampusesError('')
+    }).catch((campusError: unknown) => {
+      if (!active) return
+      const message = campusError instanceof Error ? campusError.message : 'Unable to load campuses.'
+      console.error('[Supabase] Student directory campuses request failed:', message)
+      setDirectoryCampuses([])
+      setDirectoryCampusesError('Campus filters could not be loaded.')
+    })
+    return () => { active = false }
+  }, [user.organizationId, user.schoolId])
+
+  useEffect(() => {
+    let active = true
+    if (!user.organizationId || !user.schoolId) return () => { active = false }
+
+    void fetchStudentRosterPage({
+      organizationId: user.organizationId,
+      schoolId: user.schoolId,
+    }, {
+      page,
+      pageSize,
+      search: debouncedQuery,
+      className: classFilter,
+      section: sectionFilter,
+      campusId: campusFilter,
+      gender: genderFilter === 'Female' || genderFilter === 'Male' || genderFilter === 'Prefer not to say'
+        ? genderFilter
+        : '',
+      status: statusFilter === 'ACTIVE' || statusFilter === 'INACTIVE' || statusFilter === 'ALUMNI'
+        ? statusFilter
+        : '',
+      sort: sortField,
+      direction: sortDirection,
+    }).then((result) => {
+      if (!active) return
+      setDirectoryPage(result)
+      const lastPage = Math.max(1, result.totalPages)
+      if (page > lastPage) setPage(lastPage)
+    }).catch((loadError: unknown) => {
+      if (!active) return
+      const message = loadError instanceof Error ? loadError.message : 'Unable to load students.'
+      console.error('[Supabase] Bounded student directory request failed:', message)
+      setDirectoryError('Students could not be loaded. Please retry.')
+    }).finally(() => {
+      if (active) setDirectoryLoading(false)
+    })
+    return () => { active = false }
+  }, [
+    user.organizationId,
+    user.schoolId,
+    page,
+    pageSize,
+    debouncedQuery,
+    classFilter,
+    sectionFilter,
+    campusFilter,
+    genderFilter,
+    statusFilter,
+    sortField,
+    sortDirection,
+    directoryReload,
+  ])
+
+  const directoryStudents = directoryPage?.students ?? []
+  const totalCount = directoryPage?.total ?? 0
+  const totalPages = Math.max(1, directoryPage?.totalPages ?? 0)
+  const visibleDirectoryError = user.organizationId && user.schoolId
+    ? directoryError
+    : 'Your account is not assigned to a school.'
+  const refreshDirectory = async () => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setDirectoryReload((current) => current + 1)
+    if (onRefresh) await onRefresh()
+  }
+  const retryDirectory = () => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setDirectoryReload((current) => current + 1)
+  }
+  const setDirectoryFilter = (setter: (value: string) => void, value: string) => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setter(value)
+    setPage(1)
+  }
+  const changeDirectorySearch = (value: string) => {
+    setQuery(value)
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    if (searchDebounceTimer.current !== null) window.clearTimeout(searchDebounceTimer.current)
+    searchDebounceTimer.current = window.setTimeout(() => {
+      setDebouncedQuery(value)
+      setPage(1)
+    }, 300)
+  }
+  const changeDirectoryPage = (nextPage: number) => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setPage(nextPage)
+  }
+  const changeDirectorySort = (field: StudentRosterSortField) => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setSortField(field)
+    setPage(1)
+  }
+  const changeDirectorySortDirection = (direction: 'asc' | 'desc') => {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    setSortDirection(direction)
+    setPage(1)
+  }
 
   const handleAddSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -772,6 +910,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       : form
     try {
       await onAddStudent(submissionPayload, campusId)
+      await refreshDirectory()
       setForm(emptyStudentForm)
       setShowAddForm(false)
     } catch (saveError) {
@@ -820,9 +959,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       setImportTotalRows(parsed.length)
       setImportStage('checking')
 
-      const existingCandidates: StudentCandidate[] = await fetchSchoolStudentsForDuplicateCheck()
-
-      const { validRows, skippedRows } = evaluateCsvDuplicates(parsed, existingCandidates)
+      const { validRows, skippedRows } = await checkStudentCsvDuplicates(parsed)
       setImportSkipped(skippedRows)
 
       if (validRows.length === 0) {
@@ -850,6 +987,7 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
     try {
       const ok = await onImportStudents(importPreview, campusId)
       if (ok) {
+        await refreshDirectory()
         setImportStage('complete')
         const fileInput = document.getElementById('student-import-file') as HTMLInputElement | null
         if (fileInput) fileInput.value = ''
@@ -879,21 +1017,21 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
   }) => {
     setActionError('')
     await updateStudent(payload)
-    if (onRefresh) await onRefresh()
+    await refreshDirectory()
   }
 
   const handleArchiveStudent = async (reason: string) => {
     if (!archivingStudent) return
     setActionError('')
     await archiveStudent(archivingStudent.id, reason)
-    if (onRefresh) await onRefresh()
+    await refreshDirectory()
   }
 
   const handleTrashStudent = async (reason: string) => {
     if (!trashingStudent) return
     setActionError('')
     await trashStudent(trashingStudent.id, reason)
-    if (onRefresh) await onRefresh()
+    await refreshDirectory()
   }
 
   const getStudentActions = (student: Student): ActionItem[] => {
@@ -929,14 +1067,6 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       })
     }
     return actions
-  }
-
-  if (error) {
-    return <StudentListState title="We couldn't load students." detail={error} isError onRetry={onRetry} />
-  }
-
-  if (loading) {
-    return <StudentListState title="Loading students…" />
   }
 
   return (
@@ -1029,30 +1159,40 @@ export function StudentsPage({ user, students, loading, error, onRetry, onAddStu
       {user.role === 'admin' && adminStudentView === 'admissions' ? (
         <PendingAdmissionsPanel
           campuses={campuses}
-          onRefreshStudents={() => onRefresh?.()}
+          onRefreshStudents={() => refreshDirectory()}
         />
       ) : (
         <StudentDirectorySection
           query={query}
-          setQuery={setQuery}
+          setQuery={changeDirectorySearch}
           classFilter={classFilter}
-          setClassFilter={setClassFilter}
+          setClassFilter={(value) => setDirectoryFilter(setClassFilter, value)}
           sectionFilter={sectionFilter}
-          setSectionFilter={setSectionFilter}
+          setSectionFilter={(value) => setDirectoryFilter(setSectionFilter, value)}
+          campusFilter={campusFilter}
+          setCampusFilter={(value) => setDirectoryFilter(setCampusFilter, value)}
+          genderFilter={genderFilter}
+          setGenderFilter={(value) => setDirectoryFilter(setGenderFilter, value)}
           statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
-          classOptions={classOptions}
-          sectionOptions={sectionOptions}
-          filteredStudents={filteredStudents}
-          paginatedStudents={paginatedStudents}
-          accessibleCount={accessibleStudents.length}
+          setStatusFilter={(value) => setDirectoryFilter(setStatusFilter, value)}
+          sortField={sortField}
+          setSortField={changeDirectorySort}
+          sortDirection={sortDirection}
+          setSortDirection={changeDirectorySortDirection}
+          campusOptions={directoryCampuses}
+          directoryStudents={directoryStudents}
+          totalCount={totalCount}
           page={page}
           totalPages={totalPages}
-          setPage={setPage}
+          setPage={changeDirectoryPage}
+          loading={directoryLoading}
+          error={visibleDirectoryError}
+          onRetry={retryDirectory}
           getStudentActions={getStudentActions}
           onOpenStudent={(studentId) => void navigate(`/students/${encodeURIComponent(studentId)}`)}
         />
       )}
+      {directoryCampusesError ? <p className="communication-feedback error" role="alert">{directoryCampusesError}</p> : null}
 
       {editingStudent && (
         <StudentEditModal
@@ -1130,7 +1270,7 @@ function buildStudentDetailActions(
   return []
 }
 
-export function StudentDetailPage({ user, students, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError, onRefresh }: Readonly<DetailPageProps>) {
+export function StudentDetailPage({ user, attendance, attendanceLoading, attendanceError, fees, feesLoading, feesError, onRetryFees, communication, users, alerts, alertsLoading, alertsError, onRefresh }: Readonly<DetailPageProps>) {
   const navigate = useNavigate()
   const { studentId = '' } = useParams()
   const [pageState, setPageState] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -1165,17 +1305,21 @@ export function StudentDetailPage({ user, students, attendance, attendanceLoadin
     setDetailError('')
   }
 
+  const detailStudentScope = useMemo(
+    () => authorizedStudent ? [authorizedStudent] : [],
+    [authorizedStudent],
+  )
   const feeInvoices = useMemo(
     () => authorizedStudent
-      ? getFeeInvoices(fees, students, user).filter((invoice) => invoice.studentId === authorizedStudent.id && !invoice.voidedAt)
+      ? getFeeInvoices(fees, detailStudentScope, user).filter((invoice) => invoice.studentId === authorizedStudent.id && !invoice.voidedAt)
       : [],
-    [authorizedStudent, fees, students, user],
+    [authorizedStudent, detailStudentScope, fees, user],
   )
   const feePayments = fees.payments.filter((payment) =>
     !payment.voidedAt && feeInvoices.some((invoice) => invoice.id === payment.invoiceId),
   )
   const communicationMessages = authorizedStudent
-    ? getAccessibleCommunication(communication, students, user).filter((message) => message.studentId === authorizedStudent.id)
+    ? getAccessibleCommunication(communication, detailStudentScope, user).filter((message) => message.studentId === authorizedStudent.id)
     : []
 
   useEffect(() => {

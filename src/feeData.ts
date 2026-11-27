@@ -49,6 +49,20 @@ export type FeeState = {
   payments: FeePayment[]
 }
 
+export function mergeFeeState(current: FeeState, update: FeeState): FeeState {
+  const updatedInvoiceIds = new Set(update.invoices.map((invoice) => invoice.id))
+  return {
+    invoices: [
+      ...current.invoices.filter((invoice) => !updatedInvoiceIds.has(invoice.id)),
+      ...update.invoices,
+    ],
+    payments: [
+      ...current.payments.filter((payment) => !updatedInvoiceIds.has(payment.invoiceId)),
+      ...update.payments,
+    ],
+  }
+}
+
 export type FeeAccessUser = {
   id: number
   role: Role

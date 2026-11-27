@@ -68,6 +68,16 @@ Migration `033` supports per-student attendance drafts and blocks ordinary
 saves from altering finalized sessions; finalized updates must use the audited
 correction RPC. Verify it is outstanding and review it before applying.
 
+Migration `046` adds the school-scoped indexes and Admin-only
+`check_student_csv_duplicates` RPC required by CSV preview and import. Verify
+the target migration ledger and apply it before deploying frontend code that
+calls the RPC.
+
+Migration `048` adds the Admin-only, read-only admission summary used by
+CAMVIA Buddy. It returns counts only. Verify the target migration ledger and
+apply it after any outstanding earlier migrations before deploying the Buddy
+function.
+
 Deploy `supabase/functions/manage-school-user` and
 `supabase/functions/purge-expired-trash` to that same Supabase project after
 reviewing their required server-only configuration and matching schema
@@ -110,10 +120,17 @@ dashboard settings.
    attendance. Migration `032` aligns attendance date validation with the
    school's configured timezone. Do not infer the deployed schema from
    filenames or this workspace's history.
-3. Deploy the `manage-school-user` and `purge-expired-trash` Edge Functions
-   after confirming their required server-only secrets are configured. Test
-   user invitation delivery and the purge workflow in a controlled environment
-   before relying on them in production.
+3. Deploy the `manage-school-user`, `purge-expired-trash`, and `ask-camvia`
+   Edge Functions after confirming their required server-only secrets are
+   configured. CAMVIA Buddy now depends on `ask-camvia`; it verifies the
+   signed-in Supabase user and reads through that user's RLS-bound session.
+   Configure `GEMINI_API_KEY` only as a Supabase Edge Function secret for
+   detailed generated answers and typo-tolerant student-count intent
+   extraction; never add it to a `VITE_` variable. Without that secret,
+   unsupported phrasing falls back to the existing deterministic handling.
+   Test the function with each role and teacher assignment in a controlled
+   environment before relying on it in production. Do not configure a
+   `service_role` key for Buddy.
 4. Confirm the production Supabase migration ledger, RLS checks, Auth settings,
    scheduled workflow secrets, and backup status.
 5. From the repository root, install and validate:

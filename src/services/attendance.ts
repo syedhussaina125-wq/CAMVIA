@@ -259,6 +259,71 @@ async function loadAttendanceState(context: AttendanceRequestContext): Promise<A
   }
 }
 
+async function loadAttendanceSessionState(
+  sessionId: string,
+  context: AttendanceRequestContext,
+): Promise<AttendanceState> {
+  let db
+  try {
+    db = requireSupabase()
+  } catch (error) {
+    throwAttendanceQueryError('attendance.client', {
+      message: error instanceof Error ? error.message : 'Supabase is not configured.',
+    }, context)
+  }
+
+  const { data: session, error: sessionError } = await db
+    .from('attendance_sessions')
+    .select('id, organization_id, school_id, campus_id, class_name, section, attendance_date, created_by, updated_by, status, created_at, updated_at')
+    .eq('id', sessionId)
+    .maybeSingle()
+  if (sessionError) throwAttendanceQueryError('attendance_sessions.select', sessionError, context)
+  if (!session) {
+    throw new AttendanceServiceError(
+      'DATA_ERROR',
+      'attendance_sessions.confirm',
+      undefined,
+      'The attendance change succeeded, but its updated session could not be found.',
+    )
+  }
+
+  const records: RecordRow[] = []
+  let trashColumnAvailable = true
+  for (let offset = 0; ; offset += pageSize) {
+    const selectColumns = trashColumnAvailable
+      ? 'id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at, trashed_at'
+      : 'id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at'
+    let result = await db
+      .from('attendance_records')
+      .select(selectColumns)
+      .eq('attendance_session_id', sessionId)
+      .range(offset, offset + pageSize - 1)
+    if (result.error && trashColumnAvailable && isMissingTrashColumn(result.error)) {
+      trashColumnAvailable = false
+      logOptionalTrashColumnMissing(context)
+      result = await db
+        .from('attendance_records')
+        .select('id, attendance_session_id, student_id, status, note, marked_by, created_at, updated_at')
+        .eq('attendance_session_id', sessionId)
+        .range(offset, offset + pageSize - 1)
+    }
+    if (result.error) throwAttendanceQueryError('attendance_records.select', result.error, context)
+    const batch = (result.data ?? []) as RecordRow[]
+    records.push(...batch)
+    if (batch.length < pageSize) break
+  }
+
+  const activeRecords = records.filter((record) => !record.trashed_at)
+  return {
+    sessions: [toSession(
+      session as SessionRow,
+      activeRecords.length,
+      records.some((record) => Boolean(record.trashed_at)),
+    )],
+    records: activeRecords.map(toRecord),
+  }
+}
+
 export async function fetchAttendanceState(context: AttendanceRequestContext = {}): Promise<AttendanceState> {
   try {
     return await loadAttendanceState(context)
@@ -283,6 +348,36 @@ export async function fetchAttendanceState(context: AttendanceRequestContext = {
       })
     }
     throw new AttendanceServiceError(kind, 'attendance.load', code, message)
+  }
+}
+
+export async function fetchAttendanceSessionState(
+  sessionId: string,
+  context: AttendanceRequestContext = {},
+): Promise<AttendanceState> {
+  try {
+    return await loadAttendanceSessionState(sessionId, context)
+  } catch (error) {
+    if (error instanceof AttendanceServiceError) throw error
+    const value = typeof error === 'object' && error !== null
+      ? error as { code?: unknown; message?: unknown; status?: unknown }
+      : null
+    const code = typeof value?.code === 'string' ? value.code : undefined
+    const message = typeof value?.message === 'string'
+      ? value.message
+      : error instanceof Error ? error.message : 'Attendance session request failed.'
+    const kind = classifyAttendanceError(error)
+    if (import.meta.env.DEV) {
+      console.error('[CAMVIA Attendance] Attendance session load failed:', {
+        operation: 'attendance.session.load',
+        route: context.route ?? window.location.pathname,
+        role: context.role ?? 'unknown',
+        code,
+        kind,
+        message,
+      })
+    }
+    throw new AttendanceServiceError(kind, 'attendance.session.load', code, message)
   }
 }
 
@@ -316,7 +411,7 @@ export async function saveAttendance(
     throw new Error('One or more attendance statuses are invalid.')
   }
 
-  await runMutation('save_attendance_session', submission.classId, () => db.rpc('save_attendance_session', {
+  const sessionId = await runMutation<string>('save_attendance_session', submission.classId, () => db.rpc('save_attendance_session', {
     target_organization_id: user.organizationId,
     target_school_id: attendanceClass.schoolId,
     target_campus_id: attendanceClass.campusId,
@@ -329,8 +424,11 @@ export async function saveAttendance(
       note: (submission.notes[studentId] ?? '').trim(),
     })),
   }))
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('Attendance was saved, but the updated session could not be identified.')
+  }
 
-  return fetchAttendanceState({ role: user.role, route: window.location.pathname })
+  return fetchAttendanceSessionState(sessionId, { role: user.role, route: window.location.pathname })
 }
 
 export async function correctAttendanceSession(payload: {
@@ -348,5 +446,5 @@ export async function correctAttendanceSession(payload: {
     })),
     p_reason: payload.reason,
   }))
-  return fetchAttendanceState(context)
+  return fetchAttendanceSessionState(payload.sessionId, context)
 }

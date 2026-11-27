@@ -83,32 +83,24 @@ async function fetchAllRows<T>(
   return rowBatches.flat()
 }
 
-export async function fetchFeeState(students: Student[]): Promise<FeeState> {
-  const db = requireSupabase()
-  const invoiceRows = await fetchAllRows<InvoiceRow>(
-    db,
-    'fee_invoices',
-    'id, organization_id, school_id, campus_id, student_id, fee_period, due_date, created_at, updated_at, voided_at, void_reason',
-  )
-  const invoiceIds = invoiceRows.map((invoice) => invoice.id)
-  const [itemRows, paymentRows] = invoiceIds.length
-    ? await Promise.all([
-      fetchAllRows<InvoiceItemRow>(db, 'fee_invoice_items', 'id, invoice_id, label, amount', invoiceIds),
-      fetchAllRows<PaymentRow>(
-        db,
-        'fee_payments',
-        'id, invoice_id, student_id, amount, payment_date, payment_method, reference, note, idempotency_key, received_by, voided_at, void_reason',
-        invoiceIds,
-      ),
-    ])
-    : [[], []]
-
+function mapFeeRows(
+  invoiceRows: InvoiceRow[],
+  itemRows: InvoiceItemRow[],
+  paymentRows: PaymentRow[],
+  students: Student[],
+): FeeState {
   const studentById = new Map(students.map((student) => [student.id, student]))
   const itemsByInvoice = new Map<string, InvoiceItemRow[]>()
   for (const item of itemRows) {
     const list = itemsByInvoice.get(item.invoice_id) ?? []
     list.push(item)
     itemsByInvoice.set(item.invoice_id, list)
+  }
+  const paidByInvoice = new Map<string, number>()
+  for (const payment of paymentRows) {
+    if (payment.voided_at) continue
+    const paidAmount = (paidByInvoice.get(payment.invoice_id) ?? 0) + Number(payment.amount)
+    paidByInvoice.set(payment.invoice_id, Math.round((paidAmount + Number.EPSILON) * 100) / 100)
   }
 
   return {
@@ -121,6 +113,15 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
         label: item.label,
         amount: Number(item.amount),
       }))
+      const totalAmount = lineItems.reduce((total, item) => total + item.amount, 0)
+      const paidAmount = row.voided_at ? 0 : (paidByInvoice.get(row.id) ?? 0)
+      const status = row.voided_at
+        ? 'Cancelled'
+        : paidAmount >= totalAmount
+          ? 'Paid'
+          : paidAmount > 0
+            ? 'Partially Paid'
+            : 'Pending'
       return [{
         id: row.id,
         studentId: row.student_id,
@@ -130,9 +131,9 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
         schoolId: row.school_id,
         month: (row.fee_period ?? '').slice(0, 7),
         dueDate: row.due_date,
-        totalAmount: lineItems.reduce((total, item) => total + item.amount, 0),
-        paidAmount: 0,
-        status: (row.voided_at ? 'Cancelled' : 'Pending') as import('../feeData').FeeStatus,
+        totalAmount,
+        paidAmount,
+        status,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         voidedAt: row.voided_at ?? null,
@@ -154,6 +155,42 @@ export async function fetchFeeState(students: Student[]): Promise<FeeState> {
       voidReason: row.void_reason ?? null,
     })),
   }
+}
+
+const invoiceColumns = 'id, organization_id, school_id, campus_id, student_id, fee_period, due_date, created_at, updated_at, voided_at, void_reason'
+const paymentColumns = 'id, invoice_id, student_id, amount, payment_date, payment_method, reference, note, idempotency_key, received_by, voided_at, void_reason'
+
+export async function fetchFeeState(students: Student[] | Promise<Student[]>): Promise<FeeState> {
+  const db = requireSupabase()
+  const [invoiceRows, studentRows] = await Promise.all([
+    fetchAllRows<InvoiceRow>(db, 'fee_invoices', invoiceColumns),
+    Promise.resolve(students),
+  ])
+  const invoiceIds = invoiceRows.map((invoice) => invoice.id)
+  const [itemRows, paymentRows] = invoiceIds.length
+    ? await Promise.all([
+      fetchAllRows<InvoiceItemRow>(db, 'fee_invoice_items', 'id, invoice_id, label, amount', invoiceIds),
+      fetchAllRows<PaymentRow>(db, 'fee_payments', paymentColumns, invoiceIds),
+    ])
+    : [[], []]
+  return mapFeeRows(invoiceRows, itemRows, paymentRows, studentRows)
+}
+
+export async function fetchFeeInvoiceState(students: Student[], invoiceId: string): Promise<FeeState> {
+  const db = requireSupabase()
+  const { data: invoice, error } = await db
+    .from('fee_invoices')
+    .select(invoiceColumns)
+    .eq('id', invoiceId)
+    .maybeSingle()
+  if (error) throw error
+  if (!invoice) throw new Error('The fee invoice is not available in your authorized scope.')
+
+  const [itemRows, paymentRows] = await Promise.all([
+    fetchAllRows<InvoiceItemRow>(db, 'fee_invoice_items', 'id, invoice_id, label, amount', [invoiceId]),
+    fetchAllRows<PaymentRow>(db, 'fee_payments', paymentColumns, [invoiceId]),
+  ])
+  return mapFeeRows([invoice as InvoiceRow], itemRows, paymentRows, students)
 }
 
 export async function recordFeePayment(
@@ -180,7 +217,7 @@ export async function recordFeePayment(
     target_note: submission.note,
     target_idempotency_key: submission.idempotencyKey,
   }))
-  return fetchFeeState(students)
+  return fetchFeeInvoiceState(students, submission.invoiceId)
 }
 
 export function mapFeeInvoiceError(error: unknown): Error {

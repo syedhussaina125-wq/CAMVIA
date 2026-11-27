@@ -82,9 +82,9 @@ import {
   getAttendanceClasses,
   getAttendanceClassId,
   getAttendanceAttention,
-  getAttendanceForScope,
+  mergeAttendanceState,
+  getGroupedAttendanceChartDataFromDailyCounts,
   getAttendanceTrend,
-  getGroupedAttendanceChartData,
   getSessionForClass,
   type AttendanceClass,
   type AttendanceOverviewTimeframe,
@@ -101,6 +101,12 @@ import { fetchAttendanceState, getAttendanceErrorMessage, saveAttendance as save
 import { createFeeInvoice as createLiveFeeInvoice, fetchFeeState, recordFeePayment as recordLiveFeePayment } from './services/fees'
 import { fetchCommunicationState, saveCommunicationDraft as saveLiveCommunicationDraft, transitionCommunication, deleteCommunicationDraft } from './services/communication'
 import { fetchLiveAlerts } from './services/alerts'
+import {
+  fetchDashboardAttendanceSummary,
+  fetchDashboardStudentSummary,
+  type DashboardAttendanceSummary,
+  type DashboardStudentSummary,
+} from './services/dashboard'
 import { formatRpcErrorMessage } from './utils/errorMapping'
 import { effectiveSchoolTimezone, formatInSchoolTimezone, schoolDateKey, schoolMonthKey } from './utils/schoolTimezone'
 import { compareClassNames, compareNaturalText } from './utils/sortOrder'
@@ -117,6 +123,7 @@ import {
   getFeeInvoices,
   getFeeMetrics,
   getFeePaymentsCollected,
+  mergeFeeState,
   type FeeInvoiceCreationInput,
   type FeePaymentSubmission,
   type FeeState,
@@ -496,12 +503,6 @@ async function buildSessionUser(profile: AppProfile): Promise<SessionUser> {
   let teacherAssignments: SessionUser['teacherAssignments'] = []
   if (role === 'teacher') {
     teacherAssignments = await fetchTeacherAssignments()
-  } else {
-    try {
-      teacherAssignments = await fetchTeacherAssignments()
-    } catch (error) {
-      console.warn('Unable to load optional teacher assignments for non-teacher session:', error)
-    }
   }
   return {
     id: profile.id.split('').reduce((value, char) => (value * 31 + (char.codePointAt(0) ?? 0)) >>> 0, 0),
@@ -517,6 +518,19 @@ async function buildSessionUser(profile: AppProfile): Promise<SessionUser> {
     campusName: profile.campus_name ?? 'No campus assigned',
     teacherAssignments,
   }
+}
+
+function logStartupTiming(
+  stage: string,
+  startedAt: number,
+  details: Record<string, string | number | null> = {},
+): void {
+  if (!import.meta.env.DEV) return
+  console.info('[CAMVIA Startup]', {
+    stage,
+    durationMs: Math.round(performance.now() - startedAt),
+    ...details,
+  })
 }
 
 function isPasswordSetupPath(): boolean {
@@ -536,11 +550,7 @@ type UserDataLoaders = Readonly<{
   userRole: Role
   resolutionId: number
   currentResolutionId: () => number
-  studentLoadFailed: boolean
-  loadedStudents: Student[]
-  setAttendance: React.Dispatch<React.SetStateAction<AttendanceState>>
-  setAttendanceError: React.Dispatch<React.SetStateAction<string>>
-  setAttendanceLoading: React.Dispatch<React.SetStateAction<boolean>>
+  loadedStudents: Promise<Student[]>
   setFees: React.Dispatch<React.SetStateAction<FeeState>>
   setFeesError: React.Dispatch<React.SetStateAction<string>>
   setFeesLoading: React.Dispatch<React.SetStateAction<boolean>>
@@ -559,11 +569,7 @@ function createUserDataTasks(loaders: UserDataLoaders): Promise<unknown>[] {
     userRole,
     resolutionId,
     currentResolutionId,
-    studentLoadFailed,
     loadedStudents,
-    setAttendance,
-    setAttendanceError,
-    setAttendanceLoading,
     setFees,
     setFeesError,
     setFeesLoading,
@@ -577,82 +583,49 @@ function createUserDataTasks(loaders: UserDataLoaders): Promise<unknown>[] {
     nextSession,
   } = loaders
 
-  const needsAttendance = userRole === 'admin' || userRole === 'principal' || userRole === 'teacher'
   const needsFees = userRole === 'admin' || userRole === 'principal' || userRole === 'finance'
   const needsProfiles = userRole === 'admin' || userRole === 'principal'
   const needsAdmin = userRole === 'admin'
 
   const parallelTasks: Promise<unknown>[] = []
 
-  if (needsAttendance) {
-    parallelTasks.push(
-      fetchAttendanceState({ role: userRole, route: window.location.pathname })
-        .then((nextAttendance) => {
-          if (resolutionId === currentResolutionId()) {
-            setAttendance(nextAttendance)
-            if (studentLoadFailed) {
-              setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
-            }
-          }
-        })
-        .catch((error) => {
-          if (resolutionId === currentResolutionId()) {
-            setAttendanceError(getAttendanceErrorMessage(error))
-          }
-        })
-        .finally(() => {
-          if (resolutionId === currentResolutionId()) setAttendanceLoading(false)
-        })
-    )
-  }
-
   if (needsFees) {
-    if (studentLoadFailed) {
-      setFeesError('Student scope could not be loaded for fee records.')
-      setFeesLoading(false)
-    } else {
-      parallelTasks.push(
-        fetchFeeState(loadedStudents)
-          .then((nextFees) => {
-            if (resolutionId === currentResolutionId()) setFees(nextFees)
-          })
-          .catch((error) => {
-            console.error('[Supabase] Fee request failed:', error)
-            if (resolutionId === currentResolutionId()) {
-              setFeesError('Fee information could not be loaded from Supabase. Please retry.')
-            }
-          })
-          .finally(() => {
-            if (resolutionId === currentResolutionId()) setFeesLoading(false)
-          })
-      )
-    }
-  }
-
-  if (studentLoadFailed) {
-    setCommunicationError('Student scope could not be loaded for communication.')
-    setCommunicationLoading(false)
-  } else {
     parallelTasks.push(
-      fetchCommunicationState(loadedStudents)
-        .then((nextCommunication) => {
-          if (resolutionId === currentResolutionId()) {
-            window.localStorage.removeItem('edupulse_communication')
-            setCommunication(nextCommunication)
-          }
+      fetchFeeState(loadedStudents)
+        .then((nextFees) => {
+          if (resolutionId === currentResolutionId()) setFees(nextFees)
         })
         .catch((error) => {
-          console.error('[Supabase] Communication request failed:', error)
+          console.error('[Supabase] Fee request failed:', error)
           if (resolutionId === currentResolutionId()) {
-            setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
-            setCommunication(emptyCommunicationState)
+            setFeesError('Fee information could not be loaded from Supabase. Please retry.')
           }
         })
         .finally(() => {
-          if (resolutionId === currentResolutionId()) setCommunicationLoading(false)
+          if (resolutionId === currentResolutionId()) setFeesLoading(false)
         })
     )
   }
+
+  parallelTasks.push(
+    fetchCommunicationState(loadedStudents)
+      .then((nextCommunication) => {
+        if (resolutionId === currentResolutionId()) {
+          window.localStorage.removeItem('edupulse_communication')
+          setCommunication(nextCommunication)
+        }
+      })
+      .catch((error) => {
+        console.error('[Supabase] Communication request failed:', error)
+        if (resolutionId === currentResolutionId()) {
+          setCommunicationError('Parent communication could not be loaded from Supabase. Please retry.')
+          setCommunication(emptyCommunicationState)
+        }
+      })
+      .finally(() => {
+        if (resolutionId === currentResolutionId()) setCommunicationLoading(false)
+      })
+  )
 
   parallelTasks.push(refreshAlerts(profileId))
   if (needsProfiles) parallelTasks.push(refreshProfiles(nextSession))
@@ -775,7 +748,10 @@ function useAppSessionManager() {
     if (!silent) setStudentsLoading(true)
     setStudentsError('')
     try {
-      const nextStudents = await fetchStudents()
+      const nextStudents = await fetchStudents({
+        organizationId: owner.organizationId,
+        schoolId: owner.schoolId,
+      })
       if (requestId === studentsRequestId.current && resolvedUserId.current === owner.authUserId) {
         setStudents(nextStudents)
         return nextStudents
@@ -854,7 +830,9 @@ function useAppSessionManager() {
       return null
     }
 
+    const sessionContextStartedAt = performance.now()
     const nextSession = await buildSessionUser(profile)
+    logStartupTiming('session-context', sessionContextStartedAt, { role: nextSession.role })
     if (resolutionId !== authResolutionId.current) return null
     setAlertSnapshot({ ownerId: profile.id, items: [] })
     setSession(nextSession)
@@ -885,19 +863,48 @@ function useAppSessionManager() {
     setCommunicationLoading(needsComms)
     setCommunicationError('')
 
-    const loadedStudentRows = await refreshStudents(nextSession)
-    const loadedStudents = loadedStudentRows ?? []
-    const studentLoadFailed = loadedStudentRows === null
+    let studentLoadFailed = false
+    const attendanceTask = needsAttendance
+      ? fetchAttendanceState({ role: userRole, route: window.location.pathname })
+        .then((nextAttendance) => {
+          if (resolutionId === authResolutionId.current) {
+            setAttendance(nextAttendance)
+            if (studentLoadFailed) {
+              setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
+            }
+          }
+        })
+        .catch((error) => {
+          if (resolutionId === authResolutionId.current) {
+            setAttendanceError(getAttendanceErrorMessage(error))
+          }
+        })
+        .finally(() => {
+          if (resolutionId === authResolutionId.current) setAttendanceLoading(false)
+        })
+      : Promise.resolve()
 
+    const rosterStartedAt = performance.now()
+    const loadedStudents = refreshStudents(nextSession).then((rows) => {
+      logStartupTiming('student-roster', rosterStartedAt, {
+        count: rows?.length ?? null,
+        outcome: rows ? 'loaded' : 'failed',
+      })
+      studentLoadFailed = rows === null
+      if (rows === null) {
+        if (needsAttendance && resolutionId === authResolutionId.current) {
+          setAttendanceError('The student roster could not be loaded, so attendance classes are unavailable.')
+        }
+        throw new Error('Student scope could not be loaded for dependent records.')
+      }
+      return rows
+    })
+    const initialDataStartedAt = performance.now()
     const parallelTasks = createUserDataTasks({
       userRole,
       resolutionId,
       currentResolutionId: () => authResolutionId.current,
-      studentLoadFailed,
       loadedStudents,
-      setAttendance,
-      setAttendanceError,
-      setAttendanceLoading,
       setFees,
       setFeesError,
       setFeesLoading,
@@ -911,7 +918,12 @@ function useAppSessionManager() {
       nextSession,
     })
 
-    await Promise.allSettled(parallelTasks)
+    const startupTasks = needsAttendance ? [...parallelTasks, attendanceTask] : parallelTasks
+    await Promise.allSettled(startupTasks)
+    logStartupTiming('initial-data', initialDataStartedAt, {
+      role: nextSession.role,
+      taskCount: startupTasks.length,
+    })
     return nextSession
   }
 
@@ -953,7 +965,12 @@ function useAppSessionManager() {
       setFeesError('')
       setProfilesLoading(true)
       try {
+        const profileStartedAt = performance.now()
         const profile = await getActiveProfile(userId)
+        logStartupTiming('profile', profileStartedAt, {
+          outcome: profile ? 'loaded' : 'not-found',
+          role: profile?.role ?? null,
+        })
         if (!alive || resolutionId !== authResolutionId.current) return
         if (!profile) {
           setAuthError('This account is not configured for CAMVIA access.')
@@ -1068,8 +1085,25 @@ function useAppSessionManager() {
       setProfilesLoading(false)
     })
 
+    const authTimeoutTimer = window.setTimeout(() => {
+      if (!alive) return
+      setAuthLoading((current) => {
+        if (current) {
+          console.warn('[CAMVIA Auth] Session verification timed out after 5s. Falling back to login.')
+          setStudentsLoading(false)
+          setAttendanceLoading(false)
+          setFeesLoading(false)
+          setCommunicationLoading(false)
+          setProfilesLoading(false)
+          return false
+        }
+        return current
+      })
+    }, 5000)
+
     return () => {
       alive = false
+      window.clearTimeout(authTimeoutTimer)
       authResolutionId.current += 1
       studentsRequestId.current += 1
       resolvingUserId.current = null
@@ -1368,7 +1402,7 @@ function useAppActions(params: AppActionsParams) {
     if (!attendanceClass) throw new Error('This class is outside your authorized attendance scope.')
     try {
       const nextState = await saveLiveAttendance(session, attendanceClass, submission)
-      setAttendance(nextState)
+      setAttendance((current) => mergeAttendanceState(current, nextState))
       dispatchBuddyEvent('attendance-saved')
       void refreshAlerts(session.authUserId)
       return nextState
@@ -1427,7 +1461,7 @@ function useAppActions(params: AppActionsParams) {
     }
     try {
       const nextFees = await recordLiveFeePayment(students, submission)
-      setFees(nextFees)
+      setFees((current) => mergeFeeState(current, nextFees))
       dispatchBuddyEvent('fee-recorded')
       setToast({ type: 'success', text: 'Payment recorded successfully.' })
       await refreshAlerts(session.authUserId)
@@ -1546,7 +1580,7 @@ function useAppActions(params: AppActionsParams) {
         role: session.role,
         route: window.location.pathname,
       })
-      setAttendance(updated)
+      setAttendance((current) => mergeAttendanceState(current, updated))
       setToast({ type: 'success', text: 'Attendance session corrected successfully.' })
       dispatchBuddyEvent('attendance-saved')
     } catch (error) {
@@ -1903,6 +1937,7 @@ function App() {
 
   const refreshAllRef = useRef(handleRefreshAll)
   const backgroundRefreshInFlight = useRef(false)
+  const lastBackgroundRefreshAt = useRef(0)
 
   useEffect(() => {
     refreshAllRef.current = handleRefreshAll
@@ -1912,8 +1947,17 @@ function App() {
     if (!session?.authUserId) return
 
     const refreshWhenVisible = () => {
-      if (document.visibilityState !== 'visible' || studentsLoading || backgroundRefreshInFlight.current) return
+      const now = Date.now()
+      const initialDataLoading = studentsLoading || attendanceLoading || feesLoading ||
+        communicationLoading || alertsLoading || profilesLoading || administrationLoading
+      if (
+        document.visibilityState !== 'visible' ||
+        initialDataLoading ||
+        backgroundRefreshInFlight.current ||
+        now - lastBackgroundRefreshAt.current < 60_000
+      ) return
       backgroundRefreshInFlight.current = true
+      lastBackgroundRefreshAt.current = now
       void refreshAllRef.current(true).finally(() => {
         backgroundRefreshInFlight.current = false
       })
@@ -1925,7 +1969,16 @@ function App() {
       window.removeEventListener('focus', refreshWhenVisible)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [session?.authUserId, studentsLoading])
+  }, [
+    session?.authUserId,
+    studentsLoading,
+    attendanceLoading,
+    feesLoading,
+    communicationLoading,
+    alertsLoading,
+    profilesLoading,
+    administrationLoading,
+  ])
 
   const {
     visibleAlerts,
@@ -1983,19 +2036,15 @@ function App() {
                 }
               >
                 <Route path="/" element={<RoleDefaultNavigate session={session} />} />
-                <Route path="/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
-                <Route path="/finance/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
-                <Route path="/teacher/dashboard" element={<DashboardPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route path="/dashboard" element={<DashboardPage user={session!} students={students} studentsLoading={studentsLoading} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route path="/finance/dashboard" element={<DashboardPage user={session!} students={students} studentsLoading={studentsLoading} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
+                <Route path="/teacher/dashboard" element={<DashboardPage user={session!} students={students} studentsLoading={studentsLoading} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} onRetry={handleRefreshAttendance} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRetryAlerts={handleRefreshAlerts} profiles={liveProfiles} profilesLoading={profilesLoading} profilesError={profilesError} academicYear={administration?.school.academic_year ?? null} />} />
                 <Route
                   path="/students"
                   element={
                     <StudentsPage
-                      key={session?.authUserId}
+                      key={`${session?.authUserId}:${session?.organizationId}:${session?.schoolId}`}
                       user={session!}
-                      students={students}
-                      loading={studentsLoading}
-                      error={studentsError}
-                      onRetry={() => refreshStudents(session!)}
                       onAddStudent={handleAddStudent}
                       onImportStudents={handleImportStudents}
                       onRefresh={() => refreshStudents(session!)}
@@ -2004,7 +2053,7 @@ function App() {
                 />
                 <Route
                   path="/students/:studentId"
-                  element={<StudentDetailPage user={session!} students={students} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRefresh={() => refreshStudents(session!)} />}
+                  element={<StudentDetailPage user={session!} attendance={attendance} attendanceLoading={attendanceLoading} attendanceError={attendanceError} fees={fees} feesLoading={feesLoading} feesError={feesError} onRetryFees={handleRefreshFees} communication={communication} users={liveProfiles} alerts={visibleAlerts} alertsLoading={visibleAlertsLoading} alertsError={visibleAlertsError} onRefresh={() => refreshStudents(session!)} />}
                 />
                 <Route
                   path="/attendance"
@@ -3843,7 +3892,9 @@ function AppShell({
           ) : null}
 
           <main className="page-content">
-            <Outlet />
+            <Suspense fallback={<PageLoadingState message="Loading page…" compact />}>
+              <Outlet />
+            </Suspense>
           </main>
         </div>
         {buddyReady && !location.pathname.startsWith('/statements/') ? (
@@ -3895,9 +3946,10 @@ function WalkthroughModal({ steps, onClose, onComplete }: Readonly<{ steps: Read
   )
 }
 
-function DashboardPage({ user, students, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts, profiles, profilesLoading, profilesError, academicYear }: Readonly<{
+function DashboardPage({ user, students, studentsLoading, attendance, attendanceLoading, attendanceError, onRetry, fees, feesLoading, feesError, onRetryFees, communication, alerts, alertsLoading, alertsError, onRetryAlerts, profiles, profilesLoading, profilesError, academicYear }: Readonly<{
   user: SessionUser | null
   students: Student[]
+  studentsLoading: boolean
   attendance: AttendanceState
   attendanceLoading: boolean
   attendanceError: string
@@ -3916,39 +3968,174 @@ function DashboardPage({ user, students, attendance, attendanceLoading, attendan
   profilesError: string
   academicYear: string | null
 }>) {
-  const [status, setStatus] = useState<'ready' | 'error'>('ready')
+  const [studentSummaryResult, setStudentSummaryResult] = useState<{
+    scopeKey: string
+    summary: DashboardStudentSummary
+  } | null>(null)
+  const [studentSummaryFailure, setStudentSummaryFailure] = useState<{
+    scopeKey: string
+    message: string
+  } | null>(null)
+  const [studentSummaryRetry, setStudentSummaryRetry] = useState(0)
+  const [attendanceSummaryResult, setAttendanceSummaryResult] = useState<{
+    scopeKey: string
+    summary: DashboardAttendanceSummary
+  } | null>(null)
+  const [attendanceSummaryFailure, setAttendanceSummaryFailure] = useState<{
+    scopeKey: string
+    message: string
+  } | null>(null)
+  const [attendanceSummaryRetry, setAttendanceSummaryRetry] = useState(0)
+  const summaryScopeKey = user
+    ? `${user.authUserId}:${user.role}:${user.organizationId ?? ''}:${user.schoolId ?? ''}:${user.campusId ?? ''}`
+    : ''
+  const requiresStudentSummary = Boolean(user && user.role !== 'finance')
+  const requiresAttendanceSummary = Boolean(user && user.role !== 'finance')
+  const studentSummary = studentSummaryResult?.scopeKey === summaryScopeKey
+    ? studentSummaryResult.summary
+    : null
+  const dashboardAttendanceSummary = attendanceSummaryResult?.scopeKey === summaryScopeKey
+    ? attendanceSummaryResult.summary
+    : null
+  const studentSummaryError = studentSummaryFailure?.scopeKey === summaryScopeKey
+    ? studentSummaryFailure.message
+    : ''
+  const attendanceSummaryError = attendanceSummaryFailure?.scopeKey === summaryScopeKey
+    ? attendanceSummaryFailure.message
+    : ''
+  const studentSummaryLoading = requiresStudentSummary && !studentSummary && !studentSummaryError
+  const attendanceSummaryLoading = requiresAttendanceSummary && !dashboardAttendanceSummary && !attendanceSummaryError
+
+  useEffect(() => {
+    let active = true
+    if (!summaryScopeKey || !requiresStudentSummary) return () => {
+      active = false
+    }
+
+    void fetchDashboardStudentSummary()
+      .then((summary) => {
+        if (active) setStudentSummaryResult({ scopeKey: summaryScopeKey, summary })
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setStudentSummaryFailure({
+            scopeKey: summaryScopeKey,
+            message: error instanceof Error
+              ? error.message
+              : 'Authorized dashboard student statistics could not be loaded.',
+          })
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [summaryScopeKey, requiresStudentSummary, studentSummaryRetry])
+
+  useEffect(() => {
+    let active = true
+    if (!summaryScopeKey || !requiresAttendanceSummary) return () => {
+      active = false
+    }
+
+    void fetchDashboardAttendanceSummary()
+      .then((summary) => {
+        if (active) setAttendanceSummaryResult({ scopeKey: summaryScopeKey, summary })
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setAttendanceSummaryFailure({
+            scopeKey: summaryScopeKey,
+            message: error instanceof Error
+              ? error.message
+              : 'Authorized dashboard attendance statistics could not be loaded.',
+          })
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [summaryScopeKey, requiresAttendanceSummary, attendanceSummaryRetry])
 
   if (!user) {
     return null
   }
 
-  if (status === 'error') {
-    return <DashboardErrorState onRetry={() => setStatus('ready')} />
+  if (requiresStudentSummary && studentSummaryError) {
+    return (
+      <DashboardErrorState
+        message={studentSummaryError}
+        onRetry={() => {
+          setStudentSummaryFailure(null)
+          setStudentSummaryRetry((attempt) => attempt + 1)
+        }}
+      />
+    )
   }
 
-  if (attendanceLoading || feesLoading) {
+  if (requiresAttendanceSummary && attendanceSummaryError) {
+    return (
+      <DashboardErrorState
+        message={attendanceSummaryError}
+        onRetry={() => {
+          setAttendanceSummaryFailure(null)
+          setAttendanceSummaryRetry((attempt) => attempt + 1)
+        }}
+      />
+    )
+  }
+
+  if (
+    studentSummaryLoading ||
+    attendanceSummaryLoading ||
+    (requiresStudentSummary && !studentSummary) ||
+    (requiresAttendanceSummary && !dashboardAttendanceSummary) ||
+    studentsLoading ||
+    attendanceLoading ||
+    feesLoading
+  ) {
     return <DashboardLoadingState role={user.role} />
   }
 
-  const config = buildDashboardConfig(user, students, attendance, fees, communication, alerts, {
-    attendanceUnavailable: Boolean(attendanceError),
+  const config = buildDashboardConfig(user, students, attendance, fees, communication, alerts, studentSummary, dashboardAttendanceSummary, {
+    attendanceUnavailable: Boolean(attendanceSummaryError),
     feesUnavailable: Boolean(feesError),
     alertsUnavailable: alertsLoading || Boolean(alertsError),
   })
 
-  if (!config || config.stats.length === 0) {
+  if (!config) {
+    return (
+      <DashboardErrorState
+        message="Authorized dashboard statistics could not be loaded."
+        onRetry={() => setStudentSummaryRetry((attempt) => attempt + 1)}
+      />
+    )
+  }
+
+  if (config.stats.length === 0) {
     return <EmptyDashboardState role={user.role} />
   }
 
   let dashboard: ReactNode
   if (user.role === 'admin' || user.role === 'principal') {
+    if (!studentSummary || !dashboardAttendanceSummary) {
+      return (
+        <DashboardErrorState
+          message="Authorized dashboard statistics could not be loaded."
+          onRetry={() => {
+            setStudentSummaryFailure(null)
+            setAttendanceSummaryFailure(null)
+            setStudentSummaryRetry((attempt) => attempt + 1)
+            setAttendanceSummaryRetry((attempt) => attempt + 1)
+          }}
+        />
+      )
+    }
     dashboard = (
       <SchoolDashboard
         user={user}
         config={config}
-        students={students}
-        attendance={attendance}
-        attendanceError={Boolean(attendanceError)}
+        studentSummary={studentSummary}
+        dashboardAttendanceSummary={dashboardAttendanceSummary}
         profiles={profiles}
         profilesLoading={profilesLoading}
         profilesError={profilesError}
@@ -3996,10 +4183,10 @@ function getAttendanceStatSubLabel(attendanceUnavailable: boolean, total: number
   if (attendanceUnavailable) {
     return 'Attendance data unavailable'
   }
-  if (total) {
-    return `${total} of ${authorizedCount} authorized students recorded`
+  if (!authorizedCount) {
+    return 'No active students in authorized scope'
   }
-  return 'No attendance recorded today'
+  return `Recording completion: ${total} of ${authorizedCount} authorized students`
 }
 
 function getGeneralBriefSummary(total: number, rate: string, scopeText: string, attentionCount: number): string {
@@ -4161,6 +4348,26 @@ function buildFinanceDashboardConfig(params: FinanceDashboardParams): DashboardC
   }
 }
 
+function getDashboardAttendanceCounts(summary: DashboardAttendanceSummary, date: string) {
+  const counts = summary.dailyCounts
+    .filter((item) => item.date === date)
+    .reduce(
+      (total, item) => {
+        total.present += item.present
+        total.late += item.late
+        total.absent += item.absent
+        return total
+      },
+      { present: 0, late: 0, absent: 0 },
+    )
+  const total = counts.present + counts.late + counts.absent
+  return {
+    ...counts,
+    total,
+    rate: total ? Math.round(((counts.present + counts.late) / total) * 100) : null,
+  }
+}
+
 function buildDashboardConfig(
   user: SessionUser,
   students: Student[],
@@ -4168,8 +4375,10 @@ function buildDashboardConfig(
   fees: FeeState,
   communication: CommunicationState,
   liveAlerts: AlertItem[],
+  studentSummary: DashboardStudentSummary | null,
+  dashboardAttendanceSummary: DashboardAttendanceSummary | null,
   availability?: DashboardAvailability,
-): DashboardConfig {
+): DashboardConfig | null {
   const attendanceUnavailable = availability?.attendanceUnavailable ?? false
   const feesUnavailable = availability?.feesUnavailable ?? false
   const alertsUnavailable = availability?.alertsUnavailable ?? false
@@ -4204,13 +4413,14 @@ function buildDashboardConfig(
     })
   }
 
+  if (!studentSummary || !dashboardAttendanceSummary) return null
+
   const today = schoolDateKey(user.schoolTimezone)
-  const classes = getAttendanceClasses(students)
-  const todayCounts = getAttendanceForScope(attendance, classes, today).counts
+  const todayCounts = getDashboardAttendanceCounts(dashboardAttendanceSummary, today)
   const attendanceAttention = getAttendanceAttention(attendance, students)
   const rate = todayCounts.rate === null ? '—' : `${todayCounts.rate}%`
   const activeAlertCount = alertsUnavailable ? '—' : String(visibleAlerts.filter((alert) => alert.status !== 'RESOLVED').length)
-  const authorizedStudentCount = classes.reduce((total, item) => total + item.students.length, 0)
+  const authorizedStudentCount = studentSummary.activeStudentCount
 
   const statContext: GeneralStatContext = {
     userRole: user.role,
@@ -4225,7 +4435,7 @@ function buildDashboardConfig(
     todayPresent: todayCounts.present,
     todayAbsent: todayCounts.absent,
     activeAlertCount,
-    classesCount: classes.length,
+    classesCount: studentSummary.sectionCounts.length,
   }
 
   const stats = fixture.stats.map((stat) => buildGeneralStat(stat, statContext))
@@ -4818,7 +5028,7 @@ function DashboardLoadingState({ role }: Readonly<{ role: Role }>) {
   )
 }
 
-function DashboardErrorState({ onRetry }: Readonly<{ onRetry: () => void }>) {
+function DashboardErrorState({ message, onRetry }: Readonly<{ message: string; onRetry: () => void }>) {
   return (
     <section className="dashboard-page">
       <div className="empty-state-card error-card">
@@ -4826,7 +5036,7 @@ function DashboardErrorState({ onRetry }: Readonly<{ onRetry: () => void }>) {
           <AlertTriangle size={22} />
         </div>
         <h1>We couldn't load the dashboard.</h1>
-        <p>Something went wrong while gathering your school summary.</p>
+        <p>{message}</p>
         <button type="button" className="primary-button small-button" onClick={onRetry}>Try Again</button>
       </div>
     </section>
@@ -4857,9 +5067,8 @@ function EmptyDashboardState({ role }: Readonly<{ role: Role }>) {
 function SchoolDashboard({
   user,
   config,
-  students,
-  attendance,
-  attendanceError,
+  studentSummary,
+  dashboardAttendanceSummary,
   profiles,
   profilesLoading,
   profilesError,
@@ -4867,16 +5076,14 @@ function SchoolDashboard({
 }: Readonly<{
   user: SessionUser
   config: DashboardConfig
-  students: Student[]
-  attendance: AttendanceState
-  attendanceError: boolean
+  studentSummary: DashboardStudentSummary
+  dashboardAttendanceSummary: DashboardAttendanceSummary
   profiles: SchoolUser[]
   profilesLoading: boolean
   profilesError: string
   academicYear: string | null
 }>) {
   const navigate = useNavigate()
-  const activeStudents = students.filter((student) => student.status === 'Active')
   const attendanceStat = config.stats.find((stat) => stat.label === 'Attendance')
 
   return (
@@ -4898,19 +5105,17 @@ function SchoolDashboard({
           badgeText=""
         >
           <AttendanceOverview
-            attendance={attendance}
-            students={activeStudents}
+            summary={dashboardAttendanceSummary}
             schoolTimezone={user.schoolTimezone}
             currentRate={attendanceStat?.value ?? '—'}
-            error={attendanceError}
           />
         </DashboardSection>
         <DashboardSection
           title="Student Distribution"
           icon={<Users size={18} className="panel-title-icon text-blue" />}
-          badgeText={`${activeStudents.length} students`}
+          badgeText={`${studentSummary.activeStudentCount} students`}
         >
-          <StudentDistribution students={activeStudents} />
+          <StudentDistribution summary={studentSummary} />
         </DashboardSection>
       </div>
 
@@ -5065,17 +5270,13 @@ function AttendanceChartLegend({
 }
 
 function AttendanceOverview({
-  attendance,
-  students,
+  summary,
   schoolTimezone,
   currentRate,
-  error,
 }: Readonly<{
-  attendance: AttendanceState
-  students: Student[]
+  summary: DashboardAttendanceSummary
   schoolTimezone?: string | null
   currentRate: string
-  error: boolean
 }>) {
   const [timeframe, setTimeframe] = useState<AttendanceOverviewTimeframe>('weekly')
   const [activeBar, setActiveBar] = useState<{
@@ -5088,12 +5289,17 @@ function AttendanceOverview({
   const [highlightedSeries, setHighlightedSeries] = useState<string | null>(null)
 
   const chartData = useMemo(
-    () => (error ? null : getGroupedAttendanceChartData(attendance, students, timeframe, schoolTimezone)),
-    [attendance, students, timeframe, schoolTimezone, error],
+    () => getGroupedAttendanceChartDataFromDailyCounts(
+      summary.classNames,
+      summary.dailyCounts,
+      timeframe,
+      schoolTimezone,
+    ),
+    [summary, timeframe, schoolTimezone],
   )
 
-  if (error || !chartData?.buckets.length || !chartData.series.length) {
-    return <AttendanceOverviewEmpty error={error} />
+  if (!chartData.buckets.length || !chartData.series.length) {
+    return <AttendanceOverviewEmpty error={false} />
   }
 
   const width = 640
@@ -5282,22 +5488,21 @@ function formatClassName(name: string): string {
   return trimmed
 }
 
-function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
+function StudentDistribution({ summary }: Readonly<{ summary: DashboardStudentSummary }>) {
   const { groups, totalClasses, avgClassSize, topClassName } = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const student of students) {
-      const className = formatClassName(student.className)
-      counts.set(className, (counts.get(className) ?? 0) + 1)
+    for (const { className, studentCount } of summary.classCounts) {
+      const label = formatClassName(className)
+      counts.set(label, (counts.get(label) ?? 0) + studentCount)
     }
-    const sortedByClass = [...counts.entries()]
-      .sort(([leftName], [rightName]) => compareClassNames(leftName, rightName))
-    const sortedByCount = [...counts.entries()]
-      .sort(([leftName, leftCount], [rightName, rightCount]) => rightCount - leftCount || compareClassNames(leftName, rightName))
-    const visible = sortedByClass.map(([label, count]) => ({ label, count }))
-
-    const totalCls = counts.size
-    const avg = totalCls > 0 ? Math.round(students.length / totalCls) : 0
-    const top = sortedByCount.length > 0 ? sortedByCount[0][0] : '—'
+    const visible = [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((left, right) => compareClassNames(left.label, right.label))
+    const sortedByCount = [...visible]
+      .sort((left, right) => right.count - left.count || compareClassNames(left.label, right.label))
+    const totalCls = visible.length
+    const avg = totalCls > 0 ? Math.round(summary.activeStudentCount / totalCls) : 0
+    const top = sortedByCount.length > 0 ? sortedByCount[0].label : '—'
 
     return {
       groups: visible,
@@ -5305,9 +5510,9 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
       avgClassSize: avg,
       topClassName: top,
     }
-  }, [students])
+  }, [summary])
 
-  if (!students.length) {
+  if (!summary.activeStudentCount) {
     return (
       <div className="executive-chart-empty">
         <span className="executive-empty-icon"><Users size={18} /></span>
@@ -5322,8 +5527,8 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
   const circumference = 2 * Math.PI * radius
   const segments = groups.map((group, index) => ({
     group,
-    length: (group.count / students.length) * circumference,
-    offset: (groups.slice(0, index).reduce((total, previous) => total + previous.count, 0) / students.length) * circumference,
+    length: (group.count / summary.activeStudentCount) * circumference,
+    offset: (groups.slice(0, index).reduce((total, previous) => total + previous.count, 0) / summary.activeStudentCount) * circumference,
   }))
 
   return (
@@ -5348,13 +5553,13 @@ function StudentDistribution({ students }: Readonly<{ students: Student[] }>) {
             ))}
           </svg>
           <div className="distribution-total">
-            <strong>{students.length}</strong>
+            <strong>{summary.activeStudentCount}</strong>
             <span>students</span>
           </div>
         </div>
         <ul className={groups.length > 5 ? 'distribution-legend is-multi-col' : 'distribution-legend'}>
           {groups.map((group, index) => {
-            const pct = Math.round((group.count / students.length) * 100)
+            const pct = Math.round((group.count / summary.activeStudentCount) * 100)
             const color = colors[index % colors.length]
             return (
               <li key={group.label} className="distribution-legend-item">
